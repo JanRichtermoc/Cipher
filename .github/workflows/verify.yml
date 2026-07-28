@@ -1,0 +1,94 @@
+# Cipher — the only CI job.
+#
+# It runs `Scripts/verify-all.sh`, which is also what a developer runs locally. One gate,
+# one definition: a check that exists only in CI is a check nobody can reproduce, and a
+# check that exists only locally is a check nobody runs.
+#
+# Closes AUDIT 1.6 once this is green on main and required on PRs.
+#
+# Copyright (C) 2026 Jan Richter
+# SPDX-License-Identifier: AGPL-3.0-only
+
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, because the two checks most likely to break are ones no code change triggers:
+  # an upstream libsignal tag being moved, and a published checksum changing.
+  schedule:
+    - cron: "17 4 * * 1"
+
+# A queued run must not start while another holds the simulator (AUDIT 6.6). Never raise
+# this to a matrix: the crypto tests are app-hosted and two concurrent `xcodebuild test`
+# runs against one simulator fail preflight with "RequestDenied ... Busy".
+concurrency:
+  group: verify-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Pinned rather than `macos-latest`: a runner image bump changes the Xcode version,
+    # and this project pins its toolchain (Vendor/libsignal/PINS.env records what the
+    # supply-chain evidence was gathered against).
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history so a tag/commit check can resolve; the supply-chain script
+          # queries the remote, but a shallow clone hides local tag state.
+          fetch-depth: 0
+
+      - name: Select Xcode
+        run: sudo xcode-select -switch /Applications/Xcode_26.app
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          # Reads .ruby-version / Gemfile; CocoaPods is pinned in Gemfile.lock so the
+          # project is regenerated the same way it is locally.
+          bundler-cache: true
+
+      - name: pod install
+        run: bundle exec pod install
+
+      - name: Boot the simulator once, up front
+        # Booting inside the test step is where the "Busy" preflight failure comes from.
+        # Doing it here, once, makes that failure mode rare rather than routine.
+        run: |
+          xcrun simctl boot "iPhone 17 Pro" || true
+          xcrun simctl bootstatus "iPhone 17 Pro" -b || true
+
+      - name: Verify
+        # The whole gate: supply chain, manifest, redaction, UI honesty, 89 crypto tests,
+        # both builds, and the Release-binary debug-affordance audit.
+        run: ./Scripts/verify-all.sh
+
+      - name: Upload test log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cipher-verify-tests
+          path: /tmp/cipher-verify-tests.log
+          if-no-files-found: ignore
+
+  # Releases must never pass because a check was skipped. `verify-all.sh --offline` exists
+  # for working on a plane; it prints a warning and moves on, and that must not be how a
+  # release-tagged build reaches green.
+  release-gate:
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: macos-15
+    needs: verify
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Supply chain must be verified online for a release
+        run: ./Scripts/verify-supply-chain.sh

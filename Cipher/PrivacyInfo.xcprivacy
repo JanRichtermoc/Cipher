@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+    Cipher — privacy manifest.
+
+    libsignal ships no PrivacyInfo.xcprivacy of its own (confirmed absent from the pod and
+    from the built app; see Vendor/libsignal/DECISIONS.md, Q2), so any required-reason API
+    it uses has to be declared here. The declaration below covers what Cipher's own code
+    calls; libsignal's usage has not yet been enumerated from its sources and is tracked as
+    an open item in docs/AUDIT.md. That must be closed before submission.
+
+    Copyright (C) 2026 Jan Richter
+    SPDX-License-Identifier: AGPL-3.0-only
+-->
+<plist version="1.0">
+<dict>
+	<!-- Cipher does not track. There is no analytics SDK, no advertising identifier, and
+	     no network call that leaves the user's own server. -->
+	<key>NSPrivacyTracking</key>
+	<false/>
+	<key>NSPrivacyTrackingDomains</key>
+	<array/>
+
+	<!-- Nothing is collected. Message content never leaves the device unencrypted and the
+	     relay is designed to hold ciphertext only. -->
+	<key>NSPrivacyCollectedDataTypes</key>
+	<array/>
+
+	<key>NSPrivacyAccessedAPITypes</key>
+	<array>
+		<dict>
+			<!-- AppSession stores onboarding, app-lock and display preferences. No secret
+			     and no message content is ever written to UserDefaults; key material lives
+			     in the Keychain and session state in the encrypted record store. -->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryUserDefaults</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>CA92.1</string>
+			</array>
+		</dict>
+		<dict>
+			<!-- CipherCrypto reads and writes file metadata inside the app container:
+			     directory listings for prekey counts, and the resource value that excludes
+			     the record store from backups. Container files only. -->
+			<key>NSPrivacyAccessedAPIType</key>
+			<string>NSPrivacyAccessedAPICategoryFileTimestamp</string>
+			<key>NSPrivacyAccessedAPITypeReasons</key>
+			<array>
+				<string>C617.1</string>
+			</array>
+		</dict>
+	</array>
+</dict>
+</plist>

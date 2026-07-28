@@ -1,0 +1,95 @@
+# Cipher — security audit ledger
+
+Every known weakness, accepted trade-off, and unfinished control, in one place.
+
+This file exists because `Vendor/libsignal/DECISIONS.md` requires it, and because a security
+argument that lives only in code comments cannot be reviewed as a whole. **An item is only
+removed from here when the control that closes it exists and is tested.** Downgrading an
+item to "probably fine" is not closing it.
+
+Status legend: **OPEN** — unmitigated · **ACCEPTED** — understood, deliberate, compensated ·
+**CLOSED** — a tested control exists.
+
+**Columns.** *Adversary* names the section of [`THREAT_MODEL.md`](THREAT_MODEL.md) §1 the finding
+matters to — a finding with no adversary is a bug, not a security finding. *Fix in* is the stable
+step id in [`CLAUDE_IMPLEMENTATION_PLAN.md`](CLAUDE_IMPLEMENTATION_PLAN.md) that closes it, so the
+ledger and the roadmap cannot drift apart.
+
+Last reviewed: 2026-07-28, against `e2ee/m1-build-skeleton`, on adopting the hostile/seizable-server
+threat model.
+
+---
+
+## 1. Supply chain
+
+Adversary §1.7 throughout: a compromised dependency runs our code on every device, inside the trust
+boundary, where encryption does not help.
+
+| # | Item | Status | Adversary | Fix in |
+|---|---|---|---|---|
+| 1.1 | **The iOS libsignal FFI binary is not signed and carries no provenance attestation.** A SHA-256 pins bytes, not origin: if `build-artifacts.signal.org` served a malicious build and published its hash, the pin would faithfully reproduce it. | ACCEPTED | §1.7 | — |
+| 1.2 | **`bin/fetch_archive.py` enforces its checksum with a bare Python `assert`,** which `python -O` strips. We therefore verify independently in `Scripts/verify-supply-chain.sh` rather than trusting the pod's own check. | ACCEPTED | §1.7 | — |
+| 1.3 | **`Podfile.lock` records a git *tag*, which is mutable upstream.** `PINS.env` pins the resolved commit, and `Scripts/verify-supply-chain.sh` re-resolves the tag and fails if it has moved. That check is currently only as good as someone remembering to run it — **there is no CI** (1.6), so nothing enforces it on a build or a release. | ACCEPTED | §1.7 | 1.6 closes the enforcement gap |
+| 1.4 | **libsignal is deliberately `0.x`** and promises no stability between releases. `LibsignalContractTests` pins the behaviour this codebase depends on so a bump fails there rather than in production. | ACCEPTED | §1.7 | — |
+| 1.5 | **`ENABLE_USER_SCRIPT_SANDBOXING = NO`.** CocoaPods' script phases cannot run sandboxed. This is a genuine reduction in build-time isolation, compensated by 1.2 and 1.3. Revisit if the dependency ever moves off CocoaPods. | ACCEPTED | §1.7 | — |
+| 1.6 | **`Scripts/verify-supply-chain.sh` is not yet wired to CI** — there is no CI. It must run on every build and before every release. | OPEN | §1.7 | P1.S09 → P1.S10 |
+| 1.7 | **Effectively nothing is under version control.** The repository has a single commit tracking **8 files**; `CipherCrypto/`, its 89 tests, `Scripts/`, `docs/`, and most of the app — 75 files — are untracked, as is `Pods/` (187 files). `.gitignore:23` states Pods are committed deliberately "so the libsignal Swift wrapper is diffable on every dependency bump"; nothing ignores them, they have simply never been committed. Consequences: no diff review is possible for *any* security-critical code, the supply-chain review control that `.gitignore` describes cannot function, and a stray `git checkout`/`clean` destroys the work outright. **Committing is the user's decision, not the agent's** — this stays OPEN until they act. | OPEN | §1.7 | P1.S04 *(needs the user)* |
+
+## 2. Key custody
+
+| # | Item | Status | Adversary | Fix in |
+|---|---|---|---|---|
+| 2.1 | **Keychain accessibility is `AfterFirstUnlockThisDeviceOnly`, not `WhenUnlockedThisDeviceOnly`.** After the first unlock following a boot, the identity key is reachable by any code that achieves execution on the device. `WhenUnlocked` was rejected because a notification-service extension must decrypt while locked, and the alternative — server-visible notification content — is a far larger leak. `ThisDeviceOnly` is the non-negotiable half and is asserted by `testStoredItemsAreDeviceOnlyAndAvailableAfterFirstUnlock`. | ACCEPTED | §1.4 | — |
+| 2.2 | **libsignal's own buffers are never zeroized.** `serialize()` returns a `Data` wrapping a Rust allocation that `signal_free_buffer` releases with a plain `drop`. `SecretData` copies out and wipes our copy; the Rust-side buffer is outside our control. Measured, not assumed — see `ZeroizationRealityTests`. | ACCEPTED | §1.4 | — |
+| 2.3 | **Swift cannot promise a value is never copied.** Anything derived from a secret inside a scope (`Data`, `[UInt8]`, `String`) is a copy `SecretData` can never reach. The type's guarantees are deliberately narrow and documented as such. | ACCEPTED | §1.4 | — |
+| 2.4 | **No key rotation.** Signed prekeys, kyber prekeys, and one-time prekeys are stored and consumed correctly, but nothing rotates or replenishes them yet. Rotation is what bounds the damage of a compromised prekey and is the real mitigation for 3.1. | OPEN | §1.2 | P6.S01 |
+| 2.5 | **No user-facing safety-number screen.** The trust state exists, is persisted, survives restart, and blocks sending — but nothing renders it. Until it does, the protection in 3.2 is only half-delivered: the block is real, the explanation is not. | OPEN | §1.2 | P5.S12 |
+
+## 3. Protocol
+
+| # | Item | Status | Adversary | Fix in |
+|---|---|---|---|---|
+| 3.1 | **The base-key witness is a bounded FIFO (512 entries per prekey pair) and evicts rather than fails.** Anyone holding the published bundle can start a session, so the witness has an unauthenticated growth vector. Unbounded is a disk-exhaustion DoS; failing closed lets an unauthenticated party permanently disable session establishment. Eviction degrades instead: an attacker must capture a specific old prekey message *and* flush the witness before replaying it. The real fixes are server-side bundle-fetch rate limiting and prekey rotation (2.4), neither of which exists. | OPEN | §1.2 | P4.S06 + P6.S01, resolved P6.S02 |
+| 3.2 | **A changed peer identity is trusted for receiving.** Deliberate: refusing would drop messages silently and teach users to ignore the warning that follows. Sending is refused until the user accepts the new key. Both directions are tested. | ACCEPTED | §1.2 | — |
+| 3.3 | **Trust on first use.** A first sighting has nothing to compare against. Safety numbers are the out-of-band check, and they are blocked on 2.5. | ACCEPTED | §1.2 | — |
+| 3.4 | **No sealed sender.** `Envelope.sender` is an attacker-controlled routing hint and is documented as such; authenticity comes from the ciphertext. The relay therefore learns who talks to whom. Under the seizable-host model this is a record, not merely an inference — so it is scheduled, not backlogged. | OPEN | §1.1 | P7.S01 |
+| 3.5 | **`PlaintextContent` / `DecryptionErrorMessage` is refused at the wire boundary.** Accepting it would hand a malicious relay a free session-reset primitive. Reserved, not live. See `Envelope.PayloadType`. | CLOSED | §1.2 | — |
+| 3.6 | **Single device only.** `deviceId` is absent from the wire format. Multi-device is a breaking change requiring `wireVersion` 2 — recorded, not hidden. | ACCEPTED | — | P10.S01 |
+| 3.7 | **No group messaging.** `SenderKeyStore` is deliberately unimplemented and `.senderKey` is rejected by `Envelope.payloadType(for:)`, so there is no untested sender-key state to reach. | ACCEPTED | — | P10.S02 |
+
+## 4. Storage
+
+| # | Item | Status | Adversary | Fix in |
+|---|---|---|---|---|
+| 4.1 | **Records are AES-GCM sealed under a Keychain key, bound to their slot by the AEAD's authenticated data,** and the container is excluded from backup. Tampering, relocation between slots, and a wrong key all surface as `corruptRecord` rather than as "not found". Tested. | CLOSED | §1.4 | — |
+| 4.2 | **Record keys derive from peer-supplied strings and never become path components** — filenames are `base64url(SHA-256(kind ‖ 0x00 ‖ key))`. Tested with a traversal payload. | CLOSED | §1.4 | — |
+| 4.3 | **No message database yet.** Only protocol state is persisted. When message storage arrives it must share the crypto queue and this container, and must not reintroduce plaintext at rest. | OPEN | §1.4 | P5.S11 |
+| 4.4 | **A corrupt record is fatal rather than self-healing, by design.** Silently treating a damaged session as "no session" would be a free session-reset primitive for anyone with write access to the container. Recovery is a deliberate, user-initiated reset. | ACCEPTED | §1.2, §1.4 | — |
+
+## 5. Transport, server, and UI honesty
+
+| # | Item | Status | Adversary | Fix in |
+|---|---|---|---|---|
+| 5.1 | **There is no transport, no server, and no authentication.** Nothing is sent anywhere yet. Certificate pinning, invite-code auth, and APNs are unbuilt. | OPEN | §1.2, §1.3 | P4–P5, closed P5.S14 |
+| 5.2 | **`AppSession` keeps `isAuthenticated`, `hasCompletedOnboarding`, and the app-lock flag in `UserDefaults`,** which is not a security boundary — it is trivially editable on a jailbroken device. This is UI-prototype state and must be replaced by a real gate (Keychain-backed session token, Face ID / `LAContext` for the lock) before any of it is load-bearing. | OPEN | §1.4 | P3.S01, P3.S02, closed P3.S06 |
+| 5.3 | **The app still runs on `MockStore`.** No screen is wired to `CryptoEngine`. Nothing in the UI reflects real cryptographic state. | OPEN | §1.2 | P5.S10 |
+| 5.4 | **Security UI claims controls that do not exist.** Worst first: `ChatInfoViews.swift:258-262` renders a **hardcoded array of twelve digit blocks** as the safety number, under the text *"If these numbers match on both devices, your connection is secure"* (`:300`), with a "Mark as Verified" button that only dismisses (`:306`). Two users performing the comparison ritual would see the *same constants*, conclude they match, and be told they are secure — the screen manufactures the exact false confidence that safety numbers exist to prevent, and would survive a careful user's check. Also: `AuthFlowView.swift:196` promises "Unlock with Face ID" while `:204,:209` call `session.unlock()` with no `LAContext`; `SettingsViews.swift:316` offers "Require Face ID"; `:164` ships hardcoded invite codes described as "one-time"; and `screenshotWarningEnabled`, `notificationPreviewsEnabled`, and `defaultDisappearingSeconds` are **write-only** — persisted by a toggle and never read by any behaviour. **Fixed 2026-07-28:** the fabricated safety number and "Mark as Verified" are gone, the verified badge is gated in one place (`VerificationDisplay`), unenforced toggles carry an `UnimplementedNotice`, and Face ID copy is removed. Guarded by the UI-honesty lint in `Scripts/verify-all.sh`, which fails on a denylist of retired claims across sources *and* the string catalog, and which was negative-tested by re-introducing one. Residual: the denylist is not exhaustive — it stops regressions, not new inventions. | CLOSED | §1.4, §1.8 | P1.S05 |
+| 5.5 | **Group chat UI ships while groups are cryptographically unreachable.** `MockStore.createGroup(name:members:)` and the group creation flows contradict locked decision §0.2.2 and AUDIT 3.7. Nothing sends today, so nothing leaks yet — but the screens invite a future wiring that has no encryption path. **Fixed 2026-07-28:** group creation is `#if DEBUG`; the Release-binary audit in `verify-all.sh` asserts `NewGroupView` and `createGroup` are absent. | CLOSED | §1.2 | P1.S06 |
+| 5.6 | **A debug authentication bypass ships in Release.** Every *setter* of `debugSkipToMain` is `#if DEBUG` fenced (`AuthFlowView.swift:29`, `OnboardingFlowView.swift:36`, `UICatalogView.swift:48`), but the property (`AppSession.swift:41`) and **both consumers** are not: `AppSession.showsMainApp:71` returns `true` unconditionally when it is set, and `RootView.swift:14` branches on it before any gate. A shipping binary therefore contains a single boolean that bypasses onboarding, authentication, and the app lock together, reachable by any future code path or runtime manipulation. `resetDemoState()` (`AppSession.swift:94`) and the destructive **"Leave & Reset Demo"** button (`SettingsViews.swift:94-99`, outside the `#endif` that fences the UI Catalog above it) ship the same way. **Fixed 2026-07-28:** the property and both consumers are fenced, not just the buttons; `verify-all.sh` step 8 greps the built Release binary for all five symbols. | CLOSED | §1.4 | P1.S07 |
+| 5.7 | **The authentication gate is expressed twice and can diverge.** `AppSession.showsMainApp:70-73` and `RootView.swift:14` each independently spell out "onboarded && authenticated && !locked". They agree today. Tightening one without the other silently leaves the weaker path live, and `RootView` is the one that actually decides what renders — while the `.animation` modifier on the same view reads the *other* definition. A security decision must have one home. **Fixed 2026-07-28:** `AppSession.Destination` is now the sole definition and `RootView` switches on it. Enforcement is structural rather than a gate — re-duplicating it would take a deliberate rewrite, but no check would catch it. | CLOSED | §1.4 | P1.S07 |
+| 5.8 | **The app lock never re-engages.** `lockIfNeeded()` exists but is called from exactly one place — the manual "Lock Now" button (`SettingsViews.swift:313`). Nothing observes `scenePhase`, `willResignActive`, or `didEnterBackground`, so with "Require Face ID" enabled the app locks only on a **cold launch** (`AppSession.init:67`). Background it and return: unlocked. Combined with C-03 (no `LAContext` at all) the feature is doubly non-functional while being presented as protection. | OPEN | §1.4 | P3.S02 |
+
+| 5.9 | **Onboarding asserted three security guarantees in the present tense, on the first screen a user sees** — "Only you and the people you chat with can read messages", "The relay forwards encrypted blobs", and "Identity and chat keys live in the **Secure Enclave**–backed Keychain". All three were false: the app has no encryption in its messaging path and no relay, and a libsignal identity key is an exportable software key in the data-protection Keychain, never the Enclave — a claim P10.S05 specifically forbids because the Enclave implies hardware non-extractability this key does not have. **Fixed 2026-07-28:** the pillars are stated as design, the Enclave claim is deleted, and a preview-build warning sits on the same screen. "Secure Enclave" is on the lint denylist. | CLOSED | §1.4, §1.8 | P1.S05 |
+| 5.10 | **Retired UI claims survived in the localization catalog.** Removing a string from the English UI leaves its translations behind: the built Czech bundle still shipped *"spojení je bezpečné"* ("your connection is secure"), *"Vyžadovat Face ID"*, *"Označit jako ověřené"*, and the Secure Enclave sentence after the English originals were gone. Orphaned entries do not render, but they are what a translator and a re-added key both pick up. **Fixed 2026-07-28:** 13 dead keys removed (223 remain, every survivor byte-identical), and the lint now searches `Localizable.xcstrings` as well as the sources. That fix was incomplete in two ways, both found the same day and recorded as 5.11: it left one orphan behind, and the lint that was meant to stop the class only matched claims anchored to the opening quote of a string — so a claim sitting mid-sentence inside a translation stayed invisible to it. | CLOSED | §1.4, §1.8 | P1.S05 |
+| 5.11 | **The Czech bundle shipped the debug affordances that `#if DEBUG` had removed from Release.** `#if DEBUG` fences *code*; `Localizable.xcstrings` is a *resource* and compiles in regardless. Xcode drops keys marked `extractionState: stale` from `en.lproj`, but emits every translated `stringUnit` — so the Release `.app` contained `cs.lproj/Localizable.strings` naming **"Skip to App"**, **"Unlock & Show Main"**, **"Demo Controls"**, **"UI Catalog"**, **"Reset Onboarding"** and **"Leave & Reset Demo"**, verified against the built artifact. No bypass is reachable (5.6 fenced the mechanism), but an attacker reading the IPA is handed the names and the existence of an auth-skip path, and the step-8 audit that was supposed to settle exactly this question searched only the Mach-O executable, which was clean. **Fixed 2026-07-28:** 18 debug-only translations stripped and 1 orphan removed (222 keys remain); step 8 now searches the whole bundle, negative-tested against the pre-fix build; and `Scripts/verify-localization.py` replaces the shell lint — it tracks `#if DEBUG` regions, so a translation attached to a DEBUG-only string fails the gate, and it matches claims anywhere in a string in any language rather than at the opening quote. It carries a `--self-test` that reintroduces each defect and asserts the check still fires, run by `verify-all.sh` before the check itself is believed. | CLOSED | §1.4, §1.8 | P1.S12 |
+
+## 6. Platform and release
+
+| # | Item | Status | Adversary | Fix in |
+|---|---|---|---|---|
+| 6.1 | **`Cipher/PrivacyInfo.xcprivacy` declares only Cipher's own required-reason API usage.** libsignal ships no manifest, so its usage must be enumerated from its sources and merged in. Blocks App Store submission until done. | OPEN | — | P1.S11 → P8.S05 |
+| 6.2 | **libsignal's acknowledgements are not surfaced in an About screen.** AGPL obligation 3 in `NOTICE.md`. | OPEN | — | P8.S07 |
+| 6.3 | **`ITSAppUsesNonExemptEncryption` is not declared.** Cipher contains encryption; the declaration and any self-classification report are legal determinations, not engineering ones. | OPEN | — | P8.S06 |
+| 6.4 | **No jailbreak or debugger detection, no screenshot protection.** Listed as optional in the architecture notes. They are hardening, not controls — none of them stops an attacker who already has code execution. | OPEN | §1.4 | P10.S04 |
+| 6.5 | **The app-target manifest gate tracks `.swift`, `.xcprivacy`, and `.entitlements` under `Cipher/`.** Other resources can still join the shipping bundle without a review signal because the target uses a synchronized folder. Security-critical code does not live there — it lives in `CipherCrypto/`, which uses explicit target membership. | ACCEPTED | §1.7 | — |
+| 6.6 | **The crypto test bundle is hosted by the app.** A host-less bundle has no keychain access group, so the Keychain — where the identity key lives — would be the one component with no coverage. Attaching entitlements to the bundle does not work: for simulator SDKs Xcode sets `ENTITLEMENTS_REQUIRED = NO` and skips entitlement processing entirely, so `CODE_SIGN_ENTITLEMENTS` is silently ignored. Two costs are accepted: a broken app target blocks the security suite, and the run now launches an app, so concurrent `xcodebuild` invocations against one simulator can fail preflight with `RequestDenied … Busy`. `Scripts/verify-all.sh` serialises runs and retries once on a preflight failure. | ACCEPTED | — | — |

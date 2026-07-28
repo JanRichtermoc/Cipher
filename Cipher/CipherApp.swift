@@ -2,16 +2,20 @@
 //  CipherApp.swift
 //  Cipher
 //
-//  Created by admin on 26.07.2026.
-//
 
 import SwiftUI
 
 @main
 struct CipherApp: App {
+    @State private var session = AppSession()
+    @State private var store = MockStore()
+
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            RootView()
+                .environment(session)
+                .environment(store)
+                .tint(CipherTheme.accent)
         }
     }
 }

@@ -1,0 +1,47 @@
+# Xcode
+build/
+DerivedData/
+*.xcuserstate
+*.xcscmblueprint
+*.moved-aside
+*.hmap
+*.ipa
+*.dSYM.zip
+*.dSYM
+
+# Per-user Xcode state. Shared schemes live in xcshareddata and ARE committed:
+# a test target with no shared scheme means CI silently runs zero tests.
+xcuserdata/
+
+# Ruby toolchain. Gemfile.lock IS committed (it pins CocoaPods and every gem,
+# with checksums); the installed gems themselves are not.
+#
+# Both cases: the directory on disk is `Vendor/`, and this only matched it because
+# `core.ignorecase` happens to be true on a case-insensitive volume. On a case-sensitive
+# checkout the lowercase pattern alone silently stops ignoring anything, and ~2000 gem
+# files appear as untracked.
+Vendor/bundle/
+vendor/bundle/
+.bundle/
+
+# CocoaPods
+#
+# Pods/ IS committed deliberately — see Vendor/libsignal/DECISIONS.md.
+# It makes the libsignal Swift wrapper diffable on every dependency bump, which
+# matters for a cryptographic dependency. Note it does NOT contain the Rust
+# binary: libsignal_ffi.a is downloaded at build time and pinned by checksum.
+#
+# Nothing to ignore here; this block exists so the choice is not mistaken for an
+# oversight by a future reader.
+
+# The libsignal source snapshot that predated proper dependency management.
+# Deleted in M1; this entry stops it reappearing.
+libsignal-main.zip
+
+# Python bytecode. Scripts/verify-localization.py is imported by maintenance one-offs,
+# which leaves a __pycache__ behind next to the gate itself.
+__pycache__/
+*.pyc
+
+# macOS
+.DS_Store

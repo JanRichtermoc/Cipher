@@ -2,23 +2,18 @@
 //  ContentView.swift
 //  Cipher
 //
-//  Created by admin on 26.07.2026.
-//
 
 import SwiftUI
 
+/// Kept for Xcode template compatibility; app entry uses `RootView` via `CipherApp`.
 struct ContentView: View {
     var body: some View {
-        VStack {
-            Image(systemName: "globe")
-                .imageScale(.large)
-                .foregroundStyle(.tint)
-            Text("Hello, world!")
-        }
-        .padding()
+        RootView()
     }
 }
 
 #Preview {
     ContentView()
+        .environment(AppSession())
+        .environment(MockStore())
 }
