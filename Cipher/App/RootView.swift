@@ -26,6 +26,21 @@ struct RootView: View {
                 OnboardingFlowView()
             }
         }
+        // P3.S04 — cover the UI whenever the app is not frontmost.
+        //
+        // iOS photographs the window to build the app-switcher card, and that image is
+        // written to disk in the app's own container. Without this the card — and the file
+        // — is whatever conversation was open. It is the one screenshot of your messages
+        // that the system takes for you, on every switch away, with no user action.
+        //
+        // Separate from the app lock on purpose. The lock is opt-in and only re-locks when
+        // enabled; this runs unconditionally, because the snapshot happens either way.
+        .overlay {
+            if scenePhase != .active {
+                SnapshotRedaction()
+                    .transition(.opacity)
+            }
+        }
         .animation(.smooth, value: session.destination)
         // The other half of the app lock, and the half that was missing.
         //
@@ -41,6 +56,23 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active { session.lockIfNeeded() }
         }
+    }
+}
+
+/// What the app-switcher card shows instead of your messages.
+///
+/// Deliberately opaque and deliberately not a blur: a blur of legible text at switcher size
+/// can still be read, and `UIBlurEffect` renders from the very content being hidden.
+private struct SnapshotRedaction: View {
+    var body: some View {
+        ZStack {
+            Rectangle()
+                .fill(.background)
+            Image(systemName: "lock.circle.fill")
+                .font(.system(size: 56))
+                .foregroundStyle(CipherTheme.accent)
+        }
+        .ignoresSafeArea()
     }
 }
 

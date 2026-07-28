@@ -16,8 +16,11 @@ E2E messenger.
 ```
 CURRENT PHASE:  P3 — Real client auth gate & app lock. P1, P2 COMPLETE.
 DONE:           P1, P2 all steps. P3.S01 (Keychain auth gate), P3.S02 (real lock).
-NEXT STEP:      P3.S03 — clipboard policy. Then P3.S04 (app-switcher redaction),
-                P3.S05 (PII out of UserDefaults), P3.S06 (close AUDIT 5.2).
+DONE ALSO:      P3.S04 (app-switcher redaction, AUDIT 4.5).
+NEXT STEP:      P3.S03 — clipboard policy. Then the screenshot-warning decision
+                (back it with UIApplication.userDidTakeScreenshotNotification and
+                UIScreen.isCaptured, or remove the toggle — it currently warns
+                about nothing), P3.S05 (PII out of UserDefaults), P3.S06.
 TESTS:          126 passing (106 CipherCrypto + 20 Cipher) · verify-all.sh 10/10
                 CI green on main since 2026-07-28, first run, all gates.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
