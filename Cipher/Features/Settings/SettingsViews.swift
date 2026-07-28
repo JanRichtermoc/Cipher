@@ -194,7 +194,7 @@ struct InviteFriendsView: View {
                             .font(.body.monospaced().weight(.medium))
                         Spacer()
                         Button("Copy") {
-                            UIPasteboard.general.string = code
+                            SecurePasteboard.copy(code)
                             UIImpactFeedbackGenerator(style: .light).impactOccurred()
                         }
                         .font(.subheadline.weight(.semibold))
@@ -356,11 +356,6 @@ struct PrivacySecurityView: View {
                 if session.appLockEnabled {
                     Button("Lock Now") { session.lockIfNeeded() }
                 }
-            }
-
-            Section("Screen Security") {
-                Toggle("Screenshot Warning", isOn: $session.screenshotWarningEnabled)
-                    .unimplemented("Nothing observes screenshots yet, so this warns you about nothing.")
             }
 
             Section("Disappearing Messages") {

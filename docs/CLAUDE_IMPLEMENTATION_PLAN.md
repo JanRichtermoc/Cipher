@@ -14,13 +14,12 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P3 — Real client auth gate & app lock. P1, P2 COMPLETE.
+CURRENT PHASE:  P3 COMPLETE. P1, P2 COMPLETE. Next is P4 — backend design.
 DONE:           P1, P2 all steps. P3.S01 (Keychain auth gate), P3.S02 (real lock).
-DONE ALSO:      P3.S04 (app-switcher redaction, AUDIT 4.5).
-NEXT STEP:      P3.S03 — clipboard policy. Then the screenshot-warning decision
-                (back it with UIApplication.userDidTakeScreenshotNotification and
-                UIScreen.isCaptured, or remove the toggle — it currently warns
-                about nothing), P3.S05 (PII out of UserDefaults), P3.S06.
+NEXT STEP:      P4.S01 — write docs/BACKEND.md. Design only; buy nothing. Read
+                THREAT_MODEL.md first: the relay is hostile/seizable, so the
+                schema is ciphertext-only and retention is delete-on-delivery
+                plus a TTL sweep. No admin API by default.
 TESTS:          126 passing (106 CipherCrypto + 20 Cipher) · verify-all.sh 10/10
                 CI green on main since 2026-07-28, first run, all gates.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
@@ -116,7 +115,7 @@ a check that stops working fails loudly instead of passing vacuously.
 | 3.1 | Base-key witness FIFO eviction | P4.S06 + P6.S01, resolved P6.S02 |
 | 4.3 | No message database | **P5.S11** (moved from P6) |
 | 5.1 | No transport / server / auth | P4–P5 |
-| 5.2 | `AppSession` auth/lock in UserDefaults | P3.S06 |
+| 4.7 | Profile PII (name, username, about) in UserDefaults | P5.S11 |
 | 5.3 | App still on `MockStore` | P5.S10 |
 | 6.2 | Acknowledgements not in About screen | P8.S07 |
 | 6.3 | `ITSAppUsesNonExemptEncryption` undeclared | P8.S06 (legal) |

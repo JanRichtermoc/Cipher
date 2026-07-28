@@ -35,9 +35,6 @@ final class AppSession {
             if !appLockEnabled { isAppLocked = false }
         }
     }
-    var screenshotWarningEnabled: Bool {
-        didSet { defaults.set(screenshotWarningEnabled, forKey: Keys.screenshot) }
-    }
     var defaultDisappearingSeconds: Int {
         didSet { defaults.set(defaultDisappearingSeconds, forKey: Keys.disappearing) }
     }
@@ -68,7 +65,6 @@ final class AppSession {
     private enum Keys {
         static let onboarding = "cipher.hasCompletedOnboarding"
         static let appLock = "cipher.appLockEnabled"
-        static let screenshot = "cipher.screenshotWarning"
         static let disappearing = "cipher.defaultDisappearing"
         static let previews = "cipher.notificationPreviews"
         static let displayName = "cipher.displayName"
@@ -98,10 +94,16 @@ final class AppSession {
         // could reach. Removed on first launch of any build that has this line.
         defaults.removeObject(forKey: "cipher.isAuthenticated")
 
+        // The screenshot-warning toggle was removed outright rather than implemented: iOS
+        // can report that a screenshot was taken, but cannot prevent one, so the control
+        // could only ever have told a user something had already happened. A setting whose
+        // honest description is "this does nothing you can act on" is worse than no setting.
+        // Its stored value goes too, so it cannot look meaningful to a future reader.
+        defaults.removeObject(forKey: "cipher.screenshotWarning")
+
         let lockEnabled = defaults.object(forKey: Keys.appLock) as? Bool ?? false
         self.hasCompletedOnboarding = defaults.bool(forKey: Keys.onboarding)
         self.appLockEnabled = lockEnabled
-        self.screenshotWarningEnabled = defaults.object(forKey: Keys.screenshot) as? Bool ?? true
         self.defaultDisappearingSeconds = defaults.object(forKey: Keys.disappearing) as? Int ?? 0
         self.notificationPreviewsEnabled = defaults.object(forKey: Keys.previews) as? Bool ?? true
         self.displayName = defaults.string(forKey: Keys.displayName) ?? "You"
@@ -180,6 +182,16 @@ final class AppSession {
         try sessions.clear()
         credential = nil
         isAppLocked = false
+
+        // Profile fields go too. They live in UserDefaults — unencrypted, readable by
+        // anything with container access — and leaving a display name and an "about" behind
+        // after sign-out means the device still says who used it. Not a secret, but PII, and
+        // sign-out is the moment a user expects it gone. The encrypted store that should
+        // hold this properly is P5.S11; until then this at least does not outlive the
+        // session. See AUDIT 4.7.
+        displayName = ""
+        username = ""
+        about = ""
     }
 
     /// Whether the device can perform the owner check at all.

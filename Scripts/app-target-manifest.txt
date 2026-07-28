@@ -26,4 +26,5 @@ Cipher/MockData/MockStore.swift
 Cipher/Models/Models.swift
 Cipher/PrivacyInfo.xcprivacy
 Cipher/Security/DeviceAuthenticator.swift
+Cipher/Security/SecurePasteboard.swift
 Cipher/Security/SessionCredential.swift
