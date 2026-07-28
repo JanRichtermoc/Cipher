@@ -204,6 +204,44 @@ sync_sources(project, tests,     'CipherCryptoTests')
 sync_sources(project, app_tests, 'CipherTests')
 
 # ---------------------------------------------------------------------------
+# The app target's language mode
+#
+# Every target this script creates is Swift 6 with SWIFT_STRICT_CONCURRENCY =
+# complete. The app target is not created here — it came from the Xcode template
+# in P0 — and the template ships SWIFT_VERSION = 5.0. That left the one module
+# holding the Keychain credential, the device-owner check and the lock state
+# compiling under the weakest concurrency rules in the project, while
+# CipherTests, which exercises exactly that code, compiled under the strictest.
+#
+# The gap is not cosmetic. In Swift 5 language mode SWIFT_STRICT_CONCURRENCY
+# defaults to `minimal`: a `Sendable` conformance is essentially taken on trust,
+# and cross-actor access that Swift 6 rejects at compile time is a warning or
+# nothing at all. `SessionStore` and `DeviceAuthenticator` both declare
+# `Sendable` and both are reachable from `AppSession`'s async unlock path.
+#
+# Set here rather than in the Xcode UI for the same reason as the Face ID key:
+# a build setting that only exists because someone once clicked it is a setting
+# the next regeneration silently drops.
+#
+# SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor is already set at project level and
+# is what makes this affordable — SwiftUI view code stays implicitly
+# main-actor-isolated, so raising the language mode does not require annotating
+# every view.
+#
+# Warnings-as-errors is deliberately NOT set on the app target. CRYPTO_COMMON
+# sets it for the crypto module, where a warning is a defect in code we wrote.
+# The app target compiles against SwiftUI, whose deprecations arrive on Apple's
+# schedule rather than ours, and a toolchain bump that turns a new deprecation
+# into a build failure would block security work rather than enable it.
+# ---------------------------------------------------------------------------
+app.build_configurations.each do |config|
+  config.build_settings['SWIFT_VERSION']             = '6.0'
+  config.build_settings['SWIFT_STRICT_CONCURRENCY']  = 'complete'
+  config.build_settings['SWIFT_APPROACHABLE_CONCURRENCY'] = 'YES'
+end
+puts "#{APP_TARGET}: Swift 6, strict concurrency complete"
+
+# ---------------------------------------------------------------------------
 # App Info.plist keys that are security-relevant
 #
 # NSFaceIDUsageDescription is required: without it the first Face ID evaluation
