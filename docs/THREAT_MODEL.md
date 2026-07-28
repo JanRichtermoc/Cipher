@@ -182,8 +182,17 @@ arrive without a break.
 ### 3.3 Push-token linkage
 
 **Decision:** treat the token↔account mapping as metadata that survives message deletion, because it
-does. Store it hashed, rotate it, and delete it with the account. Otherwise zero retention is
-undermined by the one table that has to persist.
+does. Rotate it, and delete it with the account. Otherwise zero retention is undermined by the one
+table that has to persist.
+
+**Amended 2026-07-29 (P4.S01, AUDIT 6.6).** This section originally said to store the token
+*hashed*. That is not implementable: the token must be replayed verbatim to APNs, so a one-way
+function cannot be used, and the wording promised a guarantee stronger than anything achievable.
+The strongest achievable property is encryption at rest under a key held only in the service
+environment and never in the database, so that a dump, a backup, or a stolen replica is insufficient
+on its own. It does **not** defeat §1.1 host seizure, where the environment is seized with the disk.
+Rotation and deletion-with-the-account are what do the real work there, and they were always the
+substance of this position. Schema in [`BACKEND.md`](BACKEND.md) §2.9.
 
 ### 3.4 Identifiers — invite codes only
 

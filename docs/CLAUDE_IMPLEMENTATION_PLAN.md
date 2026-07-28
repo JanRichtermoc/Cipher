@@ -14,12 +14,15 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P3 COMPLETE. P1, P2 COMPLETE. Next is P4 — backend design.
-DONE:           P1, P2 all steps. P3.S01 (Keychain auth gate), P3.S02 (real lock).
-NEXT STEP:      P4.S01 — write docs/BACKEND.md. Design only; buy nothing. Read
-                THREAT_MODEL.md first: the relay is hostile/seizable, so the
-                schema is ciphertext-only and retention is delete-on-delivery
-                plus a TTL sweep. No admin API by default.
+CURRENT PHASE:  P4 in progress. P1, P2, P3 COMPLETE.
+DONE:           P1, P2, P3 all steps. P4.S01 (docs/BACKEND.md).
+NEXT STEP:      P4.S02 — scaffold the Go module + Docker Compose (Postgres,
+                Redis, API) so `docker compose up` serves /health. Design is
+                settled in docs/BACKEND.md; implement that schema, not a new
+                one. Publish ONLY the api port, and only to localhost —
+                Postgres and Redis must not be reachable from the host
+                network. Redis persistence OFF (RDB and AOF), or it becomes
+                an on-disk retention channel. Still buy nothing.
 TESTS:          126 passing (106 CipherCrypto + 20 Cipher) · verify-all.sh 10/10
                 CI green on main since 2026-07-28, first run, all gates.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)

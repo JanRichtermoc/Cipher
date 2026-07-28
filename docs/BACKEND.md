@@ -1,0 +1,440 @@
+# Cipher relay — backend design
+
+**Status:** design only (P4.S01). Nothing here is built yet; P4.S02 scaffolds it on Docker Compose,
+and nothing is purchased before P5.
+
+**Read first:** [`THREAT_MODEL.md`](THREAT_MODEL.md) in full — this document is an application of it.
+[`Envelope.swift`](../CipherCrypto/Sources/Wire/Envelope.swift) defines the only payload the relay
+carries; [`PeerKeyBundle.swift`](../CipherCrypto/Sources/Engine/PeerKeyBundle.swift) defines the
+shape of the prekey directory.
+
+---
+
+## 0. The one sentence this design exists to satisfy
+
+> The relay is assumed hostile or seizable (`THREAT_MODEL.md` §0, §1.1). Its operator is not
+> trusted, including when its operator is us.
+
+Everything below follows from that. Two consequences shape every decision on this page:
+
+1. **Encryption is not the primary server-side control — deletion is.** A seized database that is
+   encrypted is a bet on the cipher and on key hygiene across the whole retained lifetime of the
+   data. A seized database that is *empty* is not a bet. Where a choice exists between storing
+   something safely and not storing it, this design does not store it.
+2. **A column is a permanent record; an inference is not.** Timing correlation lets an observer
+   *guess* who talks to whom. A `sender` column *proves* it, to anyone holding a disk image, years
+   later, with no observation required. This is why several fields that would be convenient are
+   absent below, and why their absence is written down rather than left to be re-litigated.
+
+---
+
+## 1. Service modules
+
+Go, standard library HTTP with a thin router, one binary. Six modules, each with a single reason to
+exist. No framework, because a framework is a dependency surface and standing prohibition 1 applies
+to the server as much as the client.
+
+| Module | Responsibility | Never does |
+|---|---|---|
+| `health` | Liveness and readiness. No auth, no data. | Report version, build, or user counts |
+| `invite` | Issue and redeem single-use, expiring invite codes. Creates an account on redemption. | Record who invited whom (§3.2 below) |
+| `auth` | Issue, rotate, and revoke opaque session tokens. Authenticates every other route. | Hold claims in the token itself |
+| `directory` | Prekey bundle upload and dispense. The one endpoint whose rate limit is load-bearing. | Serve a bundle to an unauthenticated caller |
+| `relay` | Store-and-forward `Envelope` bytes. Delete on acknowledged delivery. | Parse into the ciphertext |
+| `blobs` | Attachment slots: opaque bytes with a size cap and a TTL. | Inspect, transcode, or scan content |
+
+There is deliberately **no seventh module**. See §8.
+
+---
+
+## 2. Data model
+
+PostgreSQL. Eight tables, thirty-one columns, and every one is justified below against
+`THREAT_MODEL.md` §1.1: *if a seized database revealed this, what would the adversary learn, and is
+that price worth paying?*
+
+Conventions used throughout:
+
+- **No soft deletes.** No `deleted_at`, no `is_revoked`, no `delivered` flag. A row that has served
+  its purpose is removed with `DELETE`. A flag is a record that outlives the thing it describes,
+  which is the exact failure mode §3.1 exists to prevent.
+- **No `created_at` unless something reads it.** Creation timestamps are an activity trace acquired
+  by habit rather than by need. Where a lifetime is required, `expires_at` carries it and nothing
+  else does.
+- **Date, not timestamp, where precision is not needed.** `DATE` instead of `TIMESTAMPTZ` reduces an
+  activity trace from second-resolution to day-resolution at no functional cost.
+- **Identifiers are random, never sequential.** A `BIGSERIAL` message id leaks the relay's total
+  message volume to anyone who observes a single value, and leaks ordering between accounts.
+
+### 2.1 `accounts`
+
+One row per installation. Created only by redeeming an invite.
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `aci` | `UUID PRIMARY KEY` | The routing address. `ServiceIdentifier` on the client; messages must be addressed to *something*. Server-generated (UUIDv4) at redemption and adopted by the client via `CryptoEngine.adoptLocalAddress`. | An opaque identifier with no link to a person, phone, email, or device. This is the whole point of §3.4. |
+| `identity_key` | `BYTEA NOT NULL` | The peer's long-term **public** identity key, required in every dispensed bundle. Stored on the account rather than repeated per prekey row, so there is exactly one copy to serve and rotation has one place to happen. | A public key. Public by construction; it is what safety numbers are computed from. |
+| `registration_id` | `INTEGER NOT NULL` | Required by libsignal's `PreKeyBundle`. Without it `processPreKeyBundle` cannot run. | A small integer, chosen randomly by the client. Correlatable across a reinstall only if it does not change — and it does. |
+| `last_seen` | `DATE NOT NULL` | The only input to the abandoned-account sweep (§4). Day resolution, not second. | That an account was active on a given day. This is a real cost, accepted for a real need, and reduced as far as it can be without losing the sweep. |
+
+**Absent on purpose:** `created_at` (nothing reads it; `last_seen` covers the sweep), `display_name`,
+`username`, `about` (profile data is client-side only — the server has no concept of a profile),
+`device_id` and a `devices` table (single-device is a locked decision; adding it is a `wireVersion`
+break in `Envelope`, recorded there, not smuggled into the schema early).
+
+### 2.2 `invites`
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `code_hash` | `BYTEA PRIMARY KEY` | SHA-256 of the code. Redemption hashes the presented code and looks it up, so the relay can validate a code it cannot reproduce. | Nothing usable. See the hash note below. |
+| `expires_at` | `TIMESTAMPTZ NOT NULL` | Enforces expiry (P4.S03) and drives the sweep. | That an unredeemed invite exists and when it lapses. |
+
+Two columns, and both are needed. **`created_by` is deliberately absent** — storing the issuer would
+put the invite graph, which is the social graph of a closed circle, permanently on disk. It is the
+single most valuable thing a seizure of a five-person messenger could recover, and it is not needed:
+rate-limiting invite creation per account is done with a Redis counter (§3) that expires, not with a
+column that does not. The cost is that an inviter's subtree cannot be revoked in bulk. At this scale
+that is a manual operation on a handful of accounts, which is the correct trade.
+
+**A redeemed invite row is `DELETE`d, not marked used.** This is better than a `used` flag on every
+axis: a replayed code then hits an unknown-code path and is rejected identically, single-use is
+enforced by the row's absence rather than by remembering to check a flag, and no record survives
+linking an account to the invite that created it.
+
+**On the hash:** SHA-256 is correct here *because the code is server-generated with 128 bits of
+entropy* — brute-forcing the preimage is infeasible, so a password KDF would buy nothing for real
+cost. That argument is entirely dependent on the entropy assumption. **If invite codes ever become
+human-chosen or shortened, this must change to a memory-hard KDF**, and this paragraph is the reason
+that is not a silent decision.
+
+### 2.3 `session_tokens`
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `token_hash` | `BYTEA PRIMARY KEY` | SHA-256 of a 256-bit random token. **The token itself is never stored** (P4.S04): a database dump must not yield credentials that authenticate as a user. Same entropy argument as §2.2. | Nothing usable. |
+| `aci` | `UUID NOT NULL REFERENCES accounts(aci) ON DELETE CASCADE` | The token has to authenticate *someone*. The cascade is how account deletion actually revokes access rather than orphaning it. | Which account a live session belongs to — bounded by expiry. |
+| `expires_at` | `TIMESTAMPTZ NOT NULL` | Expiry and rotation. | When a session lapses. |
+
+**Opaque random tokens, not JWTs.** A JWT carries its claims in the token, so revocation requires a
+denylist — which is a second store that must be consulted on every request and that grows forever.
+An opaque token is a lookup by construction: revocation is `DELETE`, and it is immediate. There is
+no `revoked` column for the same reason there is no `used` column on invites.
+
+### 2.4 `one_time_prekeys`
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `aci` | `UUID NOT NULL REFERENCES accounts(aci) ON DELETE CASCADE` | Whose pool this is. Part of the primary key. | That an account has published prekeys — which is implied by having an account. |
+| `key_id` | `INTEGER NOT NULL` | The client's own identifier for the key, echoed back in the bundle so the client can find the private half. Part of the primary key. | A counter local to one account. |
+| `public_key` | `BYTEA NOT NULL` | The one-time prekey. Public. | A public key that has, by the time it is seized, either been dispensed and deleted or never used. |
+
+`PRIMARY KEY (aci, key_id)`. **A dispensed row is deleted in the same transaction that serves it** —
+that is what "one-time" means, and doing it transactionally is what stops a concurrent fetch from
+handing the same prekey to two peers.
+
+### 2.5 `signed_prekeys`
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `aci` | `UUID PRIMARY KEY REFERENCES accounts(aci) ON DELETE CASCADE` | One live signed prekey per account. `PRIMARY KEY` rather than part of a compound key **is** the "exactly one" constraint — enforced by the schema, not by application code remembering to delete the old one. | Nothing beyond account existence. |
+| `key_id` | `INTEGER NOT NULL` | Echoed in the bundle; the client resolves the private half by it. | A counter. |
+| `public_key` | `BYTEA NOT NULL` | The signed prekey. Public. | A public key. |
+| `signature` | `BYTEA NOT NULL` | Signed by the identity key. The relay **does not verify it** — `processPreKeyBundle` does, on the client, on every use. Verifying here would be a second, unreviewed copy of a signature check, and a client that trusted the server's verdict would have no protection from a hostile relay at all. | A signature over a public key. |
+
+Rotation replaces the row atomically (`INSERT … ON CONFLICT (aci) DO UPDATE`). No previous-key grace
+window is kept. **Consequence, stated rather than discovered later:** a bundle fetched in the instant
+before a rotation can fail session setup once, and the client retries with the new bundle. That is a
+retry, not data loss, and it is cheaper than a table that retains superseded keys.
+
+### 2.6 `kyber_prekeys`
+
+PQXDH (locked decision — Kyber is mandatory, never optional).
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `aci` | `UUID NOT NULL REFERENCES accounts(aci) ON DELETE CASCADE` | Whose pool. Part of the primary key. | Nothing beyond account existence. |
+| `key_id` | `INTEGER NOT NULL` | Echoed in the bundle. Part of the primary key. | A counter. |
+| `public_key` | `BYTEA NOT NULL` | The Kyber prekey. Public. | A post-quantum public key. |
+| `signature` | `BYTEA NOT NULL` | Signed by the identity key; verified client-side, as in §2.5. | A signature. |
+| `last_resort` | `BOOLEAN NOT NULL` | Distinguishes the reusable last-resort key from one-time Kyber prekeys. The dispense path prefers a one-time row and deletes it; it falls back to the last-resort row and does not. Without this column the server cannot tell which rows it may delete, and would either exhaust the pool permanently or never rotate. | Which key is the fallback. Not sensitive; it is inferable from usage anyway. |
+
+`PRIMARY KEY (aci, key_id)`, with a partial unique index enforcing **at most one** `last_resort` row
+per account.
+
+**The honest cost of the fallback:** when the one-time pool is empty, PQXDH runs against a reused
+last-resort key, so the KEM contribution to that session's secret is shared with every other session
+that also fell back. Classical X25519 forward secrecy is unaffected. This is precisely the pressure
+that makes prekey-fetch rate limiting (§5, AUDIT 3.1) a security control rather than a capacity
+control — an attacker who can drain the one-time pool on demand can force every new session onto the
+reused key.
+
+### 2.7 `messages`
+
+The inbox. This is the table a seizure is actually after.
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `id` | `UUID PRIMARY KEY` | The acknowledgement handle: the client acks by id and the row is deleted. Random UUIDv4, **not** a sequence — a monotonic id would leak the relay's total message volume and cross-account ordering to anyone who saw one value. | Nothing. |
+| `recipient_aci` | `UUID NOT NULL REFERENCES accounts(aci) ON DELETE CASCADE` | Delivery is impossible without it. This is the irreducible metadata cost of a store-and-forward relay. | Who has mail waiting — for exactly as long as it waits. Sealed sender (§3.2 of the threat model, P7) does **not** remove this column; it removes the sender, not the recipient. |
+| `envelope` | `BYTEA NOT NULL` | The opaque `Envelope` bytes. The server checks length only. | See the warning below. |
+| `expires_at` | `TIMESTAMPTZ NOT NULL` | Drives the TTL sweep (§4). The only lifetime field; there is no `created_at`. | When an undelivered message lapses. |
+
+**Absent on purpose:** `sender_aci` (deriving it would require parsing the envelope, which §1 forbids
+and which no delivery decision needs), `delivered` (delivered means deleted), `read`, `retry_count`,
+and any `archive` table.
+
+> **The limit of the ciphertext-only claim, stated plainly.**
+> `Envelope` wire format v1 carries `sender` **in cleartext at offset 2**. The relay does not read,
+> index, or store it separately — but it is inside `envelope`, so a seized database *does* reveal
+> sender→recipient pairs **for messages that were in flight at the moment of seizure**.
+>
+> "Ciphertext-only" means no plaintext *content*, ever, in any column. It does not yet mean no
+> sender. Two controls bound this and neither is a substitute for the other: delete-on-delivery (§4)
+> shrinks the exposed set to whatever is undelivered right now, and sealed sender (P7) removes the
+> field from the wire entirely. Until P7 lands, this is the largest metadata residual in the design
+> and it is recorded here rather than glossed.
+
+### 2.8 `attachments`
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `id` | `UUID PRIMARY KEY` | The slot identifier, and **the capability**: 122 bits of randomness, delivered to the recipient inside the end-to-end ciphertext. Possession of the id is authorisation to download. | Nothing. |
+| `size_bytes` | `INTEGER NOT NULL` | Enforces the cap at commit time and lets the sweep account for freed storage. | The size of an encrypted blob. Padding is P7 work (§3.5). |
+| `expires_at` | `TIMESTAMPTZ NOT NULL` | TTL sweep. Attachments expire whether or not they are fetched. | When a blob lapses. |
+
+**No `owner_aci`.** Because the id is the capability, the server never needs to know who uploaded a
+blob or who is entitled to read it — and therefore never records the edge. Upload quota is enforced
+by a Redis counter against the session token (§3), which expires; the alternative, an owner column,
+would not. Blob bytes live on the filesystem keyed by `id`, not in Postgres: shredding a file is one
+`unlink`, whereas a deleted `BYTEA` persists in table bloat and WAL until vacuum and WAL rotation
+catch up.
+
+### 2.9 `push_tokens`
+
+| Column | Type | Why it exists | What a seizure learns |
+|---|---|---|---|
+| `aci` | `UUID PRIMARY KEY REFERENCES accounts(aci) ON DELETE CASCADE` | The token has to map to an account to be useful, and the cascade is what makes §3.3's "delete it with the account" actually happen. | That an account has push enabled. |
+| `token_ciphertext` | `BYTEA NOT NULL` | The APNs device token, encrypted with XChaCha20-Poly1305 under a key held **only in the service's environment, never in Postgres**. | Nothing from a database dump alone. From a full host compromise, the token. |
+| `token_nonce` | `BYTEA NOT NULL` | Per-row nonce for the above. Stored because it must be, and it is not secret. | Nothing. |
+| `rotated_at` | `DATE NOT NULL` | Drives the rotation policy in §3.3 of the threat model. Day resolution. | The day a token was last rotated. |
+
+> **A correction to `THREAT_MODEL.md` §3.3.** That section says to store the push token *hashed*.
+> That is not implementable: the token must be replayed verbatim to APNs, so a one-way function
+> cannot be used. This is not a small wording slip — "hashed" would read as a stronger guarantee than
+> anything achievable here.
+>
+> The strongest achievable property is encryption at rest under a key that is not in the database, so
+> that a Postgres dump, a backup, or a stolen replica is insufficient on its own. **It does not
+> defeat §1.1 host seizure**, where the process environment is seized along with the disk. The
+> controls that do the real work there are the ones §3.3 already names and this schema implements:
+> rotate, and delete with the account. Recorded as a finding in [`AUDIT.md`](AUDIT.md) so the threat
+> model is amended rather than quietly diverged from.
+
+---
+
+## 3. Redis — ephemeral only
+
+Redis holds **nothing that must survive a restart**, and losing all of it costs at most some
+in-flight rate-limit state.
+
+| Key space | Contents | TTL |
+|---|---|---|
+| `rl:*` | Rate-limit counters (§5) | Per limit, seconds to minutes |
+| `presence:*` | Which accounts hold a live delivery connection, for online fan-out | Connection lifetime |
+| `quota:*` | Per-token attachment upload accounting | 24 h |
+
+Hard rules, because Redis defaults are wrong for this:
+
+- **Persistence disabled** — no RDB snapshots, no AOF. On by default in most images, and it would
+  quietly make Redis a second on-disk retention channel holding exactly the routing metadata this
+  design works to keep off disk. This is the single most important line in this section.
+- **Every key has a TTL.** A key without one is a leak by definition.
+- **No messages, no envelopes, no keys, no tokens** — only hashes of tokens where a counter must be
+  keyed by session.
+- **Bound to the Compose network only**, never published to the host (P4.S02 explicitly forbids it),
+  and `requirepass` set even so.
+
+---
+
+## 4. Retention policy (`THREAT_MODEL.md` §3.1)
+
+The highest-value control on the server, and nearly free at schema-design time.
+
+| Data | Deleted when |
+|---|---|
+| Message | The instant delivery is **acknowledged** — same transaction, `DELETE`, no flag |
+| Undelivered message | TTL sweep at **30 days** |
+| One-time prekey | Dispensed (same transaction) |
+| One-time Kyber prekey | Dispensed (same transaction) |
+| Invite | Redeemed, or expiry sweep |
+| Session token | Expiry sweep, sign-out, or account deletion (cascade) |
+| Attachment blob + row | Fetched-and-acked, or TTL sweep at **7 days** |
+| Account and everything cascading from it | Explicit deletion, or abandonment sweep at **180 days** of no `last_seen` |
+| Request logs | 24 h (§7) |
+
+Rules that make this real rather than aspirational:
+
+- **Acknowledged means gone.** P4.S08's test asserts the row is absent, not that a flag flipped.
+  A test that accepts a flag would pass against a design that retains everything forever.
+- **No archive table, no `messages_history`, no "just in case" dump.** If it would be useful to us
+  after delivery, it is useful to whoever seizes the host.
+- **Backups inherit this.** A nightly `pg_dump` retained for a month reintroduces every deleted
+  message with a delay. Backups cover schema and account rows only — losing undelivered messages in
+  a restore is the correct outcome, not a gap to fix.
+- **The user-visible consequence is surfaced honestly**: a device offline past 30 days loses
+  undelivered messages. That is a UI string subject to the same honesty rule as every other, and it
+  must say so plainly rather than presenting silent loss as delivery.
+
+---
+
+## 5. Rate limits
+
+Token-bucket in Redis. Keyed by session token hash where authenticated, by source IP where not
+(§7 governs how long that IP may be kept — the counter key is a hash, and it expires).
+
+| Endpoint | Limit | Why this one matters |
+|---|---|---|
+| `POST /v1/invite/redeem` | 5 / hour / IP, then exponential backoff | Brute-forcing a 128-bit code is infeasible, but an unthrottled endpoint is still a free oracle and an amplifier |
+| `POST /v1/invite` | 3 / day / account | Bounds circle growth. Replaces the `created_by` column the design refuses to store |
+| **`GET /v1/keys/{aci}`** | **10 / hour / account, 30 / day / account** | **Load-bearing. See below.** |
+| `PUT /v1/keys` | 6 / day / account | Prekey churn has no legitimate reason to be frequent |
+| `POST /v1/messages` | 60 / minute / account | Flood control |
+| `GET /v1/messages` | 120 / minute / account | Polling |
+| `POST /v1/blobs` | 100 / day and 500 MB / day / account | Storage |
+| `POST /v1/auth/rotate` | 10 / hour / account | Token grinding |
+
+### Why the prekey-fetch limit is a security control (AUDIT 3.1)
+
+Every fetch of `/v1/keys/{aci}` **consumes one of the target's one-time prekeys** — that is what
+one-time means. An attacker with a valid session can therefore drain any peer's pool at will, purely
+by asking, without ever sending a message. The pool is empty from then until the victim's client
+next uploads, and every session established in that window falls back to the reused last-resort
+Kyber prekey (§2.6).
+
+That is the mechanism behind base-key witness eviction. Rate limiting is the mitigation, it costs
+almost nothing while the endpoint is being written, and it is expensive and disruptive to retrofit
+onto a live service — which is exactly why P4.S06 makes it mandatory in this phase and why "defer to
+P6" is listed as the anti-goal. AUDIT 3.1 does not close until this and P6.S01 rotation are both
+live (P6.S02).
+
+Two supporting measures, since a limit alone leaves a slow-drain path:
+
+- The dispense path **serves the last-resort key without deleting a one-time key** once an account's
+  remaining pool falls below a floor, so a determined attacker degrades that peer's PQ forward
+  secrecy but cannot exhaust the pool outright.
+- The client is told its remaining count on upload and replenishes on a threshold, not a schedule.
+
+---
+
+## 6. Authentication
+
+```
+invite code ──redeem──▶ account (aci) ──▶ session token ──▶ every other endpoint
+```
+
+- Invite codes: 128 bits from a CSPRNG, rendered in an unambiguous alphabet, single-use, expiring.
+  Never hardcoded — C-01 is the client-side half of this and the server half is P4.S03.
+- Session tokens: 256 bits from a CSPRNG, hashed at rest, rotatable, revocable by `DELETE`.
+- Presented as `Authorization: Bearer`. Compared with a constant-time comparison after hashing.
+- **No password, no recovery flow, no email.** There is nothing to phish and nothing to reset. Losing
+  the device means losing the account, which is the honest consequence of §3.4 and must be stated in
+  the UI before a user relies on it.
+
+Every endpoint except `/health` and `/v1/invite/redeem` requires a token. **`/v1/keys/{aci}`
+requires one too** — an unauthenticated prekey directory would make the §5 per-account limit
+unenforceable and would let anyone on the internet drain any pool.
+
+---
+
+## 7. Logging (`THREAT_MODEL.md` §3.6)
+
+Structured, level-filtered, and redacting by construction rather than by discipline: the log helper
+takes typed fields, and no type that can hold a token, a code, a push token, an envelope, or a key
+has a loggable representation. Prohibition 6 is enforced by the type system where it can be, not by
+review.
+
+- **Never logged:** request bodies, envelope bytes, tokens or their hashes, invite codes, push
+  tokens, prekeys, `aci` at info level.
+- **IP addresses:** retained **24 h** for operational triage, then dropped. Not correlated with
+  accounts at any point.
+- **Access logs:** method, route *pattern* (never the populated path — `/v1/keys/{aci}` never
+  `/v1/keys/3f2b…`), status, duration. A populated path is a metadata record hiding in a log line.
+- Log volume is itself metadata: an error log that fires once per delivery is a delivery record.
+
+---
+
+## 8. What this design deliberately cannot do
+
+P4.S01's anti-goal is *"design an admin backdoor"*, and the way to satisfy it is to build a service
+where there is nothing to abuse.
+
+- **No admin API. None.** No user list, no message browser, no impersonation, no "resend", no
+  password reset, no support console. Not disabled behind a flag — absent from the codebase, because
+  a flag is one config change and one compromised credential away from being on.
+- **No message search**, which is impossible anyway, and no full-text index to accidentally build one.
+- **No read receipts, delivery receipts, or typing indicators stored server-side.** If they exist at
+  all they travel as ordinary encrypted messages, which is the only form in which the server does not
+  learn them.
+- **No contact discovery** (prohibition 3). The relay cannot answer "does this person have an
+  account" for any input except an `aci` the caller already has.
+- **No account enumeration.** `GET /v1/keys/{aci}` returns an identical response shape and timing for
+  a nonexistent account as for an account with an empty pool.
+- Operational access is `psql` on the host — which is exactly the §1.1 adversary, and the reason the
+  retention policy is what it is. **We defend against ourselves by having nothing to hand over**, not
+  by promising restraint.
+
+---
+
+## 9. Deployment shape (P4.S02 target)
+
+Docker Compose, three services on an internal network: `api`, `postgres`, `redis`. Only `api`
+publishes a port, and in P4 only to `localhost`. Postgres and Redis are unreachable from the host
+network — the P4.S02 anti-goal, and the most common way a development relay ends up exposed.
+
+TLS terminates at a reverse proxy in P5, not in P4. Nothing is purchased before P5.
+
+### 9.1 Certificate pin rotation runbook — stub (filled in by P5.S06)
+
+Placed here so P5.S06 has a home and so pinning is never shipped without a rotation story — a pin
+with no rotation plan is an outage waiting for a certificate renewal.
+
+1. Extract the SPKI SHA-256 of the staging leaf **and** its issuing intermediate.
+2. Ship **two** pins: current, and a backup key that is not yet in use. A single pin plus a lost key
+   is a permanently bricked client.
+3. Rotation: publish the new pin in a client release, wait for adoption, *then* switch the
+   certificate. Never the other order.
+4. Record every pin with its expiry and the date it was extracted.
+5. Pin the SPKI, not the certificate, so renewal with the same key needs no client change.
+
+---
+
+## 10. Open questions, deferred deliberately
+
+| Question | Decided in |
+|---|---|
+| Sealed sender certificate issuance and rotation | P7 |
+| Envelope length bucketing (`THREAT_MODEL.md` §3.5) | P7 |
+| Push token rotation cadence | P7.S03 |
+| Multi-device — needs `Envelope` `wireVersion` 2 and a `devices` table | P10 |
+| Groups — cryptographically unreachable by locked decision §0.2.2 | P10 |
+| Hosting jurisdiction (`THREAT_MODEL.md` §3.7) | P5.S01, and it is a purchase |
+
+---
+
+## 11. Privacy regression statement (P4 phase requirement)
+
+Does this design leak anything new to the server, to Apple, or to disk?
+
+**To the server:** yes, unavoidably, and it is enumerated rather than minimised in prose — account
+existence (`aci`, public keys, day-resolution activity), who has mail waiting while it waits, and
+sender→recipient pairs for in-flight messages via the cleartext `sender` field inside `envelope`
+(§2.7). No message content, at any time, in any column. No social graph at rest: the invite graph is
+never written, and the attachment ownership edge is never written.
+
+**To Apple:** nothing new in P4 — push lands in P8. The `push_tokens` table is designed here so that
+§3.3's requirements are structural rather than retrofitted.
+
+**To disk:** the intended set only, provided two defaults are overridden: Redis persistence off (§3),
+and backups scoped to exclude undelivered messages (§4). Both are listed because both are on by
+default in the obvious configuration, and either would silently reintroduce retention that the schema
+was designed to avoid.
