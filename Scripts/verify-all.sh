@@ -25,6 +25,13 @@ cd "$ROOT"
 
 WORKSPACE="Cipher.xcworkspace"
 SIMULATOR="${CIPHER_TEST_SIMULATOR:-iPhone 17 Pro}"
+
+# `OS=latest` is not decoration. This machine has one iOS runtime, but the CI image ships
+# 26.2, 26.4 and 26.5 while the app's deployment target is 26.5 — so two of the three cannot
+# install it, and a bare `name=` destination leaves the choice to xcodebuild. Naming `latest`
+# makes it deterministic without duplicating the deployment target anywhere.
+DESTINATION="platform=iOS Simulator,name=$SIMULATOR,OS=latest"
+
 FAST=0
 OFFLINE=0
 
@@ -103,7 +110,7 @@ run_tests() {
   xcodebuild test \
     -workspace "$WORKSPACE" \
     -scheme CipherCrypto \
-    -destination "platform=iOS Simulator,name=$SIMULATOR" \
+    -destination "$DESTINATION" \
     2>&1 | tee "$LOG" | grep -E "^Test Case.*failed|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)" || true
 }
 
@@ -154,7 +161,7 @@ step "Cipher app builds (simulator)"
 xcodebuild build \
   -workspace "$WORKSPACE" \
   -scheme Cipher \
-  -destination "platform=iOS Simulator,name=$SIMULATOR" \
+  -destination "$DESTINATION" \
   -configuration Debug \
   2>&1 | grep -E "error:|BUILD (SUCCEEDED|FAILED)" | sort -u | grep -q "BUILD SUCCEEDED" ||
   fail "Cipher app build"

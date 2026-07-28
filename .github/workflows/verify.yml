@@ -6,6 +6,13 @@
 #
 # Closes AUDIT 1.6 once this is green on main and required on PRs.
 #
+# **Every action is pinned to a full commit SHA, never a tag.** This is the same reasoning
+# AUDIT 1.3 applies to libsignal: `@v4` is a mutable pointer a maintainer or an attacker can
+# move, and the code behind it runs here with a token that can write to this repository — a
+# strictly larger blast radius than the dependency the project already pins by commit. The
+# trailing `# vX.Y.Z` is the human-readable label and what Dependabot rewrites; see
+# .github/dependabot.yml, which is how these stay current without anyone chasing them.
+#
 # Copyright (C) 2026 Jan Richter
 # SPDX-License-Identifier: AGPL-3.0-only
 
@@ -32,28 +39,53 @@ jobs:
     # Pinned rather than `macos-latest`: a runner image bump changes the Xcode version,
     # and this project pins its toolchain (Vendor/libsignal/PINS.env records what the
     # supply-chain evidence was gathered against).
-    runs-on: macos-15
+    #
+    # It must be macos-26. The project targets iOS 26.5 and builds with Xcode 26.6, and
+    # the macos-15 image ships macOS 15 with Xcode 16 and iOS 18 simulators — it could not
+    # have built this at all. macos-26 has been generally available since 2026-02-26.
+    runs-on: macos-26
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           # Full history so a tag/commit check can resolve; the supply-chain script
           # queries the remote, but a shallow clone hides local tag state.
           fetch-depth: 0
 
-      - name: Select Xcode
-        run: sudo xcode-select -switch /Applications/Xcode_26.app
+      - name: Select the pinned Xcode
+        # Read from PINS.env rather than hard-coded here. PINS.env is the single source of
+        # truth and says in as many words that nothing may hard-code its values — and the
+        # version that hard-coded `/Applications/Xcode_26.app` was also simply wrong: the
+        # runner installs versioned paths like `Xcode_26.6.app`, so the step could only
+        # ever have failed. Failing loudly when the pinned Xcode is absent is the point;
+        # silently building with the image default would invalidate the supply-chain
+        # evidence that PINS.env records.
+        run: |
+          set -euo pipefail
+          source Vendor/libsignal/PINS.env
+          app="/Applications/Xcode_${VERIFIED_XCODE}.app"
+          if [ ! -d "$app" ]; then
+            echo "::error::Xcode ${VERIFIED_XCODE} (pinned in PINS.env) is not on this runner."
+            echo "Available:"; ls -d /Applications/Xcode*.app
+            exit 1
+          fi
+          sudo xcode-select -switch "$app"
+          xcodebuild -version | head -1 | grep -qF "$VERIFIED_XCODE" \
+            || { echo "::error::xcode-select did not take effect"; exit 1; }
 
       - name: Show toolchain
         run: |
           xcodebuild -version
           swift --version
+          xcrun simctl list runtimes | grep -i ios
 
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
-          # Reads .ruby-version / Gemfile; CocoaPods is pinned in Gemfile.lock so the
-          # project is regenerated the same way it is locally.
+          # Resolved from .ruby-version, which exists so CI and a developer machine agree.
+          # Without it this step fails outright — the Gemfile carries no `ruby` directive,
+          # so there is nothing else for setup-ruby to read. Gemfile.lock also carries
+          # per-gem checksums, which need a modern bundler to verify rather than ignore.
           bundler-cache: true
 
       - name: pod install
@@ -66,6 +98,27 @@ jobs:
           xcrun simctl boot "iPhone 17 Pro" || true
           xcrun simctl bootstatus "iPhone 17 Pro" -b || true
 
+      - name: Assert the simulator can actually run this app
+        # The runner ships iOS 26.2, 26.4 and 26.5 runtimes; the app's deployment target is
+        # 26.5, so two of the three cannot install it. `OS=latest` in the destination picks
+        # the newest, but if a future image drops 26.5 the failure would surface as an
+        # opaque install error inside the test step. Say it here instead.
+        run: |
+          set -euo pipefail
+          target="$(xcodebuild -workspace Cipher.xcworkspace -scheme Cipher \
+                      -destination 'platform=iOS Simulator,name=iPhone 17 Pro,OS=latest' \
+                      -showBuildSettings 2>/dev/null \
+                    | awk -F' = ' '/ IPHONEOS_DEPLOYMENT_TARGET /{print $2; exit}')"
+          newest="$(xcrun simctl list runtimes --json \
+                    | python3 -c 'import json,sys; rs=[r["version"] for r in json.load(sys.stdin)["runtimes"] if r["platform"]=="iOS" and r["isAvailable"]]; print(max(rs, key=lambda v: [int(x) for x in v.split(".")]))')"
+          echo "deployment target $target, newest available iOS runtime $newest"
+          python3 - "$target" "$newest" <<'PY'
+          import sys
+          t, n = ([int(x) for x in a.split(".")] for a in sys.argv[1:3])
+          if n < t:
+              sys.exit(f"::error::no simulator runtime satisfies the {sys.argv[1]} deployment target")
+          PY
+
       - name: Verify
         # The whole gate: supply chain, app-target manifest, redaction, UI honesty and
         # localization drift, 89 crypto tests, both builds, the Release-bundle
@@ -74,7 +127,7 @@ jobs:
 
       - name: Upload test log on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cipher-verify-tests
           path: /tmp/cipher-verify-tests.log
@@ -85,10 +138,13 @@ jobs:
   # release-tagged build reaches green.
   release-gate:
     if: startsWith(github.ref, 'refs/tags/')
-    runs-on: macos-15
+    # Same image as `verify` on purpose. The script needs no Xcode — curl, git, shasum,
+    # tar, awk — and Linux would be cheaper, but a release gate is the wrong place to
+    # introduce a second environment whose tool differences nobody has tested.
+    runs-on: macos-26
     needs: verify
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
       - name: Supply chain must be verified online for a release

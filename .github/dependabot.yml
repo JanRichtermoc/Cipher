@@ -1,0 +1,29 @@
+# Keeps the SHA-pinned actions in verify.yml current.
+#
+# Pinning by commit is the security property (see the header of verify.yml); this is what
+# stops that property from decaying into "frozen on a version with a known hole". Dependabot
+# understands the `uses: owner/repo@<sha> # vX.Y.Z` form and rewrites both halves together,
+# as a pull request — so the update is reviewed rather than silently taken, which is the
+# whole point of not using a floating tag.
+#
+# Deliberately narrow. CocoaPods and libsignal are NOT managed here: `Podfile.lock` and
+# `Vendor/libsignal/PINS.env` are audited by `Scripts/verify-supply-chain.sh`, and an
+# automated bump of a cryptographic dependency would change the pinned commit and its
+# checksum in one PR — exactly the review the supply-chain gate exists to force a human
+# through. Bumping libsignal stays a deliberate act.
+#
+# Copyright (C) 2026 Jan Richter
+# SPDX-License-Identifier: AGPL-3.0-only
+
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 3
+    commit-message:
+      prefix: ci
+    labels:
+      - dependencies
+      - supply-chain
