@@ -106,11 +106,11 @@ final class LockedDecisionsTests: XCTestCase {
         // A sender with no session, no stored identity, and no relationship to this device
         // decodes exactly as readily as any other. `decode` is a static function over bytes:
         // it takes no store and no key, so there is nothing it could have checked.
-        for sender in [claimed, unrelated] as [ServiceId] {
+        for sender in [claimed, unrelated].map(ServiceIdentifier.init) {
             let frame = try Envelope(
                 type: .whisper, sender: sender, timestamp: 1, ciphertext: ciphertext).encode()
             let decoded = try Envelope.decode(frame)
-            XCTAssertEqual(decoded.sender.serviceIdString, sender.serviceIdString,
+            XCTAssertEqual(decoded.sender, sender,
                            "the field is carried verbatim, not validated")
             XCTAssertEqual(decoded.ciphertext, ciphertext)
         }
@@ -119,11 +119,12 @@ final class LockedDecisionsTests: XCTestCase {
         // carrying the same ciphertext. That is expected: the forgery is caught when the
         // ciphertext fails to decrypt under the session, never here.
         var rewritten = try Envelope(
-            type: .whisper, sender: claimed, timestamp: 1, ciphertext: ciphertext).encode()
+            type: .whisper, sender: ServiceIdentifier(claimed), timestamp: 1,
+            ciphertext: ciphertext).encode()
         rewritten.replaceSubrange(2..<19, with: unrelated.serviceIdFixedWidthBinary)
 
         let forged = try Envelope.decode(rewritten)
-        XCTAssertEqual(forged.sender.serviceIdString, unrelated.serviceIdString)
+        XCTAssertEqual(forged.sender, ServiceIdentifier(unrelated))
         XCTAssertEqual(forged.ciphertext, ciphertext,
                        "a relay can rewrite the sender; only the ciphertext authenticates")
     }
@@ -176,7 +177,8 @@ final class LockedDecisionsTests: XCTestCase {
         let ciphertext = Data(repeating: 0xAB, count: 9)
         let encoded = try Envelope(
             type: .preKey,
-            sender: Aci(fromUUID: UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!),
+            sender: ServiceIdentifier(
+                kind: .aci, uuid: UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!),
             timestamp: 0, ciphertext: ciphertext).encode()
         XCTAssertEqual(encoded.count, Envelope.headerSize + ciphertext.count)
     }

@@ -59,6 +59,23 @@ internal final class EncryptedFileRecordStore: RecordStore {
 
     private static let keyByteCount = 32
 
+    /// Ceiling on one record, checked **before** the file is read into memory.
+    ///
+    /// `Data(contentsOf:)` allocates whatever it finds. The container is not a trusted input:
+    /// an attacker who can write into it — a file-write exploit, a restored backup, a
+    /// malicious sibling process on a jailbroken device — can leave a multi-gigabyte file in
+    /// a record slot. Without this the read would be attempted, and the process would be
+    /// killed for memory before the AEAD ever got the chance to reject the contents. That is
+    /// a denial of service reachable *without any key*, which is exactly the class of thing
+    /// a size check belongs in front of.
+    ///
+    /// 1 MiB is far above anything legitimate: the largest record this module writes is the
+    /// base-key witness at `3 + 512 × 32` bytes ≈ 16 KiB, and a session record with a full
+    /// complement of archived states is well under a hundred. It is deliberately not tight —
+    /// a cap that trips on a real record would be a self-inflicted outage — it is only tight
+    /// enough that the allocation is bounded.
+    internal static let maxRecordBytes = 1024 * 1024
+
     private let root: URL
     private let masterKey: SymmetricKey
     private let fileManager: FileManager
@@ -174,11 +191,33 @@ internal final class EncryptedFileRecordStore: RecordStore {
         // Present-but-unreadable is not, and is surfaced below rather than folded into it.
         guard fileManager.fileExists(atPath: path.path) else { return nil }
 
+        // Size first, then read. `.fileSizeKey` rather than `attributesOfItem`, which would
+        // also hand back creation and modification dates — required-reason APIs this module
+        // has no business touching (see docs/PRIVACY_MANIFEST.md).
+        let declaredSize: Int
+        do {
+            declaredSize = try path.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+        } catch {
+            throw RecordStoreError.ioFailure("sizing a \(kind.rawValue) record failed")
+        }
+        guard declaredSize <= Self.maxRecordBytes else {
+            // Not `corruptRecord`: nothing was authenticated, so this says only that the slot
+            // holds something too large to be one of ours.
+            CipherLog.store.error("refused an oversized record without reading it")
+            throw RecordStoreError.recordTooLarge(kind: kind, bytes: declaredSize)
+        }
+
         let onDisk: Data
         do {
             onDisk = try Data(contentsOf: path)
         } catch {
             throw RecordStoreError.ioFailure("reading a \(kind.rawValue) record failed")
+        }
+
+        // The size could have changed between the two calls. A second check costs nothing and
+        // closes the window rather than reasoning about whether it is exploitable.
+        guard onDisk.count <= Self.maxRecordBytes else {
+            throw RecordStoreError.recordTooLarge(kind: kind, bytes: onDisk.count)
         }
 
         guard let version = onDisk.first else { throw RecordStoreError.corruptRecord(kind: kind) }

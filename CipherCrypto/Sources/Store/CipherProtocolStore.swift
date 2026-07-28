@@ -141,6 +141,25 @@ internal final class CipherProtocolStore {
         return value
     }
 
+    // MARK: - Installation metadata
+
+    /// Small, non-secret installation facts — currently only this device's own address.
+    ///
+    /// Deliberately a narrow pair rather than a general key-value surface: metadata records
+    /// share the record store's encryption and its AAD binding, so anything written here is
+    /// destroyed by `destroyAllState` along with the sessions, which is the property that
+    /// makes "delete everything" mean it. A wider API would invite storing something that
+    /// ought to be a typed record with its own validation.
+    internal func metadata(_ key: String) throws -> Data? {
+        CryptoActor.assertIsolated()
+        return try records.load(.metadata, key)
+    }
+
+    internal func setMetadata(_ key: String, _ value: Data) throws {
+        CryptoActor.assertIsolated()
+        try records.store(.metadata, key, value)
+    }
+
     // MARK: - Peer identity state, for the UI
 
     /// The trust state to render a safety-number screen from, or `nil` if this peer has

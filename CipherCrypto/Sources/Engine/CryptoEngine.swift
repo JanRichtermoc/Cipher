@@ -26,7 +26,16 @@ public final class CryptoEngine {
 
     /// The store owns the record store and the secret storage; the engine holds neither
     /// separately, so there is exactly one object that can reach persistence.
-    private let store: CipherProtocolStore
+    ///
+    /// `internal` rather than `private` only so `Messaging.swift` can reach it. It is not
+    /// `public` and never will be: handing a `CipherProtocolStore` out would hand out every
+    /// libsignal store protocol at once, and with them the ability to call into the FFI from
+    /// wherever the caller happens to be.
+    internal let store: CipherProtocolStore
+
+    /// Milliseconds since the Unix epoch, injectable so a test can assert on the timestamp a
+    /// message carries rather than around it.
+    internal let now: () -> UInt64
 
     /// Set by `destroyAllState`. Every operation refuses afterwards.
     ///
@@ -49,8 +58,12 @@ public final class CryptoEngine {
         return try CryptoEngine(root: root, secrets: Keychain.shared)
     }
 
-    internal init(root: URL, secrets: SecretStorage) throws {
+    internal init(
+        root: URL, secrets: SecretStorage,
+        now: @escaping () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) }
+    ) throws {
         CryptoActor.assertIsolated()
+        self.now = now
 
         let records = try EncryptedFileRecordStore(root: root, secrets: secrets)
         let identity = try DeviceIdentity.loadOrCreate(secrets: secrets)
@@ -68,7 +81,7 @@ public final class CryptoEngine {
             .appendingPathComponent("CipherCrypto", isDirectory: true)
     }
 
-    private func requireLive() throws {
+    internal func requireLive() throws {
         guard !isDestroyed else { throw CryptoEngineError.destroyed }
     }
 

@@ -105,12 +105,13 @@ public struct Envelope: Sendable, Equatable {
 
     public let type: PayloadType
     /// Routing hint only. See the type-level warning — never trust this.
-    public let sender: ServiceId
+    public let sender: ServiceIdentifier
     /// Untrusted, milliseconds since the Unix epoch.
     public let timestamp: UInt64
     public let ciphertext: Data
 
-    public init(type: PayloadType, sender: ServiceId, timestamp: UInt64, ciphertext: Data) throws {
+    public init(type: PayloadType, sender: ServiceIdentifier, timestamp: UInt64, ciphertext: Data)
+        throws {
         guard !ciphertext.isEmpty else { throw EnvelopeError.emptyCiphertext }
         guard ciphertext.count <= Self.maxCiphertextBytes else {
             throw EnvelopeError.ciphertextTooLarge(ciphertext.count)
@@ -127,7 +128,7 @@ public struct Envelope: Sendable, Equatable {
         var out = Data(capacity: Self.headerSize + ciphertext.count)
         out.append(Self.wireVersion)
         out.append(type.rawValue)
-        out.append(sender.serviceIdFixedWidthBinary)
+        out.append(sender.fixedWidthBinary)
         out.append(bigEndian: timestamp)
         out.append(bigEndian: UInt32(ciphertext.count))
         out.append(ciphertext)
@@ -177,37 +178,10 @@ public struct Envelope: Sendable, Equatable {
             throw EnvelopeError.lengthMismatch(declared: Int(claimedLength), available: available)
         }
 
-        let sender = try decodeSender(Data(bytes[(base + 2)..<(base + 19)]))
+        let sender = try ServiceIdentifier.decode(
+            fixedWidth: Data(bytes[(base + 2)..<(base + 19)]))
         let ciphertext = Data(bytes[(base + headerSize)...])
         return try Envelope(type: type, sender: sender, timestamp: timestamp, ciphertext: ciphertext)
-    }
-
-    /// Reconstructs a `ServiceId` from libsignal's 17-byte fixed-width encoding.
-    ///
-    /// libsignal's own fixed-width parser is `internal`, and the public
-    /// `parseFrom(serviceIdBinary:)` takes the *variable*-width form — 16 bytes for an ACI,
-    /// which would defeat a fixed-offset layout. So the encoding is libsignal's
-    /// (`serviceIdFixedWidthBinary`: `[kind][16 UUID bytes]`, per `ServiceId.swift:60-64`)
-    /// while the decode is built from public initialisers. `testFixedWidthLayoutMatchesLibsignal`
-    /// pins the two halves together, so an upstream layout change fails the suite rather
-    /// than silently producing wrong identities.
-    private static func decodeSender(_ bytes: Data) throws -> ServiceId {
-        precondition(bytes.count == 17)
-        let base = bytes.startIndex
-
-        var raw = uuid_t(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-        _ = withUnsafeMutableBytes(of: &raw) { dest in
-            bytes[(base + 1)...].copyBytes(to: dest)
-        }
-        let uuid = UUID(uuid: raw)
-
-        guard let kind = ServiceIdKind(rawValue: bytes[base]) else {
-            throw EnvelopeError.invalidSender
-        }
-        switch kind {
-        case .aci: return Aci(fromUUID: uuid)
-        case .pni: return Pni(fromUUID: uuid)
-        }
     }
 
     // MARK: - libsignal interop
@@ -218,7 +192,12 @@ public struct Envelope: Sendable, Equatable {
     /// unknown value is representable and must be handled. `.senderKey` is recognised and
     /// explicitly rejected: group messaging is out of scope this phase, and silently
     /// relaying a sender-key message would be worse than refusing it.
-    public static func payloadType(
+    ///
+    /// `internal`: this is the one place a libsignal type meets our wire enum, so making it
+    /// public would put `CiphertextMessage.MessageType` in this module's public API — the
+    /// exact leak `Scripts/verify-api-boundary.sh` exists to prevent, and the one it caught.
+    /// Nothing outside needs it: `CryptoEngine.encrypt` already returns an encoded envelope.
+    internal static func payloadType(
         for messageType: CiphertextMessage.MessageType
     ) throws -> PayloadType {
         switch messageType {

@@ -67,5 +67,9 @@ internal enum RecordStoreError: Error, Equatable {
     case unsupportedRecordVersion(UInt8)
     /// The record encryption key in the Keychain is not the expected size.
     case malformedEncryptionKey
+    /// A slot holds a file larger than any record this module writes, so it was refused
+    /// **without being read**. Distinct from `corruptRecord`: nothing was authenticated here,
+    /// and the point is that the allocation never happened.
+    case recordTooLarge(kind: RecordKind, bytes: Int)
     case ioFailure(String)
 }

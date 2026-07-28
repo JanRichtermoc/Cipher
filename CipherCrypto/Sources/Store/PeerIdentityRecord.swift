@@ -29,6 +29,18 @@ internal struct PeerIdentityRecord: Equatable {
     private static let headerSize = 18
     private static let acknowledgementPendingFlag: UInt8 = 0x01
 
+    /// Every flag bit this version understands. A record carrying anything outside this mask
+    /// is refused rather than read with the unknown bits dropped.
+    ///
+    /// The bit that exists today is the one that suppresses the "safety number changed"
+    /// warning, so the failure mode being avoided is specific: a record written by a future
+    /// build — one that had, say, added a *verified* bit — would otherwise be read here with
+    /// that meaning silently discarded, and the user would be shown a weaker trust state than
+    /// the one actually recorded. Refusing matches how `version` is already handled, and how
+    /// `load` treats a record it cannot open: a record this build cannot fully understand is
+    /// never partially believed.
+    private static let knownFlags: UInt8 = acknowledgementPendingFlag
+
     internal let identityKey: IdentityKey
     /// When this peer's key was first recorded. Untrusted clocks never write here — it is
     /// this device's clock, used only for display.
@@ -75,6 +87,8 @@ internal struct PeerIdentityRecord: Equatable {
         guard bytes[base] == version else { throw ProtocolStoreError.malformedPeerIdentity }
 
         let flags = bytes[base + 1]
+        guard flags & ~knownFlags == 0 else { throw ProtocolStoreError.malformedPeerIdentity }
+
         let firstSeenMs = bytes.readBigEndianUInt64(at: base + 2)
         let rawChangedAt = bytes.readBigEndianUInt64(at: base + 10)
 
