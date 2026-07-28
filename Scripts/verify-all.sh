@@ -40,7 +40,7 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=8
+TOTAL=9
 [ "$FAST" -eq 1 ] && TOTAL=6
 
 step() {
@@ -203,6 +203,13 @@ if [ "$FAST" -eq 0 ]; then
   done
   [ "$leaked" -eq 0 ] || fail "a debug affordance ships in Release (AUDIT 5.6, 5.11)"
   echo "  ok    no debug affordance anywhere in the Release bundle"
+
+  # --- 9. Required-reason APIs are declared ----------------------------------
+  # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol
+  # surface ships whether Cipher calls it or not — a required-reason API can appear with no
+  # source change on our side, and the first sign would otherwise be App Review.
+  step "Required-reason APIs declared (AUDIT 6.1)"
+  ./Scripts/verify-privacy-manifest.sh "$APP" || fail "privacy manifest (see docs/PRIVACY_MANIFEST.md)"
 fi
 
 # --- Manual items -----------------------------------------------------------

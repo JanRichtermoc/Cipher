@@ -67,8 +67,9 @@ jobs:
           xcrun simctl bootstatus "iPhone 17 Pro" -b || true
 
       - name: Verify
-        # The whole gate: supply chain, manifest, redaction, UI honesty, 89 crypto tests,
-        # both builds, and the Release-binary debug-affordance audit.
+        # The whole gate: supply chain, app-target manifest, redaction, UI honesty and
+        # localization drift, 89 crypto tests, both builds, the Release-bundle
+        # debug-affordance audit, and the required-reason API check.
         run: ./Scripts/verify-all.sh
 
       - name: Upload test log on failure

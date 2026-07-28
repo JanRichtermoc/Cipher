@@ -14,10 +14,11 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P1 — Honesty, gates, repo hygiene
-DONE:           P1.S01 S02 S03 S04 S05 S06 S07 S08 S09(written, never run) S12
-NEXT STEP:      P1.S11 (libsignal PrivacyInfo enumeration)
-TESTS:          89 passing · ./Scripts/verify-all.sh exits 0 (8/8 gates)
+CURRENT PHASE:  P1 — Honesty, gates, repo hygiene (all steps done but P1.S10)
+DONE:           P1.S01 S02 S03 S04 S05 S06 S07 S08 S09(written, never run) S11 S12
+NEXT STEP:      P2.S01 — P1 exit criteria hold except CI. Do not start P2 until the
+                user has created the remote; P1.S10 is the last item.
+TESTS:          89 passing · ./Scripts/verify-all.sh exits 0 (9/9 gates)
 BLOCKED ON:     P1.S10 — cannot close AUDIT 1.6 until CI actually runs (no git remote)
 HUMAN NEEDED:   P1.S10 — create the remote and push, so the workflow in
                 .github/workflows/verify.yml runs at least once. It is written and
@@ -27,7 +28,7 @@ HUMAN NEEDED:   P1.S10 — create the remote and push, so the workflow in
 
 Update this block when a step completes. One grep answers "where am I".
 
-**Closed in P1 so far** — AUDIT 5.4, 5.5, 5.6, 5.7, 5.9, 5.10, 5.11. Each is guarded, not just
+**Closed in P1 so far** — AUDIT 1.7, 5.4, 5.5, 5.6, 5.7, 5.9, 5.10, 5.11, 6.1. Each is guarded, not just
 fixed. `Scripts/verify-all.sh` gained `verify-localization.py` (orphan detection, DEBUG-only
 translation detection, and retired-claim matching anywhere in a string in any language) and a
 Release-*bundle* audit covering resources as well as the executable. Every gate was negative-tested
@@ -104,7 +105,6 @@ a check that stops working fails loudly instead of passing vacuously.
 | AUDIT | Item | Closes in |
 |-------|------|-----------|
 | 1.6 | Supply-chain script not in CI | P1.S09 written; P1.S10 blocked — no remote, so it has never run |
-| 1.7 | Effectively nothing under version control (1 commit, 8 tracked files) | P1.S04 — **needs the user** |
 | 5.8 | App lock never re-engages; only cold launch | P3.S02 |
 | 2.4 | No key rotation / replenishment | P6.S01 |
 | 2.5 | No safety-number UI | **P5.S12** (moved from P6) |
@@ -113,7 +113,6 @@ a check that stops working fails loudly instead of passing vacuously.
 | 5.1 | No transport / server / auth | P4–P5 |
 | 5.2 | `AppSession` auth/lock in UserDefaults | P3.S06 |
 | 5.3 | App still on `MockStore` | P5.S10 |
-| 6.1 | libsignal PrivacyInfo APIs not enumerated | P1.S11 → P8.S05 |
 | 6.2 | Acknowledgements not in About screen | P8.S07 |
 | 6.3 | `ITSAppUsesNonExemptEncryption` undeclared | P8.S06 (legal) |
 
@@ -164,14 +163,14 @@ a check that stops working fails loudly instead of passing vacuously.
 | **P1.S01** | Read the baseline docs above before writing any code. | AI | — | You can state, without re-reading, what §0.2 locks and why | Start coding first |
 | **P1.S02** | Fix the `AUDIT.md` wording conflict: row 1.3 credited a CI check for re-resolving the libsignal tag while row 1.6 states there is no CI. Align to reality — the check exists in `verify-supply-chain.sh`, but nothing enforces it. | AI | — | No row in `docs/AUDIT.md` credits CI with enforcing anything while 1.6 is OPEN | Claim a control that does not exist |
 | **P1.S03** | Resolve the dangling `.rtf` master-plan reference — the file does not exist in the repo. Either add it or drop every citation. The P9.S07 pen-test checklist is inlined in this document regardless, so nothing depends on it. | AI | — | Every `.rtf` path cited anywhere in `docs/` resolves on disk, or no `.rtf` is cited at all (this step's own description does not name one) | Leave a phantom source of truth |
-| **P1.S04** | **Put the work under version control.** Diagnosed 2026-07-28: the repo has one commit tracking 8 files. `CipherCrypto/`, its tests, `Scripts/`, `docs/` and most of the app are untracked (75 files), as is `Pods/` (187 files, 2.4 MB, no binaries — the Rust `.a` is fetched and checksum-pinned at build time). Nothing ignores Pods; they were simply never committed, so the diff-review control `.gitignore:23` describes has never existed. Commit the tree, Pods included, or change the policy in `.gitignore` + `DECISIONS.md` deliberately. | **HUMAN** (agent must not commit unasked) | 1.7 | `git ls-files \| wc -l` covers the crypto module, tests, Scripts, docs, and agrees with what `.gitignore` claims about Pods | Leave documented-but-absent; commit without being asked |
+| **P1.S04** | **Put the work under version control.** Diagnosed 2026-07-28: the repo has one commit tracking 8 files. `CipherCrypto/`, its tests, `Scripts/`, `docs/` and most of the app are untracked (75 files), as is `Pods/` (187 files, 2.4 MB, no binaries — the Rust `.a` is fetched and checksum-pinned at build time). Nothing ignores Pods; they were simply never committed, so the diff-review control `.gitignore:23` describes has never existed. Commit the tree, Pods included, or change the policy in `.gitignore` + `DECISIONS.md` deliberately. **Done 2026-07-28** on the user's instruction: commit `9c16252`, 271 files, Pods included; `Vendor/bundle/` case bug and the tracked `xcschememanagement.plist` fixed in the same commit. Still no remote — see P1.S10. | **HUMAN** (agent must not commit unasked) | 1.7 | `git ls-files \| wc -l` covers the crypto module, tests, Scripts, docs, and agrees with what `.gitignore` claims about Pods | Leave documented-but-absent; commit without being asked |
 | **P1.S05** | **Deceptive security UI pass.** App lock: wire `LocalAuthentication` now or remove Face ID copy (`AuthFlowView.swift:196`, `SettingsViews.swift:311`) until P3. Safety numbers: hide "Mark as Verified" (`ChatInfoViews.swift:306`) and `Verified` badges until P5.S12. Disappearing messages / screenshot warning / notification previews: no toggle that implies enforcement it lacks. Remove hardcoded invite codes (`SettingsViews.swift:159`) from production paths — DEBUG fixtures only. | AI | part of C-03 | No Release-reachable string claims an unimplemented control; audited by reading each hit from the security-copy grep | Add features |
 | **P1.S06** | **Group UI → `#if DEBUG`.** `MockStore.createGroup` and group creation flows contradict §0.2.2, which keeps groups cryptographically unreachable. Fence them out of Release; the screens survive for P10. | AI | — | `createGroup` unreachable in a Release build; `LockedDecisionsTests` still green | Delete the work; implement groups |
 | **P1.S07** | **Remove every debug affordance from Release, and give the auth gate one home.** `UICatalogView` is correctly fenced, but the *mechanism* it drives is not: `debugSkipToMain` (`AppSession.swift:41,71`, `RootView.swift:14`) is a live auth-bypass boolean in a shipping binary, as are `resetDemoState()` and the destructive "Leave & Reset Demo" button. Fence the property and both consumers, not just the buttons. Then collapse the gate: `RootView` must ask `AppSession` rather than restating the condition. | AI | 5.6, 5.7 | Release binary contains no `UICatalogView` and no `debugSkipToMain` symbol; the "onboarded && authenticated && !locked" condition appears exactly **once** in the codebase | Fence only the buttons and leave the switch |
 | **P1.S08** | **Write `Scripts/verify-all.sh`** — the standing regression checklist as one serialized, fail-fast command. Wrap the existing `verify-supply-chain.sh` and `verify-app-target-manifest.sh`; do not reimplement them. | AI | — | `./Scripts/verify-all.sh` exits 0 on a clean tree | Parallelize simulator use (§0.4) |
 | **P1.S09** | **Add CI** running `Scripts/verify-all.sh` on every PR and on main. Supply-chain must **fail closed** on release jobs — not "pass" merely because the cache is absent. Optionally fail Release archives if DEBUG gates leak. | AI | — | CI green on main; a deliberately broken pin fails the job | Let CI pass on a skipped check |
 | **P1.S10** | Close AUDIT 1.6 — only once CI actually runs the supply-chain script on every PR/main build. | AI | 1.6 | AUDIT 1.6 reads CLOSED with the workflow file named | Close it early |
-| **P1.S11** | **Start the PrivacyInfo enumeration (AUDIT 6.1):** libsignal ships no manifest, so its required-reason API usage must be read out of its sources and merged into `Cipher/PrivacyInfo.xcprivacy`. Track a checklist; may finish in P8.S05. | AI | 6.1 (partial) | A checklist file exists listing each libsignal API category with verified/unverified status | Guess at categories |
+| **P1.S11** | **PrivacyInfo enumeration (AUDIT 6.1):** libsignal ships no manifest, so its required-reason API usage must be enumerated and merged into `Cipher/PrivacyInfo.xcprivacy`. **Done 2026-07-28, in full rather than partially** — all five categories resolved, so P8.S05 has nothing left to finish. Scanning the app binary is a *false all-clear*: libsignal links as a dynamic framework, so its symbols live in `Frameworks/`, are never dead-stripped, and ship whether Cipher calls them or not. `docs/PRIVACY_MANIFEST.md` records the findings, the method's limits, and two judgement calls. | AI | 6.1 | `Scripts/verify-privacy-manifest.sh` exits 0 and fails when a declared category is removed; `docs/PRIVACY_MANIFEST.md` gives every category a verified status | Guess at categories; scan only the app binary |
 | **P1.S12** | **Stop the Release bundle naming its own debug affordances.** Found 2026-07-28 while re-checking P1.S05: `#if DEBUG` fences code, but `Localizable.xcstrings` is a resource. Xcode drops `extractionState: stale` keys from `en.lproj` and emits every translated `stringUnit` anyway, so `cs.lproj` shipped "Skip to App", "Unlock & Show Main", "Demo Controls", "UI Catalog", "Reset Onboarding" and "Leave & Reset Demo" into Release — and the P1.S07 audit missed it by searching only the Mach-O executable. Strip the debug-only translations, widen the audit to the whole `.app`, and replace the shell UI-honesty lint with a checker that understands `#if DEBUG` and matches claims anywhere in a string in any language. | AI | 5.11 | `Scripts/verify-localization.py --self-test` and the plain run both exit 0; `verify-all.sh` step 8 greps the whole bundle and was shown to fail against the pre-fix build | Fix the strings without fixing the gate that missed them |
 
 **Exit criteria** — all must hold:
@@ -181,6 +180,7 @@ a check that stops working fails loudly instead of passing vacuously.
 - [ ] `AUDIT.md` CI wording fixed; 1.6 CLOSED or honestly OPEN; 1.7 resolved
 - [ ] Groups unreachable in Release
 - [ ] Nothing in the Release `.app` — code *or* resource — names a debug affordance
+- [ ] Every required-reason API in the shipped bundle is declared (AUDIT 6.1)
 - [ ] 89+ tests pass, including all four `LockedDecisionsTests`
 
 ---
@@ -375,7 +375,7 @@ the hostile/seizable-server model (`THREAT_MODEL.md` §0) makes this load-bearin
 | **P8.S02** | Server APNs provider with **content-free / wake-only** payloads. | AI | — | Captured payload contains no body and no names | Include a preview |
 | **P8.S03** | Client notification privacy: previews only after local decrypt, when unlocked and user-enabled. Default previews **OFF**. | AI | — | Default is off; toggle actually enforced | Default to on |
 | **P8.S04** | Decide NSE necessity. If an NSE must decrypt: design App Group + Keychain access group + a **transactional** protocol store *together*. If not: keep the `AfterFirstUnlock` rationale documented, no shared group. | AI | — | Decision recorded in `AUDIT.md` with its consequences | Share Keychain/files without transactions |
-| **P8.S05** | Finish the `PrivacyInfo.xcprivacy` libsignal enumeration started in P1.S11. | AI | 6.1 | Every required-reason category verified against libsignal sources | Guess |
+| **P8.S05** | Re-verify the `PrivacyInfo.xcprivacy` enumeration against whatever libsignal version ships. P1.S11 closed 6.1 outright, so this is a re-check, not unfinished work — and `verify-privacy-manifest.sh` runs on every build, so a bump that introduces a category has already failed the build by now. Confirm the two judgement calls in `docs/PRIVACY_MANIFEST.md` still hold: the `C617.1` reason (breaks if anything ever hands libsignal a path outside our container) and `clock_gettime`/`gettimeofday` still being off Apple's list. | AI | 6.1 (re-check) | `Scripts/verify-privacy-manifest.sh` exits 0 against the release build, and both judgement calls are re-stated as still true in `PRIVACY_MANIFEST.md` | Assume last year's list |
 | **P8.S06** | `ITSAppUsesNonExemptEncryption` determination — a legal call, not an engineering one. Claude adds the plist key only afterwards. | **HUMAN** → AI | 6.3 | Key present, decision recorded | Decide it yourself |
 | **P8.S07** | In-app acknowledgements / licenses for libsignal (AGPL obligation 3 in `NOTICE.md`). | AI | 6.2 | About screen renders the pod's acknowledgements | — |
 | **P8.S08** | Crash reporting: none, or a redacting pipeline that provably cannot upload plaintext or secrets. | AI | — | Decision recorded; no plaintext-capable reporter linked | Add a default SDK |
