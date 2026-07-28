@@ -35,19 +35,61 @@ cd "$ROOT"
 SIMULATOR="${CIPHER_TEST_SIMULATOR:-iPhone 17 Pro}"
 OUT="${TMPDIR:-/tmp}/cipher-api-surface.json"
 
-BUILT="$(find "$HOME/Library/Developer/Xcode/DerivedData/Cipher-"*/Build/Products/Debug-iphonesimulator \
-  -maxdepth 1 -type d -name 'Debug-iphonesimulator' 2>/dev/null | head -1)"
+BUILD_LOG="${TMPDIR:-/tmp}/cipher-api-boundary-build.log"
 
-if [ -z "$BUILT" ] || [ ! -d "$BUILT/CipherCrypto.framework" ]; then
-  echo "  …    building CipherCrypto first"
-  xcodebuild build -workspace Cipher.xcworkspace -scheme CipherCrypto \
+# Overridable so the clean-machine path — the one CI takes and a developer machine never
+# does — can be exercised deliberately. It was not, and the first CI run paid for it: the
+# unmatched `Cipher-*` glob was passed through to `find` literally, `find` failed, and under
+# `set -euo pipefail` the script aborted at that line with no output at all. verify-all.sh
+# then printed its own failure message, which read like a boundary violation. A check that
+# cannot run must say so; it must never look like the thing it was checking for.
+DERIVED_DATA="${CIPHER_DERIVED_DATA:-$HOME/Library/Developer/Xcode/DerivedData}"
+
+# When the override is set, xcodebuild is pointed at the same place — otherwise the script
+# would search one directory and build into another, and the "clean machine" rehearsal would
+# prove nothing about the path CI actually takes. Unset, this is empty and Xcode uses its own
+# location, which is what CI and a developer machine both want.
+DERIVED_DATA_ARG=()
+[ -n "${CIPHER_DERIVED_DATA:-}" ] && DERIVED_DATA_ARG=(-derivedDataPath "$DERIVED_DATA")
+
+# Two layouts, because they are genuinely different: Xcode's own root nests products under
+# `Cipher-<hash>/`, while `-derivedDataPath` puts `Build/` straight underneath.
+#
+# A `for` over a non-matching glob iterates once with the literal and the `-d` test then
+# fails, so this cannot abort. It insists on the framework actually being present rather than
+# on a directory merely existing.
+find_built_module() {
+  local candidate
+  for candidate in \
+    "$DERIVED_DATA"/Cipher-*/Build/Products/Debug-iphonesimulator \
+    "$DERIVED_DATA"/Build/Products/Debug-iphonesimulator; do
+    if [ -d "$candidate/CipherCrypto.framework" ]; then
+      printf '%s\n' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+BUILT="$(find_built_module || true)"
+
+if [ -z "$BUILT" ]; then
+  echo "  …    no built module found; building CipherCrypto (first run on a clean machine)"
+  if ! xcodebuild build -workspace Cipher.xcworkspace -scheme CipherCrypto \
     -destination "platform=iOS Simulator,name=$SIMULATOR,OS=latest" \
-    -configuration Debug >/dev/null 2>&1 || {
-    echo "  !     could not build CipherCrypto" >&2
+    -configuration Debug ${DERIVED_DATA_ARG[@]+"${DERIVED_DATA_ARG[@]}"} \
+    >"$BUILD_LOG" 2>&1; then
+    echo "  !     could not build CipherCrypto; last lines of $BUILD_LOG:" >&2
+    tail -25 "$BUILD_LOG" >&2
+    exit 1
+  fi
+
+  BUILT="$(find_built_module || true)"
+  [ -n "$BUILT" ] || {
+    echo "  !     CipherCrypto built, but no CipherCrypto.framework under $DERIVED_DATA" >&2
+    echo "        This gate cannot run. That is a failure, not a pass." >&2
     exit 1
   }
-  BUILT="$(find "$HOME/Library/Developer/Xcode/DerivedData/Cipher-"*/Build/Products/Debug-iphonesimulator \
-    -maxdepth 1 -type d -name 'Debug-iphonesimulator' 2>/dev/null | head -1)"
 fi
 
 # The deployment target has to match what the module was built against, or the digester
@@ -56,7 +98,7 @@ fi
 # gate that passes.
 TARGET_VERSION="$(xcodebuild -workspace Cipher.xcworkspace -scheme CipherCrypto \
   -destination "platform=iOS Simulator,name=$SIMULATOR,OS=latest" -showBuildSettings 2>/dev/null |
-  awk -F' = ' '/ IPHONEOS_DEPLOYMENT_TARGET /{print $2; exit}')"
+  awk -F' = ' '/ IPHONEOS_DEPLOYMENT_TARGET /{print $2; exit}' || true)"
 [ -n "$TARGET_VERSION" ] || {
   echo "  !     could not read IPHONEOS_DEPLOYMENT_TARGET" >&2
   exit 1
