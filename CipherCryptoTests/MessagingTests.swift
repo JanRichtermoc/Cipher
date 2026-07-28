@@ -305,6 +305,46 @@ final class MessagingTests: XCTestCase {
             kyberPrekeySignature: kyberSignature)
     }
 
+    // MARK: - P2.S04 — groups stay unreachable through the façade
+
+    /// Locked decision §0.2.2 holds at the API, not only at the wire type.
+    ///
+    /// `SenderKeyStore` is deliberately unimplemented, so a group message has nowhere to go —
+    /// but "nowhere to go" must be a refusal, not a crash or a partial state change. Every
+    /// payload discriminator outside the two live ones is rejected by the parser before any
+    /// store is touched, which is what keeps an unimplemented feature from becoming a
+    /// reachable one.
+    func testGroupAndUnknownPayloadTypesAreRefusedByTheFacade() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+            _ = try pair.deliverToPeer(try pair.engine.encrypt(Data("hi".utf8), to: pair.remote))
+
+            let live = Set(Envelope.PayloadType.allCases.map(\.rawValue))
+            XCTAssertEqual(live, [1, 2], "only preKey and whisper may be live")
+
+            // Every other discriminator, including 3 (reserved for the unauthenticated
+            // PlaintextContent carrier) and whatever a sender-key message would claim.
+            for raw in UInt8(0)...UInt8(16) where !live.contains(raw) {
+                var frame = try pair.envelopeFromPeer("would be a group message")
+                frame[frame.startIndex + 1] = raw
+
+                XCTAssertThrowsError(try pair.engine.decrypt(frame),
+                                     "payload type \(raw) must not be accepted") { error in
+                    XCTAssertEqual(error as? EnvelopeError, .unknownPayloadType(raw))
+                }
+            }
+
+            // And the session is untouched by the attempts: a rejected frame must not have
+            // stepped the ratchet or consumed a prekey on the way to being refused.
+            let honest = try pair.envelopeFromPeer("still works")
+            XCTAssertEqual(try pair.engine.decrypt(honest).plaintext, Data("still works".utf8))
+        }.value
+    }
+
     // MARK: - Local address
 
     /// Changing this device's own address would orphan every session it has. Refused, not

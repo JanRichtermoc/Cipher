@@ -15,10 +15,12 @@ E2E messenger.
 
 ```
 CURRENT PHASE:  P2 — Crypto messaging façade (still offline). P1 COMPLETE.
-DONE:           P1 all steps. P2.S01 (façade + boundary gate), S02, S03, S05.
-NEXT STEP:      P2.S04 (confirm groups still fail closed through the façade),
-                then P2.S06 (store edge hardening), P2.S07 (App Group design note).
-TESTS:          99 passing · ./Scripts/verify-all.sh exits 0 (10/10 gates)
+DONE:           P1 all steps. P2.S01–S07 (S08 optional, skipped: a DEBUG UI spike
+                would add a second path to the façade with nothing to learn from it).
+NEXT STEP:      P2 exit criteria hold. Begin P3.S01 — replace the UserDefaults auth
+                state with a real gate (AUDIT 5.2), then P3.S02 (LAContext + the
+                app lock that never re-engages, AUDIT 5.8).
+TESTS:          106 passing · ./Scripts/verify-all.sh exits 0 (10/10 gates)
                 CI green on main since 2026-07-28, first run, all gates.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
 HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,
@@ -63,16 +65,17 @@ negative test as a `--self-test` that runs before its own verdict is believed.
 - **CipherCrypto:** solid key-custody + protocol-store foundation on LibSignalClient `v0.99.1`. No
   custom crypto.
 - **App (`Cipher/`):** SwiftUI prototype on `MockStore`. No network. Not wired to `CryptoEngine`.
-- **Backend / CI / domain / VPS:** do not exist.
+- **Backend / domain / VPS:** do not exist. **CI does** — `github.com/JanRichtermoc/Cipher`, green
+  on `main`, running the same `Scripts/verify-all.sh` a developer runs.
 - **Verified:** Release arm64 device build; both schemes' tests; supply-chain gate; app-target
   manifest gate (tracks `.swift` / `.xcprivacy` / `.entitlements`).
-- **Tests:** **89 pass**. `testEveryStoreCallbackRunsOnTheCryptoQueue` proves the concurrency claim
+- **Tests:** **106 pass**. `testEveryStoreCallbackRunsOnTheCryptoQueue` proves the concurrency claim
   during a **real decrypt**, not a vacuous assert.
 - **Production readiness:** ~10–15% of a minimal private-circle E2E messenger.
   **NOT PRODUCTION-READY.**
-- **Re-verified 2026-07-28** against the working tree: no CI of any kind; `Cipher/` contains no
-  reference to `CipherCrypto`/`CryptoEngine` and no `URLSession`/`Network` usage; `PINS.env` still
-  pins `v0.99.1`. Every claim above holds.
+- **Re-verified 2026-07-28** against the working tree: `Cipher/` still contains no reference to
+  `CipherCrypto`/`CryptoEngine` and no `URLSession`/`Network` usage — the façade exists and is
+  tested, but no screen calls it (AUDIT 5.3, P5.S10); `PINS.env` still pins `v0.99.1`.
 
 ## 0.2 Locked protocol decisions (do not "fix" these)
 
@@ -106,6 +109,7 @@ a check that stops working fails loudly instead of passing vacuously.
 | AUDIT | Item | Closes in |
 |-------|------|-----------|
 | 3.8 | First-contact address is relabellable by the relay | P5.S12 / P7 |
+| 4.4 | No transactional store, so no NSE/App Group yet | P6, gated on P5.S11 |
 | 5.8 | App lock never re-engages; only cold launch | P3.S02 |
 | 2.4 | No key rotation / replenishment | P6.S01 |
 | 2.5 | No safety-number UI | **P5.S12** (moved from P6) |
@@ -200,11 +204,11 @@ a check that stops working fails loudly instead of passing vacuously.
 | **P2.S01** | Design the single audited messaging API on `@CryptoActor CryptoEngine`, keeping LibSignalClient internal: process prekey bundle / start session; encrypt → ciphertext + `Envelope`; decrypt `Envelope` → plaintext with **session-bound sender attribution**; documented error/replay/duplicate policy. All store mutations go through `CipherProtocolStore`. | AI | C-02 (part) | Public API compiles with no LibSignalClient type in its signature | Leak libsignal types across the boundary |
 | **P2.S02** | Encrypt/decrypt round-trip tests: golden vectors + restart persistence. | AI | — | New tests green; a session survives a store reopen | — |
 | **P2.S03** | Tests where envelope sender metadata **disagrees** with session identity — attribution must follow the decrypted session (§0.2.3). | AI | — | A test proves a rewritten `Envelope.sender` does not change attribution | Trust the field |
-| **P2.S04** | Keep sender-key/group wire types failing closed. | AI | — | `LockedDecisionsTests` still green | Implement groups |
+| **P2.S04** | Keep sender-key/group wire types failing closed. **Done 2026-07-28** — extended past the wire type to the façade: `testGroupAndUnknownPayloadTypesAreRefusedByTheFacade` sweeps every discriminator 0–16 outside the two live ones through `CryptoEngine.decrypt`, and then proves the session still works, so a refusal cannot have half-consumed a prekey or stepped the ratchet on the way out. | AI | — | `LockedDecisionsTests` still green | Implement groups |
 | **P2.S05** | Preserve the identity-change policy through the façade (receive OK, send blocked until exact `acceptIdentity`). Extend tests if the façade touches trust paths. | AI | — | `testChangedIdentityBlocksSendingButNotReceiving` still green via the façade | Soften either direction |
-| **P2.S06** | Harden store edges: max record size before `Data(contentsOf:)`; canonicalize peer-identity flags (reject unknown bits); crash/failure injection for multi-record Signal ops and `destroyAllState` ordering (durable reset marker if needed). | AI | — | Tests cover oversize, unknown-flag, and interrupted-destroy cases | — |
-| **P2.S07** | **Design note only** on App Group / NSE sharing: a transactional store is required before any extension decrypts. Do not implement sharing. | AI | — | Note exists in `AUDIT.md` or `DECISIONS.md` | Add an App Group or shared Keychain group |
-| **P2.S08** | *Optional* DEBUG-only UI spike: one screen that encrypts/decrypts via `CryptoEngine`. | AI | — | Unreachable in Release | Let it become the production path |
+| **P2.S06** | Harden store edges: max record size before `Data(contentsOf:)`; canonicalize peer-identity flags (reject unknown bits); crash/failure injection for multi-record Signal ops and `destroyAllState` ordering (durable reset marker if needed). **Done 2026-07-28** in `StoreEdgeTests`: a 1 MiB ceiling checked from `.fileSizeKey` *before* the read (`Data(contentsOf:)` allocates whatever it finds, so an oversized file in a slot was an unauthenticated memory-exhaustion DoS), re-checked after in case the size changed; unknown peer-identity flag bits now refused rather than dropped, swept bit by bit with a positive control; destroy ordering shown to leave nothing readable even when the Keychain survives. The multi-record transaction problem is **not** solved and is recorded as AUDIT 4.4 rather than papered over — it is the same gap that blocks an NSE. | AI | — | Tests cover oversize, unknown-flag, and interrupted-destroy cases | — |
+| **P2.S07** | **Design note only** on App Group / NSE sharing: a transactional store is required before any extension decrypts. Do not implement sharing. **Done 2026-07-28** — AUDIT 4.4 names all three blockers: no multi-record transaction (per-file atomicity is not enough; one decrypt touches session, prekey and witness), no cross-process lock that survives the holder being killed, and a Keychain item with no access group, which is a decision to take deliberately rather than a side effect of adding an extension. | AI | — | Note exists in `AUDIT.md` or `DECISIONS.md` | Add an App Group or shared Keychain group |
+| **P2.S08** | *Optional* DEBUG-only UI spike: one screen that encrypts/decrypts via `CryptoEngine`. **Skipped 2026-07-28.** `MessagingTests` already drives the façade end to end against libsignal's own store, which is a stronger check than a screen; a DEBUG screen would add a second call path into the crypto module whose only purpose is to be looked at, and P1.S07 exists because DEBUG affordances leak. The real wiring is P5.S10. | AI | — | Unreachable in Release | Let it become the production path |
 
 **Exit criteria:**
 - [ ] Façade exists; no app production path required yet
