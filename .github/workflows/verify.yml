@@ -47,7 +47,7 @@ jobs:
     timeout-minutes: 45
 
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # Full history so a tag/commit check can resolve; the supply-chain script
           # queries the remote, but a shallow clone hides local tag state.
@@ -144,7 +144,7 @@ jobs:
     runs-on: macos-26
     needs: verify
     steps:
-      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
       - name: Supply chain must be verified online for a release
