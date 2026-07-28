@@ -36,7 +36,7 @@ struct OnboardingFlowView: View {
                         session.debugSkipToMain = true
                         session.hasCompletedOnboarding = true
                         try? session.signInForDevelopment()
-                        session.isAppLocked = false
+                        session.debugUnlockWithoutAuthentication()
                     }
                     .font(.caption)
                 }

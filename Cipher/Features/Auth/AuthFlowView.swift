@@ -30,7 +30,7 @@ struct AuthFlowView: View {
                     Button("Skip") {
                         session.debugSkipToMain = true
                         try? session.signInForDevelopment()
-                        session.isAppLocked = false
+                        session.debugUnlockWithoutAuthentication()
                     }
                 }
                 #endif
@@ -174,6 +174,9 @@ private extension String {
 }
 
 struct AppLockView: View {
+    @State private var failure: String?
+    @State private var isAuthenticating = false
+
     @Environment(AppSession.self) private var session
 
     var body: some View {
@@ -196,24 +199,56 @@ struct AppLockView: View {
                 Text("Cipher is Locked")
                     .font(.title.bold())
 
-                // This screen promised "Unlock with Face ID or your device passcode" while
-                // both buttons called `unlock()` directly — no LocalAuthentication, no
-                // failure path. The promise is removed rather than the screen: it still
-                // hides content from a casual glance, which is all it ever did.
-                // P3.S02 makes it real and restores the biometric copy.
-                UnimplementedNotice(
-                    "This screen does not ask for Face ID or your passcode yet. It hides your chats from view; it does not keep anyone out."
-                )
-                .padding(.horizontal, CipherTheme.spacingXL)
+                // Real since P3.S02. It previously promised "Unlock with Face ID or your
+                // device passcode" while both buttons called `unlock()` directly — no
+                // LocalAuthentication, no failure path (C-03). P1.S05 removed the promise;
+                // this restores it now that the check exists.
+                Text("Unlock with Face ID or your device passcode.")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, CipherTheme.spacingXL)
+
+                if let failure {
+                    // Cancel and failure are reported, never swallowed. A dismissed prompt
+                    // that silently left the screen unchanged would read as a broken button
+                    // and train the user to tap until something happens.
+                    Text(failure)
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, CipherTheme.spacingXL)
+                }
 
                 Spacer()
 
-                PrimaryGlassButton(title: "Continue", systemImage: "lock.open") {
-                    session.unlock()
+                PrimaryGlassButton(title: "Unlock", systemImage: "lock.open") {
+                    Task { await attemptUnlock() }
                 }
                 .padding(.horizontal, CipherTheme.spacingXL)
                 .padding(.bottom, CipherTheme.spacingXL)
+                .disabled(isAuthenticating)
             }
+        }
+        // Prompt on appear as well as on tap, so returning to a locked app does not need an
+        // extra deliberate tap to get to the check the user already expects.
+        .task { await attemptUnlock() }
+    }
+
+    private func attemptUnlock() async {
+        guard !isAuthenticating else { return }
+        isAuthenticating = true
+        defer { isAuthenticating = false }
+
+        do {
+            try await session.unlock(reason: "Unlock Cipher")
+            failure = nil
+        } catch DeviceAuthenticationError.cancelled {
+            failure = nil  // A deliberate dismissal is not an error to shout about.
+        } catch DeviceAuthenticationError.unavailable {
+            failure = String(localized: "Set a device passcode to use the app lock.")
+        } catch {
+            failure = String(localized: "Could not verify it is you. Try again.")
         }
     }
 }

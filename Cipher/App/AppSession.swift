@@ -21,9 +21,19 @@ final class AppSession {
     private(set) var credential: SessionCredential?
 
     var isAuthenticated: Bool { credential != nil }
-    var isAppLocked: Bool
+    /// `private(set)`: the lock is cleared by `unlock(reason:)` after a successful
+    /// device-owner check, and by nothing else in a shipping build. It used to be a plain
+    /// `var`, so four call sites set it directly — the lock's only real authority was that
+    /// nobody happened to write that line.
+    private(set) var isAppLocked: Bool
+
     var appLockEnabled: Bool {
-        didSet { defaults.set(appLockEnabled, forKey: Keys.appLock) }
+        didSet {
+            defaults.set(appLockEnabled, forKey: Keys.appLock)
+            // Turning the lock off clears it. The alternative is a locked screen with the
+            // feature disabled and no way through, which is a lockout, not a control.
+            if !appLockEnabled { isAppLocked = false }
+        }
     }
     var screenshotWarningEnabled: Bool {
         didSet { defaults.set(screenshotWarningEnabled, forKey: Keys.screenshot) }
@@ -67,13 +77,19 @@ final class AppSession {
     }
 
     private let sessions: SessionStore
+    private let authenticator: DeviceAuthenticator
     /// Injected so a test can use a scratch suite. `UserDefaults.standard` is process-wide,
     /// so tests that shared it leaked onboarding state into each other and passed or failed
     /// on run order — which is how a suite starts being re-run until it goes green.
     private let defaults: UserDefaults
 
-    init(sessions: SessionStore = SessionStore(), defaults: UserDefaults = .standard) {
+    init(
+        sessions: SessionStore = SessionStore(),
+        defaults: UserDefaults = .standard,
+        authenticator: DeviceAuthenticator = SystemDeviceAuthenticator()
+    ) {
         self.sessions = sessions
+        self.authenticator = authenticator
         self.defaults = defaults
 
         // A build that predates this carries `cipher.isAuthenticated` in UserDefaults. It is
@@ -147,6 +163,18 @@ final class AppSession {
     }
     #endif
 
+    #if DEBUG
+    /// Unlocks without a device-owner check.
+    ///
+    /// DEBUG only. The simulator can be configured for biometry but a unit test cannot drive
+    /// it, and a UI spike should not require a passcode on every launch. Fenced with the
+    /// mechanism, not just the button — P1.S07 exists because fencing only the caller still
+    /// ships the switch.
+    func debugUnlockWithoutAuthentication() {
+        isAppLocked = false
+    }
+    #endif
+
     /// Signs out and destroys the credential.
     func signOut() throws {
         try sessions.clear()
@@ -154,10 +182,32 @@ final class AppSession {
         isAppLocked = false
     }
 
-    func unlock() {
+    /// Whether the device can perform the owner check at all.
+    ///
+    /// A device with no passcode cannot, and the setting is disabled rather than offered —
+    /// a lock the device cannot enforce is the deceptive-UI case P1.S05 was about.
+    var canUseAppLock: Bool { authenticator.isAvailable }
+
+    /// Unlocks **only** on a successful device-owner check.
+    ///
+    /// There is no non-throwing variant and no caller-supplied override. The previous
+    /// `unlock()` set `isAppLocked = false` unconditionally, so the "Unlock" button *was*
+    /// the lock's only authority — the `LAContext` it advertised never existed (AUDIT 5.8,
+    /// C-03).
+    ///
+    /// Cancel and error both leave the app locked. That is the whole point: the classic
+    /// version of this bug is treating a dismissed prompt as consent, and it is invisible
+    /// in manual testing because the happy path looks identical.
+    func unlock(reason: String) async throws {
+        try await authenticator.authenticate(reason: reason)
         isAppLocked = false
     }
 
+    /// Engages the lock if it is enabled.
+    ///
+    /// Called on every move out of the foreground, not only from a button. Until P3.S02 it
+    /// had exactly one caller — a manual "Lock Now" — so the lock engaged on cold launch and
+    /// never again: backgrounding the app and returning left it unlocked (AUDIT 5.8).
     func lockIfNeeded() {
         if appLockEnabled {
             isAppLocked = true

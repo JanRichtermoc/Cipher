@@ -15,12 +15,10 @@ E2E messenger.
 
 ```
 CURRENT PHASE:  P3 — Real client auth gate & app lock. P1, P2 COMPLETE.
-DONE:           P1 all steps. P2.S01–S07 (S08 skipped, reason in the row).
-                P3.S01 — auth state is a Keychain credential, not a UserDefaults bool.
-NEXT STEP:      P3.S02 — LocalAuthentication. Must fail closed on cancel/error, and
-                must re-lock on scenePhase (AUDIT 5.8: lockIfNeeded has exactly one
-                caller, a manual button, so the lock engages only on cold launch).
-TESTS:          116 passing (106 CipherCrypto + 10 Cipher) · verify-all.sh 10/10
+DONE:           P1, P2 all steps. P3.S01 (Keychain auth gate), P3.S02 (real lock).
+NEXT STEP:      P3.S03 — clipboard policy. Then P3.S04 (app-switcher redaction),
+                P3.S05 (PII out of UserDefaults), P3.S06 (close AUDIT 5.2).
+TESTS:          126 passing (106 CipherCrypto + 20 Cipher) · verify-all.sh 10/10
                 CI green on main since 2026-07-28, first run, all gates.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
 HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,
@@ -110,7 +108,6 @@ a check that stops working fails loudly instead of passing vacuously.
 |-------|------|-----------|
 | 3.8 | First-contact address is relabellable by the relay | P5.S12 / P7 |
 | 4.4 | No transactional store, so no NSE/App Group yet | P6, gated on P5.S11 |
-| 5.8 | App lock never re-engages; only cold launch | P3.S02 |
 | 2.4 | No key rotation / replenishment | P6.S01 |
 | 2.5 | No safety-number UI | **P5.S12** (moved from P6) |
 | 3.1 | Base-key witness FIFO eviction | P4.S06 + P6.S01, resolved P6.S02 |
@@ -138,7 +135,7 @@ a check that stops working fails loudly instead of passing vacuously.
 |----|---------|-------------|-----------|
 | C-01 | Invite auth is client-side; `AuthFlowView.swift:93` gates on `count >= 4`, `:21` calls `signIn()` which sets a Bool | confirmed 2026-07-28 | P3.S01 + P5.S09 |
 | C-02 | Messaging path is plaintext `MockStore`; no encrypt/decrypt façade | confirmed | P2.S01 + P5.S10 |
-| C-03 | App lock Unlock/Passcode call `session.unlock()` with no `LAContext` (`AuthFlowView.swift:204,209`) while `:196` promises "Unlock with Face ID" | confirmed | P3.S02 |
+| C-03 | App lock Unlock/Passcode call `session.unlock()` with no `LAContext` (`AuthFlowView.swift:204,209`) while `:196` promises "Unlock with Face ID" | **CLOSED 2026-07-28** | P3.S02 |
 
 ## 0.6 Non-negotiable engineering rules
 
