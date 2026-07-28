@@ -1600,26 +1600,6 @@
         }
       }
     },
-    "Screen Security" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Zabezpečení obrazovky"
-          }
-        }
-      }
-    },
-    "Screenshot Warning" : {
-      "localizations" : {
-        "cs" : {
-          "stringUnit" : {
-            "state" : "translated",
-            "value" : "Varování při snímku"
-          }
-        }
-      }
-    },
     "Search" : {
       "localizations" : {
         "cs" : {

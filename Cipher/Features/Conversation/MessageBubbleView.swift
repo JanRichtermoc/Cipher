@@ -99,7 +99,9 @@ struct MessageBubbleView: View {
             }
             Button("Copy", systemImage: "doc.on.doc") {
                 if case .text(let t) = message.kind {
-                    UIPasteboard.general.string = t
+                    // Not `UIPasteboard.general.string = t` — that syncs a decrypted
+                    // message to every Mac and iPad on the account, forever.
+                    SecurePasteboard.copy(t)
                 }
             }
             Button("Forward", systemImage: "arrowshape.turn.up.forward") { onForward() }
