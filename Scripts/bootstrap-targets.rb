@@ -204,6 +204,24 @@ sync_sources(project, tests,     'CipherCryptoTests')
 sync_sources(project, app_tests, 'CipherTests')
 
 # ---------------------------------------------------------------------------
+# App Info.plist keys that are security-relevant
+#
+# NSFaceIDUsageDescription is required: without it the first Face ID evaluation
+# terminates the app rather than prompting. Set here rather than left to whoever
+# edits build settings in the UI, so it cannot be dropped by a regeneration —
+# a missing key turns the app lock into a crash on exactly the devices that have
+# biometrics.
+#
+# The string is deliberately plain about what the check gates. It is shown by the
+# system, so it is UI copy and subject to the same honesty rule as any other.
+# ---------------------------------------------------------------------------
+app.build_configurations.each do |config|
+  config.build_settings['INFOPLIST_KEY_NSFaceIDUsageDescription'] =
+    'Cipher uses Face ID to unlock the app.'
+end
+puts "#{APP_TARGET}: NSFaceIDUsageDescription set"
+
+# ---------------------------------------------------------------------------
 # Build guards
 # ---------------------------------------------------------------------------
 

@@ -166,6 +166,8 @@ grep -q "LockedDecisionsTests" "$LOG" ||
 # edit that quietly dropped either would otherwise leave this gate green over half the tests.
 grep -q "SessionCredentialTests" "$LOG" ||
   fail "CipherTests did not run — the auth gate is unguarded (P3.S01)"
+grep -q "AppLockTests" "$LOG" ||
+  fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
 # --- 5. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the

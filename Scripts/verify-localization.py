@@ -68,10 +68,14 @@ GUARD = [
 
 # Reviewed and correct as written. Each of these *denies* the capability it names.
 ACKNOWLEDGED = {
-    "This is a privacy screen, not a security control: unlocking does not yet ask for "
-    "Face ID or your passcode, and the app does not re-lock when you switch away from it.",
-    "This screen does not ask for Face ID or your passcode yet. It hides your chats from "
-    "view; it does not keep anyone out.",
+    # P3.S02 made the lock real: `AppSession.unlock(reason:)` only clears the lock after a
+    # successful `.deviceOwnerAuthentication`, and `RootView` re-locks on every move out of
+    # the foreground. These promise exactly what now happens, which is the only condition on
+    # which an entry may be added here.
+    "Unlock with Face ID or your device passcode.",
+    "Set a device passcode to use the app lock.",
+    "Could not verify it is you. Try again.",
+    "Require Face ID or your device passcode to reopen Cipher.",
 }
 
 # A catalog key holds format specifiers where the source has interpolation; the two are

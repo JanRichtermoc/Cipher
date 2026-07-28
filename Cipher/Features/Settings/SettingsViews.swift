@@ -333,18 +333,29 @@ struct PrivacySecurityView: View {
     var body: some View {
         @Bindable var session = session
         Form {
-            // "Require Face ID" claimed biometrics the app never asks for, and the lock only
-            // ever engaged on a cold launch — backgrounding and returning left it open. The
-            // label now describes what the control actually does. Real biometric auth and
-            // re-locking on background arrive together in P3.S02.
+            // Real since P3.S02: unlocking requires a successful device-owner check, and
+            // the app re-locks on every move out of the foreground. Before that this said
+            // "Require Face ID" while asking for nothing, and the lock engaged only on a
+            // cold launch — backgrounding and returning left it open (C-03, AUDIT 5.8).
             Section("App Lock") {
-                Toggle("Lock on launch", isOn: $session.appLockEnabled)
+                Toggle("Lock Cipher", isOn: $session.appLockEnabled)
+                    .disabled(!session.canUseAppLock)
+
+                if session.canUseAppLock {
+                    Text("Require Face ID or your device passcode to reopen Cipher.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                } else {
+                    // Offering a lock the device cannot enforce is the deceptive-UI case
+                    // P1.S05 was about, so the control is disabled and says why.
+                    Text("Set a device passcode to use the app lock.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 if session.appLockEnabled {
                     Button("Lock Now") { session.lockIfNeeded() }
                 }
-                UnimplementedNotice(
-                    "This is a privacy screen, not a security control: unlocking does not yet ask for Face ID or your passcode, and the app does not re-lock when you switch away from it."
-                )
             }
 
             Section("Screen Security") {
@@ -404,7 +415,9 @@ struct PrivacySecurityView: View {
         }
         .navigationTitle("Privacy & Security")
         .onChange(of: session.appLockEnabled) { _, enabled in
-            if !enabled { session.isAppLocked = false }
+            // Clearing the lock when the toggle goes off is `appLockEnabled`'s own
+            // business now — see AppSession. Doing it here as well would be a second
+            // place that can unlock the app.
         }
     }
 }
