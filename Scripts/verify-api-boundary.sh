@@ -96,11 +96,16 @@ fi
 # refuses to load it. Read it from the project rather than pinned here — a target bump would
 # otherwise turn this gate off silently, and a gate that stops running looks exactly like a
 # gate that passes.
-TARGET_VERSION="$(xcodebuild -workspace Cipher.xcworkspace -scheme CipherCrypto \
-  -destination "platform=iOS Simulator,name=$SIMULATOR,OS=latest" -showBuildSettings 2>/dev/null |
-  awk -F' = ' '/ IPHONEOS_DEPLOYMENT_TARGET /{print $2; exit}' || true)"
+# Buffered, not piped. `awk … {exit}` stops reading and xcodebuild aborts on the closed pipe
+# rather than tolerating it (NSFileHandleOperationException, not a quiet SIGPIPE death), so
+# under `pipefail` a successful read becomes a failed pipeline. The `|| true` this replaced
+# hid that — and would equally have hidden a real failure to read the settings at all.
+SETTINGS="$(xcodebuild -workspace Cipher.xcworkspace -scheme CipherCrypto \
+  -destination "platform=iOS Simulator,name=$SIMULATOR,OS=latest" -showBuildSettings 2>/dev/null)"
+TARGET_VERSION="$(printf '%s\n' "$SETTINGS" |
+  awk -F' = ' '/ IPHONEOS_DEPLOYMENT_TARGET /{print $2; exit}')"
 [ -n "$TARGET_VERSION" ] || {
-  echo "  !     could not read IPHONEOS_DEPLOYMENT_TARGET" >&2
+  echo "  !     could not read IPHONEOS_DEPLOYMENT_TARGET from the build settings" >&2
   exit 1
 }
 
