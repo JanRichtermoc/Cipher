@@ -20,6 +20,7 @@ TEAM          = '22C66TDMT9'
 APP_TARGET    = 'Cipher'
 FRAMEWORK     = 'CipherCrypto'
 TEST_TARGET   = 'CipherCryptoTests'
+APP_TEST_TARGET = 'CipherTests'
 
 project = Xcodeproj::Project.open(PROJECT_PATH)
 
@@ -97,6 +98,32 @@ TEST_SETTINGS = CRYPTO_COMMON.merge(
   # Warnings-as-errors stays on for tests too: test code is reviewed code.
 ).freeze
 
+# The app's own suite. Hosted by the app for the same reason the crypto suite is: it
+# exercises the Keychain, and a host-less bundle has no keychain access group. Unlike the
+# crypto tests it does not link CipherCrypto — what it covers is the *app's* auth gate and
+# app lock, and keeping the dependency out means a break there cannot be mistaken for a
+# crypto failure.
+APP_TEST_SETTINGS = {
+  'PRODUCT_NAME'                        => APP_TEST_TARGET,
+  'PRODUCT_BUNDLE_IDENTIFIER'           => "cz.janrichtermoc.#{APP_TEST_TARGET}",
+  'SWIFT_VERSION'                       => '6.0',
+  'IPHONEOS_DEPLOYMENT_TARGET'          => DEPLOYMENT,
+  'DEVELOPMENT_TEAM'                    => TEAM,
+  'SWIFT_STRICT_CONCURRENCY'            => 'complete',
+  'SWIFT_TREAT_WARNINGS_AS_ERRORS'      => 'YES',
+  'GCC_TREAT_WARNINGS_AS_ERRORS'        => 'YES',
+  'LD_RUNPATH_SEARCH_PATHS'             => ['$(inherited)', '@executable_path/Frameworks',
+                                            '@loader_path/Frameworks'],
+  'TEST_HOST'                           => "$(BUILT_PRODUCTS_DIR)/#{APP_TARGET}.app/" \
+                                           "$(BUNDLE_EXECUTABLE_FOLDER_PATH)/#{APP_TARGET}",
+  'BUNDLE_LOADER'                       => '$(TEST_HOST)',
+  'TEST_TARGET_NAME'                    => APP_TARGET,
+  # A test bundle still gets code-signed, and signing needs an Info.plist. Generated
+  # rather than checked in: there is nothing in it worth reviewing, and a stray file is
+  # one more thing the app-target manifest gate would have to reason about.
+  'GENERATE_INFOPLIST_FILE'             => 'YES',
+}.freeze
+
 def apply(target, settings)
   target.build_configurations.each do |config|
     settings.each { |k, v| config.build_settings[k] = v }
@@ -124,6 +151,15 @@ else
   puts "target #{TEST_TARGET} already exists"
 end
 apply(tests, TEST_SETTINGS)
+
+app_tests = project.targets.find { |t| t.name == APP_TEST_TARGET }
+if app_tests.nil?
+  app_tests = project.new_target(:unit_test_bundle, APP_TEST_TARGET, :ios, DEPLOYMENT)
+  puts "created target #{APP_TEST_TARGET}"
+else
+  puts "target #{APP_TEST_TARGET} already exists"
+end
+apply(app_tests, APP_TEST_SETTINGS)
 
 # ---------------------------------------------------------------------------
 # Source files — explicit references, deliberately NOT a synchronized group.
@@ -165,6 +201,7 @@ end
 require 'pathname'
 sync_sources(project, framework, 'CipherCrypto')
 sync_sources(project, tests,     'CipherCryptoTests')
+sync_sources(project, app_tests, 'CipherTests')
 
 # ---------------------------------------------------------------------------
 # Build guards
@@ -224,6 +261,11 @@ unless tests.dependencies.any? { |d| d.target == app }
 end
 unless tests.frameworks_build_phase.files.any? { |f| f.display_name == "#{FRAMEWORK}.framework" }
   tests.frameworks_build_phase.add_file_reference(framework.product_reference)
+end
+
+unless app_tests.dependencies.any? { |d| d.target == app }
+  app_tests.add_dependency(app)
+  puts "#{APP_TEST_TARGET} depends on #{APP_TARGET} (test host)"
 end
 
 unless app.dependencies.any? { |d| d.target == framework }

@@ -47,7 +47,7 @@ struct UICatalogView: View {
                 Button("Unlock & Show Main") {
                     session.debugSkipToMain = true
                     session.hasCompletedOnboarding = true
-                    session.isAuthenticated = true
+                    try? session.signInForDevelopment()
                     session.isAppLocked = false
                 }
                 Button("Reset Onboarding", role: .destructive) {

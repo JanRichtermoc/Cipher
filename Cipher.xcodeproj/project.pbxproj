@@ -7,12 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		042CF938F2EE60FF79FD6052 /* SessionCredentialTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9743B27B6E97F0986F9830 /* SessionCredentialTests.swift */; };
 		061808335DD4FB427F24404A /* Pods_CipherCrypto.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF956B52C9027CFF1D1DD1A9 /* Pods_CipherCrypto.framework */; };
 		0C7CB886FA573410CFF1FF2B /* CipherCrypto.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 27EE9F4D2EFA47454597A13F /* CipherCrypto.framework */; };
 		0DA2AD1BBBD7D9942A83574D /* MessagingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 20D44BB8B6D4BE9BBF544E1D /* MessagingTests.swift */; };
 		0F21E1E366595FE97FCB7EE9 /* LibsignalContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1482589F3434312890CF31 /* LibsignalContractTests.swift */; };
 		0FFF05490392465EA74AC7DB /* CryptoActor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 522E9E6822AC6B3037716496 /* CryptoActor.swift */; };
 		18D3B64D48B455629A0953F0 /* Pods_CipherCryptoTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9CE44AA19BFDB461A18871B2 /* Pods_CipherCryptoTests.framework */; };
+		328297D5F6B3221D25AE6333 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8CF345C885BFDA0D8BD6942C /* Foundation.framework */; };
 		37BE7ED821518ACE02604C00 /* ProtocolStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3249604329CEEFC984EF6401 /* ProtocolStoreTests.swift */; };
 		3E30D3D43CA5CA698EF66F86 /* ZeroizationRealityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 323F9EC08DCEA062B0E6744B /* ZeroizationRealityTests.swift */; };
 		4095C946EBDC8A98D931B170 /* CipherCrypto.framework in Embed CipherCrypto */ = {isa = PBXBuildFile; fileRef = 27EE9F4D2EFA47454597A13F /* CipherCrypto.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
@@ -65,6 +67,13 @@
 			remoteGlobalIDString = 59EC0BA53016349B0033985A;
 			remoteInfo = Cipher;
 		};
+		E7DEF2DD778EC2167E434CA0 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 59EC0B9E3016349B0033985A /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 59EC0BA53016349B0033985A;
+			remoteInfo = Cipher;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -111,10 +120,12 @@
 		9CEDE557AC7DD0A5148C717A /* EnvelopeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherCryptoTests/EnvelopeTests.swift; sourceTree = SOURCE_ROOT; };
 		A190A5F3E3385E5ED800DE83 /* CipherProtocolStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CipherProtocolStore.swift; path = CipherCrypto/Sources/Store/CipherProtocolStore.swift; sourceTree = SOURCE_ROOT; };
 		AC2A0FF42C6B89F1B32208E9 /* PeerAddress.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PeerAddress.swift; path = CipherCrypto/Sources/Engine/PeerAddress.swift; sourceTree = SOURCE_ROOT; };
+		BD9743B27B6E97F0986F9830 /* SessionCredentialTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/SessionCredentialTests.swift; sourceTree = SOURCE_ROOT; };
 		C650C2640D3E41BE3F7574F3 /* LockedDecisionsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherCryptoTests/LockedDecisionsTests.swift; sourceTree = SOURCE_ROOT; };
 		C741487CF3332A97BAFB261F /* Pods_Cipher.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Cipher.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		CA26B96B15EBE6A58944B572 /* Pods-CipherCrypto.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CipherCrypto.release.xcconfig"; path = "Target Support Files/Pods-CipherCrypto/Pods-CipherCrypto.release.xcconfig"; sourceTree = "<group>"; };
 		CC990D573D0C5202DE896D1C /* PeerKeyBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PeerKeyBundle.swift; path = CipherCrypto/Sources/Engine/PeerKeyBundle.swift; sourceTree = SOURCE_ROOT; };
+		CDF1A3AF7293F5E9492A6D75 /* CipherTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CipherTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		D46484753741BE4F05CD2A0C /* CryptoEngine.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CryptoEngine.swift; path = CipherCrypto/Sources/Engine/CryptoEngine.swift; sourceTree = SOURCE_ROOT; };
 		D4D220698347B14C8894D002 /* Pods-CipherCryptoTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CipherCryptoTests.release.xcconfig"; path = "Target Support Files/Pods-CipherCryptoTests/Pods-CipherCryptoTests.release.xcconfig"; sourceTree = "<group>"; };
 		E439ADE2D608F45BC8C8812B /* PeerIdentityRecord.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PeerIdentityRecord.swift; path = CipherCrypto/Sources/Store/PeerIdentityRecord.swift; sourceTree = SOURCE_ROOT; };
@@ -153,6 +164,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		BCF86C1D4B9C0B1A660A7C19 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				328297D5F6B3221D25AE6333 /* Foundation.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		BEAE4C1E5D9A7B55CB3C0315 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -179,6 +198,15 @@
 			path = Pods;
 			sourceTree = "<group>";
 		};
+		5819750B524358AB3C73DA70 /* CipherTests */ = {
+			isa = PBXGroup;
+			children = (
+				BD9743B27B6E97F0986F9830 /* SessionCredentialTests.swift */,
+			);
+			name = CipherTests;
+			path = CipherTests;
+			sourceTree = "<group>";
+		};
 		59EC0B9D3016349B0033985A = {
 			isa = PBXGroup;
 			children = (
@@ -188,6 +216,7 @@
 				7183C88CFD7632A686DE3989 /* CipherCrypto */,
 				B8F49C1E95205386AC602C9B /* CipherCryptoTests */,
 				55719BF5AC5702EB3973625A /* Pods */,
+				5819750B524358AB3C73DA70 /* CipherTests */,
 			);
 			sourceTree = "<group>";
 		};
@@ -197,6 +226,7 @@
 				59EC0BA63016349B0033985A /* Cipher.app */,
 				27EE9F4D2EFA47454597A13F /* CipherCrypto.framework */,
 				38481AA880A269F23525BE35 /* CipherCryptoTests.xctest */,
+				CDF1A3AF7293F5E9492A6D75 /* CipherTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -284,6 +314,24 @@
 			productReference = 27EE9F4D2EFA47454597A13F /* CipherCrypto.framework */;
 			productType = "com.apple.product-type.framework";
 		};
+		2BDEB6F194143F96D75038B6 /* CipherTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1515AD6256C48A8E9CF07175 /* Build configuration list for PBXNativeTarget "CipherTests" */;
+			buildPhases = (
+				47CD1B6F87543AD204FBBEFB /* Sources */,
+				BCF86C1D4B9C0B1A660A7C19 /* Frameworks */,
+				FF43BCE238CDFE539A20B7B2 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5C24EF7A4E61552E9E0F0E7F /* PBXTargetDependency */,
+			);
+			name = CipherTests;
+			productName = CipherTests;
+			productReference = CDF1A3AF7293F5E9492A6D75 /* CipherTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 		59EC0BA53016349B0033985A /* Cipher */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 59EC0BB13016349C0033985A /* Build configuration list for PBXNativeTarget "Cipher" */;
@@ -364,6 +412,7 @@
 				59EC0BA53016349B0033985A /* Cipher */,
 				22CCFA07FBBB114DE077490E /* CipherCrypto */,
 				F77A74EEE587E267B251652D /* CipherCryptoTests */,
+				2BDEB6F194143F96D75038B6 /* CipherTests */,
 			);
 		};
 /* End PBXProject section */
@@ -384,6 +433,13 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		F86828FD13D3E6ED73062108 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		FF43BCE238CDFE539A20B7B2 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -559,6 +615,14 @@
 /* End PBXShellScriptBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
+		47CD1B6F87543AD204FBBEFB /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				042CF938F2EE60FF79FD6052 /* SessionCredentialTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		593B9A17446B79EDB942BABF /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -609,6 +673,12 @@
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
+		5C24EF7A4E61552E9E0F0E7F /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = Cipher;
+			target = 59EC0BA53016349B0033985A /* Cipher */;
+			targetProxy = E7DEF2DD778EC2167E434CA0 /* PBXContainerItemProxy */;
+		};
 		81DD87CAC8C57CE7CDC07794 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			name = CipherCrypto;
@@ -916,6 +986,31 @@
 			};
 			name = Release;
 		};
+		AD54DA10028B0901F8E873EB /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				DEVELOPMENT_TEAM = 22C66TDMT9;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cz.janrichtermoc.CipherTests;
+				PRODUCT_NAME = CipherTests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cipher.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cipher";
+				TEST_TARGET_NAME = Cipher;
+			};
+			name = Debug;
+		};
 		BCBCE7DA841F146E2913A0EE /* Debug */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 1250270E512D8253FA3AD568 /* Pods-CipherCrypto.debug.xcconfig */;
@@ -999,9 +1094,44 @@
 			};
 			name = Debug;
 		};
+		D82A2BDB002AF4F9ECE90A13 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				DEVELOPMENT_TEAM = 22C66TDMT9;
+				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = cz.janrichtermoc.CipherTests;
+				PRODUCT_NAME = CipherTests;
+				SDKROOT = iphoneos;
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
+				SWIFT_VERSION = 6.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Cipher.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Cipher";
+				TEST_TARGET_NAME = Cipher;
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
+		1515AD6256C48A8E9CF07175 /* Build configuration list for PBXNativeTarget "CipherTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				D82A2BDB002AF4F9ECE90A13 /* Release */,
+				AD54DA10028B0901F8E873EB /* Debug */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
 		59EC0BA13016349B0033985A /* Build configuration list for PBXProject "Cipher" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (

@@ -35,7 +35,7 @@ struct OnboardingFlowView: View {
                     Button("Skip to App") {
                         session.debugSkipToMain = true
                         session.hasCompletedOnboarding = true
-                        session.isAuthenticated = true
+                        try? session.signInForDevelopment()
                         session.isAppLocked = false
                     }
                     .font(.caption)

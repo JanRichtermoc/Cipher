@@ -94,7 +94,11 @@ def scan_literals(text, path):
     check B for the rest of that file.
     """
     out = []
-    stack = []  # one bool per open #if: True if the *current* branch is DEBUG-only
+    # One (current, complement) pair per open #if. Two values because `#else` has to know
+    # what the *other* branch means: the complement of `#if DEBUG` ships, the complement of
+    # `#if !DEBUG` is debug-only, and the complement of anything else is unknown and
+    # therefore treated as shipping.
+    stack = []
     debug_depth = 0
 
     i, n, line, at_line_start = 0, len(text), 1, True
@@ -104,23 +108,33 @@ def scan_literals(text, path):
         if at_line_start and c == "#" and (m := DIRECTIVE.match(text, i)):
             kind, cond = m.group(1), m.group(2).strip()
             if kind == "if":
-                if "DEBUG" in cond and cond != "DEBUG":
+                if cond == "DEBUG":
+                    branches = (True, False)
+                elif cond == "!DEBUG":
+                    branches = (False, True)
+                elif "DEBUG" in cond:
                     raise SystemExit(
                         f"{path}:{line}: unhandled '#if {cond}'. Teach scan_literals about "
                         f"it — guessing would silently disable the DEBUG-only check."
                     )
-                stack.append(cond == "DEBUG")
-            elif kind in ("else", "elseif") and stack:
-                # The complement of `#if DEBUG` ships; the complement of anything else was
-                # already treated as shipping, so both branches settle to False.
-                debug_depth -= stack[-1]
-                stack[-1] = False
+                else:
+                    branches = (False, False)
+                stack.append(branches)
+                debug_depth += branches[0]
+            elif kind == "else" and stack:
+                current, complement = stack[-1]
+                debug_depth -= current
+                stack[-1] = (complement, current)
+                debug_depth += complement
+            elif kind == "elseif" and stack:
+                # An unknown intermediate condition: assume it ships, and leave nothing for a
+                # later `#else` to flip back to debug-only on a guess.
+                debug_depth -= stack[-1][0]
+                stack[-1] = (False, False)
             elif kind == "endif":
                 if not stack:
                     raise SystemExit(f"{path}:{line}: #endif without #if")
-                debug_depth -= stack.pop()
-            if kind == "if":
-                debug_depth += stack[-1]
+                debug_depth -= stack.pop()[0]
             i, at_line_start = m.end(), False
             continue
 
@@ -376,6 +390,11 @@ def self_test():
             "#else\n"
             'let c = "release branch"\n'
             "#endif\n"
+            "#if !DEBUG\n"
+            'let f = "release only"\n'
+            "#else\n"
+            'let g = "the inverse else is debug-only"\n'
+            "#endif\n"
             '// let d = "comment"\n'
             'let e = "interp \\(x) here"\n',
             "<self-test>",
@@ -385,6 +404,10 @@ def self_test():
         "ships": False,
         "debug": True,
         "release branch": False,
+        # `#if !DEBUG` inverts: the branch ships, and its `#else` is the debug-only one.
+        # Getting this backwards would mark shipping strings as debug-only and vice versa.
+        "release only": False,
+        "the inverse else is debug-only": True,
         f"interp {WILD} here": False,
     }
     if parsed != expected_parse:

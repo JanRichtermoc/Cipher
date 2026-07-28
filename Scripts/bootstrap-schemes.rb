@@ -27,6 +27,7 @@ end
 app       = target!(project, 'Cipher')
 framework = target!(project, 'CipherCrypto')
 tests     = target!(project, 'CipherCryptoTests')
+app_tests = target!(project, 'CipherTests')
 
 shared_dir = File.join(PROJECT_PATH, 'xcshareddata', 'xcschemes')
 FileUtils.mkdir_p(shared_dir)
@@ -56,6 +57,9 @@ puts 'shared scheme: CipherCrypto (builds framework, runs CipherCryptoTests)'
 app_scheme = Xcodeproj::XCScheme.new
 app_scheme.add_build_target(app)
 app_scheme.add_test_target(tests)
+# Both suites hang off the app scheme, so a plain `xcodebuild test` on the app cannot pass
+# while either the crypto contract tests or the app's own auth-gate tests are broken.
+app_scheme.add_test_target(app_tests)
 app_scheme.set_launch_target(app)
 app_scheme.test_action.build_configuration   = 'Debug'
 app_scheme.launch_action.build_configuration = 'Debug'
@@ -63,7 +67,7 @@ app_scheme.analyze_action.build_configuration = 'Debug'
 app_scheme.archive_action.build_configuration = 'Release'
 app_scheme.profile_action.build_configuration = 'Release'
 app_scheme.save_as(PROJECT_PATH, 'Cipher', true)
-puts 'shared scheme: Cipher (builds app, runs CipherCryptoTests)'
+puts 'shared scheme: Cipher (builds app, runs CipherCryptoTests + CipherTests)'
 
 # Remove the stale per-user schemes so there is no ambiguity about which is real.
 Dir.glob(File.join(PROJECT_PATH, 'xcuserdata', '*', 'xcschemes', '*.xcscheme')).each do |path|
