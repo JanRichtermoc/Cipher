@@ -1,0 +1,13 @@
+# Everything is excluded by default and the Dockerfile COPYs what it needs. A
+# denylist would ship whatever was added after it was last edited — and the file
+# most likely to be added and forgotten is `.env`.
+#
+# Copyright (C) 2026 Jan Richter
+# SPDX-License-Identifier: AGPL-3.0-only
+*
+
+!go.mod
+!go.sum
+!vendor/
+!cmd/
+!internal/

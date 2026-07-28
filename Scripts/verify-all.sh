@@ -47,8 +47,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=10
-[ "$FAST" -eq 1 ] && TOTAL=7
+TOTAL=11
+[ "$FAST" -eq 1 ] && TOTAL=8
 
 step() {
   STEP=$((STEP + 1))
@@ -87,7 +87,18 @@ if grep -rnE '(^|[^A-Za-z_.])(print|NSLog|debugPrint|dump)[[:space:]]*\(' \
 fi
 echo "  ok    no direct print/NSLog in the crypto module"
 
-# --- 4. UI honesty and localization drift -----------------------------------
+# --- 4. Relay ---------------------------------------------------------------
+# Placed here, before anything that invokes xcodebuild, because it takes seconds
+# and the iOS gates take half an hour. A relay defect discovered after a full
+# simulator build is the same defect discovered thirty minutes later.
+#
+# Covers what needs no container: build, vet, gofmt, unit tests under the race
+# detector, plus the compose invariants that P4.S02 names as anti-goals. The
+# integration suite against a live Postgres and Redis is P4.S10.
+step "relay: build, vet, tests, compose invariants"
+./Scripts/verify-relay.sh || fail "relay (see docs/BACKEND.md)"
+
+# --- 5. UI honesty and localization drift -----------------------------------
 # Cipher must not present a control implying protection it does not provide, in any
 # language. See Scripts/verify-localization.py for what it checks and why.
 #
@@ -99,14 +110,14 @@ step "UI honesty and localization drift"
 ./Scripts/verify-localization.py --self-test || fail "the localization gate cannot be trusted"
 ./Scripts/verify-localization.py || fail "a retired claim is rendered, or the string catalog has drifted (docs/AUDIT.md 5.4, 5.11)"
 
-# --- 5. Module boundary -----------------------------------------------------
+# --- 6. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
 ./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
 
-# --- 6. Crypto tests --------------------------------------------------------
+# --- 7. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -169,7 +180,7 @@ grep -q "SessionCredentialTests" "$LOG" ||
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
-# --- 5. App builds ----------------------------------------------------------
+# --- 8. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -182,7 +193,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 6. Release device build ------------------------------------------------
+# --- 9. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then

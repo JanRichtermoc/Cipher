@@ -1,0 +1,107 @@
+// Copyright (C) 2026 Jan Richter
+// SPDX-License-Identifier: AGPL-3.0-only
+
+package config
+
+import (
+	"strings"
+	"testing"
+	"time"
+)
+
+// setEnv sets the minimum viable configuration, and t.Setenv restores it after.
+func setEnv(t *testing.T) {
+	t.Helper()
+	t.Setenv("RELAY_DATABASE_URL", "postgres://u:p@postgres:5432/db")
+	t.Setenv("RELAY_REDIS_ADDR", "redis:6379")
+	t.Setenv("RELAY_REDIS_PASSWORD", "redis-password")
+}
+
+func TestLoadRequiresEverySecret(t *testing.T) {
+	// The point of this test is not that Load fails — it is that it fails for
+	// *each* secret independently. A fallback quietly added to any one of them
+	// would otherwise be caught only if it happened to be the one left unset.
+	for _, missing := range []string{
+		"RELAY_DATABASE_URL", "RELAY_REDIS_ADDR", "RELAY_REDIS_PASSWORD",
+	} {
+		t.Run(missing, func(t *testing.T) {
+			setEnv(t)
+			t.Setenv(missing, "")
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() succeeded with %s unset — it has acquired a default", missing)
+			}
+			if !strings.Contains(err.Error(), missing) {
+				t.Fatalf("error does not name %s: %v", missing, err)
+			}
+		})
+	}
+}
+
+func TestLoadReportsEveryProblemAtOnce(t *testing.T) {
+	// Restart-fix-restart against a container is slow, and reporting only the
+	// first problem means the second is discovered after the first is fixed.
+	t.Setenv("RELAY_DATABASE_URL", "")
+	t.Setenv("RELAY_REDIS_ADDR", "")
+	t.Setenv("RELAY_REDIS_PASSWORD", "")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("expected failure")
+	}
+	for _, key := range []string{"RELAY_DATABASE_URL", "RELAY_REDIS_ADDR", "RELAY_REDIS_PASSWORD"} {
+		if !strings.Contains(err.Error(), key) {
+			t.Errorf("error omits %s: %v", key, err)
+		}
+	}
+}
+
+func TestLoadDefaults(t *testing.T) {
+	setEnv(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ListenAddr != ":8080" {
+		t.Errorf("ListenAddr = %q, want :8080", cfg.ListenAddr)
+	}
+	if cfg.ReadHeaderTimeout != 5*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 5s", cfg.ReadHeaderTimeout)
+	}
+	// The largest legitimate body is an envelope (65567 bytes) plus framing, so
+	// the cap must comfortably exceed that and not be unbounded.
+	if cfg.MaxRequestBytes < 65567 {
+		t.Errorf("MaxRequestBytes = %d, too small for a maximum envelope", cfg.MaxRequestBytes)
+	}
+}
+
+func TestLoadRejectsMalformedDurations(t *testing.T) {
+	setEnv(t)
+	t.Setenv("RELAY_READ_TIMEOUT", "fifteen seconds")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected a malformed duration to fail startup")
+	}
+}
+
+func TestLoadRejectsNonPositiveValues(t *testing.T) {
+	// A zero timeout means "no timeout" in net/http, so accepting it would turn
+	// a typo into an unbounded slowloris window.
+	setEnv(t)
+	t.Setenv("RELAY_READ_HEADER_TIMEOUT", "0s")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected a non-positive timeout to fail startup")
+	}
+}
+
+func TestLoadRejectsNonPositiveBodyLimit(t *testing.T) {
+	setEnv(t)
+	t.Setenv("RELAY_MAX_REQUEST_BYTES", "-1")
+
+	if _, err := Load(); err == nil {
+		t.Fatal("expected a negative body limit to fail startup")
+	}
+}
