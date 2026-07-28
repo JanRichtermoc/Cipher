@@ -13,7 +13,9 @@ import LibSignalClient
 final class EnvelopeTests: XCTestCase {
 
     // A fixed ACI so the vectors below are deterministic.
-    private let aci = Aci(fromUUID: UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!)
+    private let libsignalAci = Aci(fromUUID: UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!)
+    private let aci = ServiceIdentifier(
+        kind: .aci, uuid: UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!)
     private let timestamp: UInt64 = 0x0000_0193_A1B2_C3D4
     private let ciphertext = Data([0xDE, 0xAD, 0xBE, 0xEF])
 
@@ -37,7 +39,10 @@ final class EnvelopeTests: XCTestCase {
         XCTAssertEqual(encoded[0], 1, "wireVersion")
         XCTAssertEqual(encoded[1], 2, "type = whisper")
 
-        XCTAssertEqual(Data(encoded[2..<19]), aci.serviceIdFixedWidthBinary,
+        // Compared against *libsignal's* encoding, not our own: this byte range is the
+        // golden vector, so checking it against the type that produced it would prove
+        // nothing.
+        XCTAssertEqual(Data(encoded[2..<19]), libsignalAci.serviceIdFixedWidthBinary,
                        "sender uses libsignal's own 17-byte fixed-width encoding")
         XCTAssertEqual(Data(encoded[2..<19]).count, 17)
 
@@ -58,7 +63,7 @@ final class EnvelopeTests: XCTestCase {
     func testRoundTripPreservesEveryField() throws {
         let decoded = try Envelope.decode(try sample().encode())
         XCTAssertEqual(decoded.type, .whisper)
-        XCTAssertEqual(decoded.sender.serviceIdString, aci.serviceIdString)
+        XCTAssertEqual(decoded.sender, aci)
         XCTAssertEqual(decoded.timestamp, timestamp)
         XCTAssertEqual(decoded.ciphertext, ciphertext)
     }
@@ -72,32 +77,57 @@ final class EnvelopeTests: XCTestCase {
 
     // MARK: - The fixed-width ServiceId contract
 
-    /// The encode side uses libsignal's `serviceIdFixedWidthBinary`; the decode side is
-    /// built from public initialisers because libsignal's fixed-width parser is `internal`.
-    /// This pins the two together for both ACI and PNI. If libsignal ever changes the
-    /// layout, this fails rather than silently yielding the wrong identity.
+    /// `ServiceIdentifier` re-implements libsignal's 17-byte layout so no libsignal type
+    /// crosses the module boundary. That is only safe while the two encodings agree
+    /// **byte for byte**, because the same bytes address store slots and travel on the wire.
+    /// This asserts the agreement against the real library, in both directions, for both
+    /// namespaces — so an upstream layout change fails here instead of silently producing a
+    /// different identity that would look like a peer who had re-keyed.
     func testFixedWidthLayoutMatchesLibsignal() throws {
         let uuid = UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!
 
-        for expected in [Aci(fromUUID: uuid) as ServiceId, Pni(fromUUID: uuid) as ServiceId] {
-            let env = try Envelope(type: .whisper, sender: expected,
+        for reference in [Aci(fromUUID: uuid) as ServiceId, Pni(fromUUID: uuid) as ServiceId] {
+            let ours = ServiceIdentifier(reference)
+
+            XCTAssertEqual(ours.fixedWidthBinary, reference.serviceIdFixedWidthBinary,
+                           "our encoding diverged from libsignal's")
+            XCTAssertEqual(ours.kind.rawValue, reference.kind.rawValue)
+            XCTAssertEqual(ours.uuid, uuid)
+
+            // And back out of an envelope, which is the path that actually runs.
+            let env = try Envelope(type: .whisper, sender: ours,
                                    timestamp: 7, ciphertext: Data([0x01]))
             let decoded = try Envelope.decode(env.encode())
-
-            XCTAssertEqual(decoded.sender.serviceIdString, expected.serviceIdString)
-            XCTAssertEqual(decoded.sender.kind, expected.kind)
-            XCTAssertEqual(decoded.sender.rawUUID, uuid)
-            XCTAssertEqual(decoded.sender.serviceIdFixedWidthBinary,
-                           expected.serviceIdFixedWidthBinary)
+            XCTAssertEqual(decoded.sender, ours)
+            XCTAssertEqual(decoded.sender.canonicalString, reference.serviceIdString,
+                           "the store slot a peer maps to must match libsignal's naming")
         }
+    }
+
+    /// `ServiceIdentifier.canonicalString` delegates into the Rust core rather than
+    /// hand-rolling the per-namespace format, because that string names the record-store
+    /// slot for every session and trust decision. Pinned separately from the layout: the two
+    /// could drift independently.
+    func testCanonicalStringMatchesLibsignal() throws {
+        let uuid = UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!
+        XCTAssertEqual(
+            ServiceIdentifier(kind: .aci, uuid: uuid).canonicalString,
+            Aci(fromUUID: uuid).serviceIdString)
+        XCTAssertEqual(
+            ServiceIdentifier(kind: .pni, uuid: uuid).canonicalString,
+            Pni(fromUUID: uuid).serviceIdString)
+        XCTAssertNotEqual(
+            ServiceIdentifier(kind: .aci, uuid: uuid).canonicalString,
+            ServiceIdentifier(kind: .pni, uuid: uuid).canonicalString,
+            "one UUID in two namespaces must not collapse to one store slot")
     }
 
     /// ACI and PNI with the same UUID must not be interchangeable on the wire.
     func testAciAndPniAreDistinguishedOnTheWire() throws {
         let uuid = UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!
-        let aciEnv = try Envelope(type: .whisper, sender: Aci(fromUUID: uuid),
+        let aciEnv = try Envelope(type: .whisper, sender: ServiceIdentifier(kind: .aci, uuid: uuid),
                                   timestamp: 7, ciphertext: Data([0x01])).encode()
-        let pniEnv = try Envelope(type: .whisper, sender: Pni(fromUUID: uuid),
+        let pniEnv = try Envelope(type: .whisper, sender: ServiceIdentifier(kind: .pni, uuid: uuid),
                                   timestamp: 7, ciphertext: Data([0x01])).encode()
 
         XCTAssertNotEqual(aciEnv, pniEnv, "the kind byte must distinguish them")

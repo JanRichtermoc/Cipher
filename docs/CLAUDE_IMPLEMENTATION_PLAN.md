@@ -14,18 +14,16 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P1 — Honesty, gates, repo hygiene (all steps done but P1.S10)
-DONE:           P1.S01 S02 S03 S04 S05 S06 S07 S08 S09(written, never run) S11 S12
-NEXT STEP:      P2.S01 — P1 exit criteria hold except CI. Do not start P2 until the
-                user has created the remote; P1.S10 is the last item.
-TESTS:          89 passing · ./Scripts/verify-all.sh exits 0 (9/9 gates)
-BLOCKED ON:     P1.S10 — cannot close AUDIT 1.6 until CI actually runs (no git remote)
-HUMAN NEEDED:   P1.S10 — create the GitHub repo, add the remote, push. An agent cannot:
-                no gh CLI, no SSH key, no stored credential, and asking for a token
-                is not an option. The workflow has been corrected against the real
-                runner image and every shell step runs green when extracted and
-                executed locally, but a workflow that has never executed is not a
-                control, so AUDIT 1.6 stays OPEN until a run is green.
+CURRENT PHASE:  P2 — Crypto messaging façade (still offline). P1 COMPLETE.
+DONE:           P1 all steps. P2.S01 (façade + boundary gate), S02, S03, S05.
+NEXT STEP:      P2.S04 (confirm groups still fail closed through the façade),
+                then P2.S06 (store edge hardening), P2.S07 (App Group design note).
+TESTS:          99 passing · ./Scripts/verify-all.sh exits 0 (10/10 gates)
+                CI green on main since 2026-07-28, first run, all gates.
+REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
+HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,
+                not a file here. Settings → Branches → add a rule for `main` →
+                "Require status checks to pass" → select `verify`.
                 Later: P5.S01 domain purchase.
 ```
 
@@ -107,7 +105,7 @@ a check that stops working fails loudly instead of passing vacuously.
 
 | AUDIT | Item | Closes in |
 |-------|------|-----------|
-| 1.6 | Supply-chain script not in CI | P1.S09 written and corrected against the real runner image; P1.S10 blocked — no remote, so it has never run |
+| 3.8 | First-contact address is relabellable by the relay | P5.S12 / P7 |
 | 5.8 | App lock never re-engages; only cold launch | P3.S02 |
 | 2.4 | No key rotation / replenishment | P6.S01 |
 | 2.5 | No safety-number UI | **P5.S12** (moved from P6) |

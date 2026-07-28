@@ -185,6 +185,19 @@ internal struct PeerFixture {
     /// Publishes a fresh bundle and persists the private halves, exactly as a real client
     /// would after uploading keys to a server.
     internal func makeBundle() throws -> PreKeyBundle {
+        try publish().libsignal
+    }
+
+    /// The same published bundle in the boundary form the engine's API takes.
+    ///
+    /// Separate from `makeBundle` rather than converted from it: `PreKeyBundle` exposes no
+    /// accessors for the values it was built from, and reaching back through the FFI to
+    /// recover them would test the recovery rather than the bundle.
+    internal func makeCipherBundle() throws -> PeerKeyBundle {
+        try publish().cipher
+    }
+
+    private func publish() throws -> (libsignal: PreKeyBundle, cipher: PeerKeyBundle) {
         let context = NullContext()
 
         let preKey = PrivateKey.generate()
@@ -223,7 +236,20 @@ internal struct PeerFixture {
                 keyPair: kyber, signature: kyberSignature),
             id: Self.kyberPreKeyId, context: context)
 
-        return bundle
+        let cipher = PeerKeyBundle(
+            registrationId: try store.localRegistrationId(context: context),
+            deviceId: address.deviceId,
+            identityKey: identity.identityKey.serialize(),
+            preKeyId: Self.preKeyId,
+            preKey: preKey.publicKey.serialize(),
+            signedPreKeyId: Self.signedPreKeyId,
+            signedPreKey: signedPreKey.publicKey.serialize(),
+            signedPreKeySignature: Data(signedPreKeySignature),
+            kyberPreKeyId: Self.kyberPreKeyId,
+            kyberPreKey: kyber.publicKey.serialize(),
+            kyberPreKeySignature: Data(kyberSignature))
+
+        return (bundle, cipher)
     }
 
     /// Encrypts to `recipient` from this peer, returning wire bytes and the message type.

@@ -47,8 +47,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=9
-[ "$FAST" -eq 1 ] && TOTAL=6
+TOTAL=10
+[ "$FAST" -eq 1 ] && TOTAL=7
 
 step() {
   STEP=$((STEP + 1))
@@ -99,7 +99,14 @@ step "UI honesty and localization drift"
 ./Scripts/verify-localization.py --self-test || fail "the localization gate cannot be trusted"
 ./Scripts/verify-localization.py || fail "a retired claim is rendered, or the string catalog has drifted (docs/AUDIT.md 5.4, 5.11)"
 
-# --- 5. Crypto tests --------------------------------------------------------
+# --- 5. Module boundary -----------------------------------------------------
+# No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
+# because it needs only a build, and because a leaked handle type is a concurrency defect
+# that no amount of green tests would surface.
+step "module boundary (no libsignal type in the public API)"
+./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
+
+# --- 6. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "CipherCrypto tests (app-hosted, serial)"
