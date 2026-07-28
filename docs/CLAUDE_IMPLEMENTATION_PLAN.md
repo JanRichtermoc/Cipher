@@ -14,13 +14,13 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P2 — Crypto messaging façade (still offline). P1 COMPLETE.
-DONE:           P1 all steps. P2.S01–S07 (S08 optional, skipped: a DEBUG UI spike
-                would add a second path to the façade with nothing to learn from it).
-NEXT STEP:      P2 exit criteria hold. Begin P3.S01 — replace the UserDefaults auth
-                state with a real gate (AUDIT 5.2), then P3.S02 (LAContext + the
-                app lock that never re-engages, AUDIT 5.8).
-TESTS:          106 passing · ./Scripts/verify-all.sh exits 0 (10/10 gates)
+CURRENT PHASE:  P3 — Real client auth gate & app lock. P1, P2 COMPLETE.
+DONE:           P1 all steps. P2.S01–S07 (S08 skipped, reason in the row).
+                P3.S01 — auth state is a Keychain credential, not a UserDefaults bool.
+NEXT STEP:      P3.S02 — LocalAuthentication. Must fail closed on cancel/error, and
+                must re-lock on scenePhase (AUDIT 5.8: lockIfNeeded has exactly one
+                caller, a manual button, so the lock engages only on cold launch).
+TESTS:          116 passing (106 CipherCrypto + 10 Cipher) · verify-all.sh 10/10
                 CI green on main since 2026-07-28, first run, all gates.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
 HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,

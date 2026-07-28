@@ -25,3 +25,4 @@ Cipher/Features/Settings/SettingsViews.swift
 Cipher/MockData/MockStore.swift
 Cipher/Models/Models.swift
 Cipher/PrivacyInfo.xcprivacy
+Cipher/Security/SessionCredential.swift

@@ -47,6 +47,16 @@
                ReferencedContainer = "container:Cipher.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "2BDEB6F194143F96D75038B6"
+               BuildableName = "CipherTests.xctest"
+               BlueprintName = "CipherTests"
+               ReferencedContainer = "container:Cipher.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction

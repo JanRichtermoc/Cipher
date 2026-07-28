@@ -109,14 +109,14 @@ step "module boundary (no libsignal type in the public API)"
 # --- 6. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
-step "CipherCrypto tests (app-hosted, serial)"
+step "tests: CipherCrypto + Cipher (app-hosted, serial)"
 
 LOG=/tmp/cipher-verify-tests.log
 
 run_tests() {
   xcodebuild test \
     -workspace "$WORKSPACE" \
-    -scheme CipherCrypto \
+    -scheme Cipher \
     -destination "$DESTINATION" \
     2>&1 | tee "$LOG" | grep -E "^Test Case.*failed|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)" || true
 }
@@ -158,8 +158,14 @@ grep -q "TEST SUCCEEDED" "$LOG" ||
 
 # The locked decisions must actually have run, not merely not-failed. A suite that silently
 # stops including them would otherwise pass this gate.
-grep -q "LockedDecisionsTests" /tmp/cipher-verify-tests.log ||
+grep -q "LockedDecisionsTests" "$LOG" ||
   fail "LockedDecisionsTests did not run — the §0.2 protocol decisions are unguarded"
+
+# Both suites, not just one. The Cipher scheme attaches CipherCryptoTests *and* CipherTests,
+# so one simulator launch covers both (AUDIT 6.6 makes extra launches expensive). A scheme
+# edit that quietly dropped either would otherwise leave this gate green over half the tests.
+grep -q "SessionCredentialTests" "$LOG" ||
+  fail "CipherTests did not run — the auth gate is unguarded (P3.S01)"
 
 # --- 5. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the

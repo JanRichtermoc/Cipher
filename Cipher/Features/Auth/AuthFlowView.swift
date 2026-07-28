@@ -18,7 +18,9 @@ struct AuthFlowView: View {
                 switch route {
                 case .profileSetup:
                     ProfileSetupView {
-                        session.signIn()
+                        #if DEBUG
+                        try? session.signInForDevelopment()
+                        #endif
                     }
                 }
             }
@@ -27,7 +29,7 @@ struct AuthFlowView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Skip") {
                         session.debugSkipToMain = true
-                        session.isAuthenticated = true
+                        try? session.signInForDevelopment()
                         session.isAppLocked = false
                     }
                 }
