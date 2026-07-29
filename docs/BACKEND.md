@@ -362,6 +362,21 @@ invite code ──redeem──▶ account (aci) ──▶ session token ──�
     adversary nothing new and a remote attacker nothing at all. The code is printed to stdout once
     and never logged.
 - Session tokens: 256 bits from a CSPRNG, hashed at rest, rotatable, revocable by `DELETE`.
+  - **TTL 30 days.** Long because this is a messenger, and a session that expires weekly trains
+    people to re-authenticate reflexively — the habit phishing depends on. Affordable only because
+    revocation is immediate, so the TTL is a backstop for a forgotten device, not the control.
+  - **Rotation is one transaction**: `DELETE … RETURNING` the old, `INSERT` the new. Two statements
+    would leave either a window where both tokens work (which is the window a thief wants) or one
+    where neither does (which signs the user out with no way back). Negative-tested: making it
+    insert-without-delete left the old token working, produced 4 sessions after 3 rotations, and let
+    8 of 8 concurrent rotations succeed.
+  - **`DELETE /v1/auth/all`** revokes every session including the caller's, and is deliberately
+    *not* rate limited — it only ever destroys the caller's own access, and throttling the panic
+    button is the wrong trade.
+  - **Redemption issues the first token**, after the redemption transaction commits rather than
+    inside it. The two are not atomic and this is the correct direction to fail: an account with no
+    session is recoverable with a fresh invite, whereas rolling back a committed redemption to undo
+    a failed token write would re-credit a single-use invite.
 - Presented as `Authorization: Bearer`. Compared with a constant-time comparison after hashing.
 - **No password, no recovery flow, no email.** There is nothing to phish and nothing to reset. Losing
   the device means losing the account, which is the honest consequence of §3.4 and must be stated in

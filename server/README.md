@@ -12,15 +12,19 @@ plaintext, retains nothing past delivery, and has no administrative interface at
 
 ## Status
 
-**P4.S03 — invite codes.** Configuration, logging, Postgres, Redis, health, the full schema,
-and invite redemption with rate limiting.
+**P4.S04 — session tokens.** Configuration, logging, Postgres, Redis, health, the full schema,
+invite redemption, and opaque session tokens with rotation and revocation.
 
-| | |
-|---|---|
-| `GET /health` | live |
-| `GET /health/ready` | live |
-| `POST /v1/invite/redeem` | live — single-use, expiring, throttled |
-| auth, directory, relay, blobs | P4.S04 – P4.S09 |
+| | | |
+|---|---|---|
+| `GET` | `/health` | no auth |
+| `GET` | `/health/ready` | no auth |
+| `POST` | `/v1/invite/redeem` | no auth — single-use, expiring, 5/hour/IP |
+| `POST` | `/v1/invite` | **auth** — issue an invite, 3/day/account |
+| `POST` | `/v1/auth/rotate` | **auth** — exchange for a fresh token, 10/hour |
+| `DELETE` | `/v1/auth` | **auth** — sign out this session |
+| `DELETE` | `/v1/auth/all` | **auth** — sign out everywhere, including here |
+| | directory, relay, blobs | P4.S05 – P4.S09 |
 
 ### Creating the first account
 
@@ -32,15 +36,25 @@ docker compose run --rm api --issue-invite
 ```
 
 The code is printed once and is never stored or logged — only its SHA-256 reaches the database.
-Redeem it:
+Redeem it, which creates the account **and** returns its first session token:
 
 ```sh
 curl -sS -X POST http://127.0.0.1:8080/v1/invite/redeem \
   -H 'Content-Type: application/json' \
   -d '{"code":"<the code>","identity_key":"<base64, 32-64 bytes>","registration_id":1234}'
+# -> {"aci":"…","token":"…","token_expires_at":"…"}
 ```
 
-Later invites are issued by authenticated users once session tokens land in P4.S04.
+Every later invite is issued by an account that already exists:
+
+```sh
+curl -sS -X POST http://127.0.0.1:8080/v1/invite -H "Authorization: Bearer $TOKEN"
+```
+
+**Who issued it is never recorded.** The `invites` table has two columns and neither is
+`created_by` — the invite graph is the social graph of a closed circle, and it is the most valuable
+thing a seizure could recover. The per-account cap that stops unbounded minting is a Redis counter
+keyed by an HMAC of the account id; it expires, and a column would not.
 
 ---
 

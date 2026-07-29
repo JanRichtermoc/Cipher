@@ -17,19 +17,20 @@ E2E messenger.
 CURRENT PHASE:  P4 in progress. P1, P2, P3 COMPLETE.
 DONE:           P1, P2, P3 all steps. P4.S01 (docs/BACKEND.md),
                 P4.S02 (scaffold; `docker compose up` verified 2026-07-29),
-                P4.S03 (invite codes — 17 integration tests against a real
-                Postgres and Redis: reuse rejected, expiry enforced, brute
-                force throttled, and exactly one account from 16 concurrent
-                redemptions of one code).
-NEXT STEP:      P4.S04 — opaque session tokens: random, hashed at rest,
-                rotatable, revocable. The session_tokens table already exists
-                (BACKEND.md §2.3). Revocation is DELETE, never a flag, which
-                is why there is no `revoked` column. Do NOT use a JWT: it
-                carries its claims, so revocation needs a denylist that must
-                be consulted on every request and grows forever.
-                Then wire POST /v1/invite (authenticated issuance, 3/day/
-                account) — the endpoint deliberately deferred from P4.S03
-                because it needs auth to exist first.
+                P4.S03 (invite codes), P4.S04 (opaque session tokens +
+                authenticated POST /v1/invite). 33 integration tests against
+                a real Postgres and Redis.
+NEXT STEP:      P4.S05 — prekey upload/download requiring PQ/Kyber material
+                consistent with the client contract tests. Tables exist:
+                one_time_prekeys, signed_prekeys, kyber_prekeys (BACKEND.md
+                §2.4-2.6). A non-PQ bundle must be REJECTED by the server —
+                Kyber is a locked decision, never optional. The relay does
+                NOT verify prekey signatures: processPreKeyBundle does that
+                on the client, and a client trusting the server's verdict
+                would have no protection from a hostile relay.
+                Dispense deletes the one-time row in the same transaction.
+                P4.S06 (prekey-fetch rate limiting) is mandatory in this
+                phase, not deferred — see AUDIT 3.1.
 TOOLING:        Go 1.26.5 and Docker Desktop are both installed on this
                 machine. server/.env exists locally and is gitignored; it is
                 NOT in the repo, so a fresh clone needs `cp .env.example .env`

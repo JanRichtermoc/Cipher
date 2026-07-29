@@ -396,8 +396,13 @@ func redeemBody(code, identityKey string, registrationID uint32) io.Reader {
 func newHandler(t *testing.T) (http.Handler, *store.DB) {
 	t.Helper()
 	db := testDB(t)
+	limiter := testLimiter(t)
+	log := logging.New(io.Discard, slog.LevelError)
 	mux := http.NewServeMux()
-	api.NewInviteHandler(db, testLimiter(t), logging.New(io.Discard, slog.LevelError)).Routes(mux)
+	// The invite handler needs the auth handler because redemption issues a
+	// session: an account created without one could authenticate only through
+	// the invite it just consumed.
+	api.NewInviteHandler(db, limiter, api.NewAuthHandler(db, limiter, log), log).Routes(mux)
 	return mux, db
 }
 
