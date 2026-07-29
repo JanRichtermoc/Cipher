@@ -16,18 +16,20 @@ E2E messenger.
 ```
 CURRENT PHASE:  P4 in progress. P1, P2, P3 COMPLETE.
 DONE:           P1, P2, P3 all steps. P4.S01 (docs/BACKEND.md),
-                P4.S02 (server/ scaffold — code complete, `docker compose up`
-                NOT yet run: no container runtime on this machine).
+                P4.S02 (server/ scaffold — COMPLETE; `docker compose up`
+                verified 2026-07-29: /health and /health/ready both 200,
+                migration applied, all three containers healthy, and
+                postgres/redis confirmed unreachable from the host).
 NEXT STEP:      P4.S03 — invite codes: server-generated, single-use, expiring,
                 rate-limited. Server half of C-01. The `invites` table already
                 exists (2 columns; created_by is deliberately absent — see
                 BACKEND.md §2.2). A redeemed invite is DELETEd, never flagged.
                 Redemption creates the account and returns its aci.
                 Do not hardcode codes anywhere.
-BLOCKED:        P4.S02 exit criterion ("docker compose up serves /health")
-                needs Docker Desktop installed by the user. Everything that
-                does not need a container is verified: build, vet, gofmt,
-                race tests, compose invariants (Scripts/verify-relay.sh).
+TOOLING:        Go 1.26.5 and Docker Desktop are both installed on this
+                machine. server/.env exists locally and is gitignored; it is
+                NOT in the repo, so a fresh clone needs `cp .env.example .env`
+                and two generated passwords before `docker compose up`.
 TESTS:          126 passing (106 CipherCrypto + 20 Cipher) · verify-all.sh 10/10
                 CI green on main since 2026-07-28, first run, all gates.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)

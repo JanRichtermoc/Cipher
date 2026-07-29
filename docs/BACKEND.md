@@ -49,9 +49,16 @@ There is deliberately **no seventh module**. See §8.
 
 ## 2. Data model
 
-PostgreSQL. Eight tables, thirty-one columns, and every one is justified below against
+PostgreSQL. **Nine tables, thirty-two columns**, and every one is justified below against
 `THREAT_MODEL.md` §1.1: *if a seized database revealed this, what would the adversary learn, and is
 that price worth paying?*
+
+That count is checked, not asserted. This sentence originally said "eight tables, thirty-one
+columns" — written by counting the sections below rather than the schema — and the error was found
+by querying a live database in P4.S02. `TestTableCountMatchesTheDocumentedTotal` and
+`TestEveryTableIsDocumented` now fail in the fast gate if a table is added without a justification
+here, or removed without this paragraph changing. A stated count that has drifted is worse than no
+count, because it reads as verified.
 
 Conventions used throughout:
 

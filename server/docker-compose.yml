@@ -32,7 +32,15 @@ services:
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
     # No ports:. Reachable only from the compose network, by service name.
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      # /var/lib/postgresql, NOT /var/lib/postgresql/data.
+      #
+      # Postgres 18 changed this. The image now stores data in a major-version
+      # subdirectory so `pg_upgrade --link` can work without crossing a mount
+      # boundary, and it refuses to start if it finds data at the old path —
+      # which is the path every tutorial and every pre-18 compose file uses.
+      # The failure is a wall of text about pg_ctlcluster that does not obviously
+      # say "your mount point is wrong".
+      - postgres-data:/var/lib/postgresql
     networks: [internal]
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]

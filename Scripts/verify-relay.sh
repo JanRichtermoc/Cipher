@@ -28,7 +28,9 @@ if ! command -v go >/dev/null 2>&1; then
 FAILED: the Go toolchain is not on PATH, so the relay was not verified.
 
   Install it:  brew install go
-  Minimum:     1.23 (server/go.mod; http.Request.Pattern is what sets the floor)
+  Minimum:     1.25 (server/go.mod). Set by pgx v5.10.0, which declares
+               go >= 1.25.0; our own code would build on 1.23. Verified by
+               building under 1.23 (fails) and 1.25.5 (passes), not assumed.
 
 This is deliberately fatal rather than skipped. A gate that passes because it
 ran nothing is the failure this project has already been bitten by twice.

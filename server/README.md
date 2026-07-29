@@ -85,6 +85,12 @@ lands in an image containing exactly one executable, and there is nothing to pat
 debugging needs a sidecar rather than `docker exec`, and the health check has to be the binary
 itself (`relay --health-check`).
 
+**The Postgres volume mounts `/var/lib/postgresql`, not `/var/lib/postgresql/data`.** Postgres 18
+changed this: data now lives in a major-version subdirectory so `pg_upgrade --link` works without
+crossing a mount boundary, and the image *refuses to start* if it finds data at the old path — which
+is the path every pre-18 compose file and every tutorial uses. The failure is a wall of text about
+`pg_ctlcluster` that never plainly says "your mount point is wrong".
+
 **Secrets have no defaults, here or in the code.** A development default is a production
 credential the day someone forgets to override it, and the failure is silent because the service
 starts fine. `config.Load` reports *every* missing variable at once rather than the first.
