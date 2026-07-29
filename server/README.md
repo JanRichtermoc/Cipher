@@ -12,14 +12,35 @@ plaintext, retains nothing past delivery, and has no administrative interface at
 
 ## Status
 
-**P4.S02 — scaffold.** Configuration, logging, Postgres, Redis, health, and the full schema.
-The endpoints arrive in P4.S03 onward:
+**P4.S03 — invite codes.** Configuration, logging, Postgres, Redis, health, the full schema,
+and invite redemption with rate limiting.
 
 | | |
 |---|---|
 | `GET /health` | live |
 | `GET /health/ready` | live |
-| invite, auth, directory, relay, blobs | P4.S03 – P4.S09 |
+| `POST /v1/invite/redeem` | live — single-use, expiring, throttled |
+| auth, directory, relay, blobs | P4.S04 – P4.S09 |
+
+### Creating the first account
+
+There is no admin API and there never will be (`BACKEND.md` §8), so the first invite is minted by
+a command on the host rather than by an authenticated call:
+
+```sh
+docker compose run --rm api --issue-invite
+```
+
+The code is printed once and is never stored or logged — only its SHA-256 reaches the database.
+Redeem it:
+
+```sh
+curl -sS -X POST http://127.0.0.1:8080/v1/invite/redeem \
+  -H 'Content-Type: application/json' \
+  -d '{"code":"<the code>","identity_key":"<base64, 32-64 bytes>","registration_id":1234}'
+```
+
+Later invites are issued by authenticated users once session tokens land in P4.S04.
 
 ---
 
@@ -47,7 +68,7 @@ The unit tests need neither Postgres nor Redis:
 go test ./...
 ```
 
-The full gate — build, vet, gofmt, race tests, and the compose invariants — is:
+The full fast gate — build, vet, gofmt, race tests, and the compose invariants — is:
 
 ```sh
 ../Scripts/verify-relay.sh
@@ -55,6 +76,21 @@ The full gate — build, vet, gofmt, race tests, and the compose invariants — 
 
 It also runs as gate 4 of `Scripts/verify-all.sh`, before anything that invokes `xcodebuild`,
 so a relay defect surfaces in seconds rather than after a half-hour simulator build.
+
+### Integration tests
+
+Against a real Postgres and a real Redis, because the two properties that matter most cannot be
+demonstrated against fakes — single use is enforced by one SQL statement being atomic, and expiry
+by a predicate evaluated on the database's clock:
+
+```sh
+../Scripts/verify-relay-integration.sh
+```
+
+They run **inside** the compose network. Publishing Postgres to the host so a host-side test
+process could reach it is the anti-goal P4.S02 names, and "only for tests" is how that exposure
+always begins — so `docker-compose.test.yml` adds a runner container instead, and the script
+asserts against the *running* containers that neither datastore has a host binding.
 
 ---
 

@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"flag"
 	"fmt"
@@ -25,11 +26,13 @@ import (
 	"syscall"
 	"time"
 
+	"cipher.relay/internal/api"
 	"cipher.relay/internal/cache"
 	"cipher.relay/internal/config"
 	"cipher.relay/internal/health"
 	"cipher.relay/internal/httpx"
 	"cipher.relay/internal/logging"
+	"cipher.relay/internal/ratelimit"
 	"cipher.relay/internal/store"
 )
 
@@ -43,12 +46,34 @@ import (
 var healthCheck = flag.Bool("health-check", false,
 	"probe the local readiness endpoint, exit 0 if ready; for HEALTHCHECK")
 
+// issueInvite mints one invite from the command line.
+//
+// This is how the *first* account is created, and it is a command rather than an
+// endpoint on purpose. Bootstrapping needs an invite that no account issued,
+// because there is no account yet — and the obvious way to provide that is an
+// admin API, which docs/BACKEND.md §8 refuses outright: an admin endpoint is one
+// compromised credential away from being everyone's.
+//
+// Running this requires shell access to the host, which is the §1.1 adversary we
+// already assume can read the database. It therefore grants nothing that
+// adversary did not have, while giving a remote attacker nothing at all.
+var issueInvite = flag.Bool("issue-invite", false,
+	"mint one invite code, print it, and exit; the code is never stored")
+
 func main() {
 	flag.Parse()
 
 	if *healthCheck {
 		if err := probeSelf(); err != nil {
 			fmt.Fprintf(os.Stderr, "relay: not ready: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	if *issueInvite {
+		if err := runIssueInvite(); err != nil {
+			fmt.Fprintf(os.Stderr, "relay: %v\n", err)
 			os.Exit(1)
 		}
 		return
@@ -93,6 +118,46 @@ func probeSelf() error {
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("readiness returned %d", resp.StatusCode)
 	}
+	return nil
+}
+
+// runIssueInvite mints one code and prints it to stdout.
+//
+// stdout, once, and nowhere else. The code is not logged — the logger is
+// structured and its output is meant to be shipped somewhere, and an invite in a
+// log file is a live account-creation credential sitting in a system whose whole
+// purpose is retention. It is also not written to a file, for the same reason.
+// If the operator loses it, they issue another; that costs nothing.
+func runIssueInvite() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	db, err := store.Open(ctx, cfg.DatabaseURL)
+	if err != nil {
+		return fmt.Errorf("postgres: %w", err)
+	}
+	defer db.Close()
+
+	// Migrations run here too: issuing an invite against a database with no
+	// schema should work on a fresh deployment rather than fail confusingly.
+	if _, err := db.Migrate(ctx); err != nil {
+		return fmt.Errorf("migrate: %w", err)
+	}
+
+	code, err := api.IssueInvite(ctx, db, api.InviteTTL)
+	if err != nil {
+		return fmt.Errorf("issue invite: %w", err)
+	}
+
+	fmt.Println(code.String())
+	fmt.Fprintf(os.Stderr,
+		"valid for %s. This is the only time it is shown; only its hash is stored.\n",
+		api.InviteTTL)
 	return nil
 }
 
@@ -147,8 +212,26 @@ func run() error {
 	healthHandler.Add("postgres", db)
 	healthHandler.Add("redis", redis)
 
+	// The rate-limit pepper keys the subject hash so a Redis dump does not
+	// enumerate the addresses that spoke to the relay (see ratelimit.Subject).
+	//
+	// Generated per process rather than configured. The consequence is that a
+	// restart resets every bucket, which is a real weakness — an attacker who
+	// can force restarts gets a fresh allowance each time — and it is the lesser
+	// of the two available weaknesses at this stage: a configured pepper is
+	// another secret to distribute, and a *fixed* one is worse, because it makes
+	// the hash stable across the whole lifetime of the deployment and so turns
+	// the bucket keys into a persistent identifier. Revisit in P5 when there is
+	// a secret store worth the name.
+	pepper := make([]byte, 32)
+	if _, err := rand.Read(pepper); err != nil {
+		return fmt.Errorf("rate limit pepper: %w", err)
+	}
+	limiter := ratelimit.New(redis.Scripter(), pepper)
+
 	mux := http.NewServeMux()
 	healthHandler.Routes(mux)
+	api.NewInviteHandler(db, limiter, log).Routes(mux)
 
 	// Log OUTSIDE Recover, not the other way round. See httpx.Chain: the
 	// intuitive order silently drops every panicking request from the access log.
