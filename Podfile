@@ -48,6 +48,14 @@ target 'CipherCryptoTests' do
   libsignal
 end
 
+# CipherTests is hosted by the app and, from P5.S09, imports CipherCrypto directly
+# (invite redemption publishes the real identity key). Without the pod here the
+# bundle compiles against a CipherCrypto whose own dependency it cannot see, and
+# fails with "Missing required module 'LibSignalClient'".
+target 'CipherTests' do
+  libsignal
+end
+
 post_install do |installer|
   # --- CocoaPods cannot run its script phases under user script sandboxing ----
   # This is a real reduction in build-time isolation, accepted and recorded as a
@@ -81,7 +89,9 @@ post_install do |installer|
   # in pod_target_xcconfig, and user_target_xcconfig is empty for a normal install).
   signal_ffi_dir = '"$(PODS_ROOT)/LibSignalClient/swift/Sources/SignalFfi"'
 
-  consumer_targets = %w[Cipher CipherCrypto CipherCryptoTests]
+  # CipherTests joined this list in P5.S09: it imports CipherCrypto, whose
+  # swiftmodule references SignalFfi, so it needs the module map on its path too.
+  consumer_targets = %w[Cipher CipherCrypto CipherCryptoTests CipherTests]
 
   installer.aggregate_targets.each do |aggregate|
     project = aggregate.user_project

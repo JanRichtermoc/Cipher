@@ -3,6 +3,7 @@
 //  Cipher
 //
 
+import CipherCrypto
 import SwiftUI
 
 struct AuthFlowView: View {
@@ -46,6 +47,20 @@ struct AuthFlowView: View {
 struct InviteCodeView: View {
     var onContinue: () -> Void
     @State private var code = ""
+    @State private var isRedeeming = false
+    @State private var errorMessage: String?
+
+    @Environment(AppSession.self) private var session
+
+    /// Whether the button is *offered*, not whether the code is valid.
+    ///
+    /// AUDIT C-01: this used to be the entire authentication decision — `count >= 4` and you
+    /// were in. It is now nothing more than "there is something to send". The code is judged
+    /// by the relay, which is the only party that can judge it, and the app becomes
+    /// authenticated only when the relay hands back a token.
+    private var canSubmit: Bool {
+        !isRedeeming && !code.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
 
     var body: some View {
         ZStack {
@@ -89,18 +104,60 @@ struct InviteCodeView: View {
 
                 Spacer()
 
+                if let errorMessage {
+                    Text(errorMessage)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .padding(.horizontal, CipherTheme.spacingXL)
+                }
+
                 PrimaryGlassButton(
-                    title: "Continue",
+                    title: isRedeeming ? "Checking…" : "Continue",
                     systemImage: "arrow.right",
-                    isEnabled: code.trimmingCharacters(in: .whitespacesAndNewlines).count >= 4
+                    isEnabled: canSubmit
                 ) {
-                    onContinue()
+                    Task { await submit() }
                 }
                 .padding(.horizontal, CipherTheme.spacingXL)
                 .padding(.bottom, CipherTheme.spacingXL)
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    /// Redeem the code against the relay, and sign in only if it issues a session.
+    ///
+    /// Every failure leaves the app signed out. There is no path here that advances the flow
+    /// without a server-issued credential — that is the whole of C-01's fix, and the reason
+    /// this is `async` rather than a button that calls `onContinue()`.
+    private func submit() async {
+        isRedeeming = true
+        errorMessage = nil
+        defer { isRedeeming = false }
+
+        do {
+            let engine = try await CryptoEngine.open()
+            let redeemed = try await InviteRedemption().redeem(code: code, using: engine)
+            try session.signIn(with: redeemed.credential)
+            onContinue()
+        } catch let failure as InviteRedemption.Failure {
+            // The relay does not distinguish unknown from spent from expired, and neither does
+            // this copy — saying "already used" would confirm to a guessing loop that a code
+            // had once been real.
+            errorMessage = switch failure {
+            case .refused:
+                String(localized: "That code cannot be used. Ask for a new invite.")
+            case .rateLimited:
+                String(localized: "Too many attempts. Wait an hour and try again.")
+            case .unreachable:
+                String(localized: "Could not reach the relay. Check your connection.")
+            case .malformedResponse:
+                String(localized: "Something went wrong. Try again.")
+            }
+        } catch {
+            errorMessage = String(localized: "Something went wrong. Try again.")
+        }
     }
 }
 

@@ -34,6 +34,7 @@
 		8AB774E3490553316CC72B2A /* LockedDecisionsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C650C2640D3E41BE3F7574F3 /* LockedDecisionsTests.swift */; };
 		8DBF8558619ED2EC7B0121C7 /* PeerKeyBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = CC990D573D0C5202DE896D1C /* PeerKeyBundle.swift */; };
 		965449FD4B46895D05405BFA /* Pods_Cipher.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = C741487CF3332A97BAFB261F /* Pods_Cipher.framework */; };
+		9F0A996B23DFED8A21D207C2 /* Pods_CipherTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = A5C0EAE4D9CFB94597CF7919 /* Pods_CipherTests.framework */; };
 		A52D83C6A721DE4895AB93A6 /* IsolationContract.swift in Sources */ = {isa = PBXBuildFile; fileRef = 60F63954BB0E3ADA903AFBEE /* IsolationContract.swift */; };
 		A6FFBC25C9E20A10B0807CC6 /* CipherProtocolStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A190A5F3E3385E5ED800DE83 /* CipherProtocolStore.swift */; };
 		B5E66E699DC497B957020592 /* SecretData.swift in Sources */ = {isa = PBXBuildFile; fileRef = 26417F8E5A66191B53228ECC /* SecretData.swift */; };
@@ -42,6 +43,7 @@
 		D23648D596EA56613ED962D3 /* Messaging.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2BB47BD551596C5410A1E83A /* Messaging.swift */; };
 		D788943F1D625F858963BEAD /* RecordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 33B17B0B63C5DBA23D90C87D /* RecordStore.swift */; };
 		EA74E2C7F0DC4468C42E074B /* PeerIdentityRecord.swift in Sources */ = {isa = PBXBuildFile; fileRef = E439ADE2D608F45BC8C8812B /* PeerIdentityRecord.swift */; };
+		F0FC50C9FA15DE850C497D40 /* InviteRedemptionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3E310D252BFBADDBF4AA5BC /* InviteRedemptionTests.swift */; };
 		F36F71FF681E26BC3091DE26 /* EncryptedFileRecordStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = EEA471F84B32DC4837B2AC7F /* EncryptedFileRecordStore.swift */; };
 		F65F77DA55464AEEE850B692 /* DeviceIdentity.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55D993D543F33EAD5EC4BED4 /* DeviceIdentity.swift */; };
 		F9E181CE9476FD2C1A37C8DA /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8CF345C885BFDA0D8BD6942C /* Foundation.framework */; };
@@ -116,13 +118,16 @@
 		59EC0BA63016349B0033985A /* Cipher.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Cipher.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5E29AFB504B4A7D90E9B8870 /* SecretStorage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = SecretStorage.swift; path = CipherCrypto/Sources/Store/SecretStorage.swift; sourceTree = SOURCE_ROOT; };
 		60F63954BB0E3ADA903AFBEE /* IsolationContract.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IsolationContract.swift; path = CipherCrypto/Sources/Engine/IsolationContract.swift; sourceTree = SOURCE_ROOT; };
+		69694E5A85DCF8DE4B61667A /* Pods-CipherTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CipherTests.debug.xcconfig"; path = "Target Support Files/Pods-CipherTests/Pods-CipherTests.debug.xcconfig"; sourceTree = "<group>"; };
 		6A371A6E905A0100965DC8D4 /* RedactingLogger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RedactingLogger.swift; path = CipherCrypto/Sources/Logging/RedactingLogger.swift; sourceTree = SOURCE_ROOT; };
 		8CF345C885BFDA0D8BD6942C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
+		92B1E7C0CE0ECC8CAF4C76F8 /* Pods-CipherTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CipherTests.release.xcconfig"; path = "Target Support Files/Pods-CipherTests/Pods-CipherTests.release.xcconfig"; sourceTree = "<group>"; };
 		9709CFFEEA416EEFA7150FEF /* Envelope.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Envelope.swift; path = CipherCrypto/Sources/Wire/Envelope.swift; sourceTree = SOURCE_ROOT; };
 		983C94ECB266FC6D89701413 /* CipherCrypto.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CipherCrypto.swift; path = CipherCrypto/Sources/CipherCrypto.swift; sourceTree = SOURCE_ROOT; };
 		9CE44AA19BFDB461A18871B2 /* Pods_CipherCryptoTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CipherCryptoTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		9CEDE557AC7DD0A5148C717A /* EnvelopeTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherCryptoTests/EnvelopeTests.swift; sourceTree = SOURCE_ROOT; };
 		A190A5F3E3385E5ED800DE83 /* CipherProtocolStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = CipherProtocolStore.swift; path = CipherCrypto/Sources/Store/CipherProtocolStore.swift; sourceTree = SOURCE_ROOT; };
+		A5C0EAE4D9CFB94597CF7919 /* Pods_CipherTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CipherTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		AC2A0FF42C6B89F1B32208E9 /* PeerAddress.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PeerAddress.swift; path = CipherCrypto/Sources/Engine/PeerAddress.swift; sourceTree = SOURCE_ROOT; };
 		BD9743B27B6E97F0986F9830 /* SessionCredentialTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/SessionCredentialTests.swift; sourceTree = SOURCE_ROOT; };
 		C650C2640D3E41BE3F7574F3 /* LockedDecisionsTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherCryptoTests/LockedDecisionsTests.swift; sourceTree = SOURCE_ROOT; };
@@ -136,6 +141,7 @@
 		EA0F25AF9A6130A829987D1F /* Pods-Cipher.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Cipher.debug.xcconfig"; path = "Target Support Files/Pods-Cipher/Pods-Cipher.debug.xcconfig"; sourceTree = "<group>"; };
 		EEA471F84B32DC4837B2AC7F /* EncryptedFileRecordStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = EncryptedFileRecordStore.swift; path = CipherCrypto/Sources/Store/EncryptedFileRecordStore.swift; sourceTree = SOURCE_ROOT; };
 		EF956B52C9027CFF1D1DD1A9 /* Pods_CipherCrypto.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_CipherCrypto.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		F3E310D252BFBADDBF4AA5BC /* InviteRedemptionTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/InviteRedemptionTests.swift; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -173,6 +179,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				328297D5F6B3221D25AE6333 /* Foundation.framework in Frameworks */,
+				9F0A996B23DFED8A21D207C2 /* Pods_CipherTests.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -197,6 +204,8 @@
 				1250270E512D8253FA3AD568 /* Pods-CipherCrypto.debug.xcconfig */,
 				D4D220698347B14C8894D002 /* Pods-CipherCryptoTests.release.xcconfig */,
 				1EB5B9023A76498C444C98DC /* Pods-CipherCryptoTests.debug.xcconfig */,
+				92B1E7C0CE0ECC8CAF4C76F8 /* Pods-CipherTests.release.xcconfig */,
+				69694E5A85DCF8DE4B61667A /* Pods-CipherTests.debug.xcconfig */,
 			);
 			path = Pods;
 			sourceTree = "<group>";
@@ -207,6 +216,7 @@
 				BD9743B27B6E97F0986F9830 /* SessionCredentialTests.swift */,
 				43E7BECB317D1948AACFD6EF /* AppLockTests.swift */,
 				368C80198058DFB08844F8C4 /* CertificatePinnerTests.swift */,
+				F3E310D252BFBADDBF4AA5BC /* InviteRedemptionTests.swift */,
 			);
 			path = CipherTests;
 			sourceTree = "<group>";
@@ -290,6 +300,7 @@
 				C741487CF3332A97BAFB261F /* Pods_Cipher.framework */,
 				EF956B52C9027CFF1D1DD1A9 /* Pods_CipherCrypto.framework */,
 				9CE44AA19BFDB461A18871B2 /* Pods_CipherCryptoTests.framework */,
+				A5C0EAE4D9CFB94597CF7919 /* Pods_CipherTests.framework */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -301,8 +312,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = BD3820FF5F90F676E41F7D4F /* Build configuration list for PBXNativeTarget "CipherCrypto" */;
 			buildPhases = (
-				94284884653DE6AB2E0ADD65 /* Guard: build from Cipher.xcworkspace */,
 				F060ACDC69BDD80308097BA7 /* [CP] Check Pods Manifest.lock */,
+				94284884653DE6AB2E0ADD65 /* Guard: build from Cipher.xcworkspace */,
 				9DD7052DD1E398E69C5D6E16 /* Sources */,
 				BEAE4C1E5D9A7B55CB3C0315 /* Frameworks */,
 				F86828FD13D3E6ED73062108 /* Resources */,
@@ -320,9 +331,11 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 1515AD6256C48A8E9CF07175 /* Build configuration list for PBXNativeTarget "CipherTests" */;
 			buildPhases = (
+				A9088EBBFD4842618C5181FD /* [CP] Check Pods Manifest.lock */,
 				47CD1B6F87543AD204FBBEFB /* Sources */,
 				BCF86C1D4B9C0B1A660A7C19 /* Frameworks */,
 				FF43BCE238CDFE539A20B7B2 /* Resources */,
+				0FBEF93D2B0E5A99D3794E43 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
@@ -338,8 +351,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = 59EC0BB13016349C0033985A /* Build configuration list for PBXNativeTarget "Cipher" */;
 			buildPhases = (
-				97906001276085C5F37FB09A /* Guard: build from Cipher.xcworkspace */,
 				9B00E4445E67AA89086544B2 /* [CP] Check Pods Manifest.lock */,
+				97906001276085C5F37FB09A /* Guard: build from Cipher.xcworkspace */,
 				59EC0BA23016349B0033985A /* Sources */,
 				59EC0BA33016349B0033985A /* Frameworks */,
 				59EC0BA43016349B0033985A /* Resources */,
@@ -363,8 +376,8 @@
 			isa = PBXNativeTarget;
 			buildConfigurationList = F918E42945C28D4EC0964CFE /* Build configuration list for PBXNativeTarget "CipherCryptoTests" */;
 			buildPhases = (
-				14B79382D787B5A707F4CCAE /* Guard: build from Cipher.xcworkspace */,
 				146AA54F106E3FF2A13B3BDD /* [CP] Check Pods Manifest.lock */,
+				14B79382D787B5A707F4CCAE /* Guard: build from Cipher.xcworkspace */,
 				593B9A17446B79EDB942BABF /* Sources */,
 				A81A44A5160E5077CB0DE4DE /* Frameworks */,
 				C7FA0FECAEE8302109FFC2E0 /* Resources */,
@@ -451,6 +464,23 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		0FBEF93D2B0E5A99D3794E43 /* [CP] Embed Pods Frameworks */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-CipherTests/Pods-CipherTests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
+			);
+			name = "[CP] Embed Pods Frameworks";
+			outputFileListPaths = (
+				"${PODS_ROOT}/Target Support Files/Pods-CipherTests/Pods-CipherTests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "\"${PODS_ROOT}/Target Support Files/Pods-CipherTests/Pods-CipherTests-frameworks.sh\"\n";
+			showEnvVarsInLog = 0;
+		};
 		146AA54F106E3FF2A13B3BDD /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -558,6 +588,28 @@
 			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
+		A9088EBBFD4842618C5181FD /* [CP] Check Pods Manifest.lock */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputFileListPaths = (
+			);
+			inputPaths = (
+				"${PODS_PODFILE_DIR_PATH}/Podfile.lock",
+				"${PODS_ROOT}/Manifest.lock",
+			);
+			name = "[CP] Check Pods Manifest.lock";
+			outputFileListPaths = (
+			);
+			outputPaths = (
+				"$(DERIVED_FILE_DIR)/Pods-CipherTests-checkManifestLockResult.txt",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "diff \"${PODS_PODFILE_DIR_PATH}/Podfile.lock\" \"${PODS_ROOT}/Manifest.lock\" > /dev/null\nif [ $? != 0 ] ; then\n    # print error to STDERR\n    echo \"error: The sandbox is not in sync with the Podfile.lock. Run 'pod install' or update your CocoaPods installation.\" >&2\n    exit 1\nfi\n# This output is used by Xcode 'outputs' to avoid re-running this script phase.\necho \"SUCCESS\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
+			showEnvVarsInLog = 0;
+		};
 		F060ACDC69BDD80308097BA7 /* [CP] Check Pods Manifest.lock */ = {
 			isa = PBXShellScriptBuildPhase;
 			buildActionMask = 2147483647;
@@ -588,13 +640,9 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Cipher/Pods-Cipher-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			inputPaths = (
-			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-Cipher/Pods-Cipher-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -609,13 +657,9 @@
 			inputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-CipherCryptoTests/Pods-CipherCryptoTests-frameworks-${CONFIGURATION}-input-files.xcfilelist",
 			);
-			inputPaths = (
-			);
 			name = "[CP] Embed Pods Frameworks";
 			outputFileListPaths = (
 				"${PODS_ROOT}/Target Support Files/Pods-CipherCryptoTests/Pods-CipherCryptoTests-frameworks-${CONFIGURATION}-output-files.xcfilelist",
-			);
-			outputPaths = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
@@ -632,6 +676,7 @@
 				042CF938F2EE60FF79FD6052 /* SessionCredentialTests.swift in Sources */,
 				5C2123EC8030E78225AB7C04 /* AppLockTests.swift in Sources */,
 				248BF1E48DC9BCE9C0B8B02E /* CertificatePinnerTests.swift in Sources */,
+				F0FC50C9FA15DE850C497D40 /* InviteRedemptionTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -1004,12 +1049,17 @@
 		};
 		AD54DA10028B0901F8E873EB /* Debug */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 69694E5A85DCF8DE4B61667A /* Pods-CipherTests.debug.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				DEVELOPMENT_TEAM = 22C66TDMT9;
 				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"$(PODS_ROOT)/LibSignalClient/swift/Sources/SignalFfi\"",
+				);
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1019,6 +1069,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = cz.janrichtermoc.CipherTests;
 				PRODUCT_NAME = CipherTests;
 				SDKROOT = iphoneos;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) \"$(PODS_ROOT)/LibSignalClient/swift/Sources/SignalFfi\"";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
 				SWIFT_VERSION = 6.0;
@@ -1112,12 +1164,17 @@
 		};
 		D82A2BDB002AF4F9ECE90A13 /* Release */ = {
 			isa = XCBuildConfiguration;
+			baseConfigurationReference = 92B1E7C0CE0ECC8CAF4C76F8 /* Pods-CipherTests.release.xcconfig */;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
 				CLANG_ENABLE_OBJC_WEAK = NO;
 				DEVELOPMENT_TEAM = 22C66TDMT9;
 				GCC_TREAT_WARNINGS_AS_ERRORS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
+				HEADER_SEARCH_PATHS = (
+					"$(inherited)",
+					"\"$(PODS_ROOT)/LibSignalClient/swift/Sources/SignalFfi\"",
+				);
 				IPHONEOS_DEPLOYMENT_TARGET = 26.5;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -1127,6 +1184,8 @@
 				PRODUCT_BUNDLE_IDENTIFIER = cz.janrichtermoc.CipherTests;
 				PRODUCT_NAME = CipherTests;
 				SDKROOT = iphoneos;
+				SWIFT_ENABLE_EXPLICIT_MODULES = NO;
+				SWIFT_INCLUDE_PATHS = "$(inherited) \"$(PODS_ROOT)/LibSignalClient/swift/Sources/SignalFfi\"";
 				SWIFT_STRICT_CONCURRENCY = complete;
 				SWIFT_TREAT_WARNINGS_AS_ERRORS = YES;
 				SWIFT_VERSION = 6.0;
