@@ -93,3 +93,30 @@ func quoteIdent(s string) string {
 	}
 	return string(append(out, '"'))
 }
+
+// TableNames returns every table in the public schema.
+//
+// Used to assert that no archive, history or audit table has appeared —
+// docs/BACKEND.md §4 and P4.S08's anti-goal. Asked of the database rather than
+// read from the migrations, so a table created by a later migration, or by hand
+// on a running deployment, is caught by the same check.
+func (db *DB) TableNames(ctx context.Context) ([]string, error) {
+	rows, err := db.pool.Query(ctx,
+		`SELECT table_name FROM information_schema.tables
+		  WHERE table_schema = 'public' AND table_type = 'BASE TABLE'
+		  ORDER BY table_name`)
+	if err != nil {
+		return nil, fmt.Errorf("table names: %w", err)
+	}
+	defer rows.Close()
+
+	var out []string
+	for rows.Next() {
+		var name string
+		if err := rows.Scan(&name); err != nil {
+			return nil, fmt.Errorf("table names: %w", err)
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}

@@ -19,15 +19,19 @@ DONE:           P1, P2, P3 all steps. P4.S01 (docs/BACKEND.md),
                 P4.S02 (scaffold; `docker compose up` verified 2026-07-29),
                 P4.S03 (invite codes), P4.S04 (session tokens),
                 P4.S05 + P4.S06 (PQXDH prekey directory with mandatory
-                fetch rate limiting). 54 integration tests.
-NEXT STEP:      P4.S07 — message relay: store and forward envelopes. The
-                messages table exists (BACKEND.md §2.7). The server must NOT
-                interpret ciphertext beyond size and type checks: the
-                envelope column is opaque bytes, bounded 32..65567, which is
-                Envelope.swift's headerSize 31 plus 1..65536 of ciphertext.
-                No sender_aci column — deriving it means parsing the
-                envelope. Then P4.S08 delete-on-delivery, which is the
-                highest-value server control in the whole plan.
+                fetch rate limiting), P4.S07 + P4.S08 (message relay,
+                delete-on-delivery, hourly TTL sweep). 72 integration tests.
+NEXT STEP:      P4.S09 — attachment slot API. The attachments table exists
+                (BACKEND.md §2.8): id, size_bytes, expires_at, and NO owner
+                column — the id IS the capability, delivered to the recipient
+                inside the E2E ciphertext, so the server never learns who may
+                read a blob. Client encrypts first; the server stores opaque
+                bytes with a size cap and a 7-day TTL. Blob bytes go on the
+                filesystem keyed by id, not in Postgres: shredding a file is
+                one unlink, whereas a deleted BYTEA lingers in table bloat and
+                WAL. Do not do content scanning of any kind.
+                Then P4.S10 (integration tests incl. malicious envelope
+                rewrite/replay) and P4.S11 (redacted logging, no IP retention).
 TOOLING:        Go 1.26.5 and Docker Desktop are both installed on this
                 machine. server/.env exists locally and is gitignored; it is
                 NOT in the repo, so a fresh clone needs `cp .env.example .env`
