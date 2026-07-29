@@ -24,17 +24,18 @@ Executed 2026-07-29 against the OVH VPS. Every "Done when" below was observed, n
 | D | done | Reboot window 04:30 UTC; box set to UTC. |
 | E | done | Needed `backend = systemd` — this image ships no rsyslog, so the stock jail would have run and banned nothing. Verified four ways: jail listed, filter matched 26 real journal lines, live jail counted 3 induced failures, ban reached the packet filter and unban removed it. |
 | F | done | Docker 29.6.2, Compose v5.3.1, log rotation on, `no-new-privileges` global. |
-| G | done | `main` @ `245ee6b`. All three containers healthy, 8080 on loopback only. Secrets generated on the box. |
-| H | **not started** | Needs the DNS record for `mgchatman.app` and an ACME email. |
-| I | partial | 5432, 6379, 8080, 2375/2376 all filtered from outside; 22 open; 80/443 permitted but empty pending H. Full 65535-port scan pending. |
+| G | done | `main` @ `9a279a4`. All three containers healthy, 8080 on loopback only. Secrets generated on the box. |
+| H.0 | done | `RELAY_TRUSTED_PROXY=172.18.0.1/32` — the bridge **gateway**, not the subnet. Verified live both ways: rotating `X-Real-IP` through the host's published port gets fresh buckets, the same rotation from inside the `postgres` container still hits `429`. |
+| H.1–H.5 | done | `relay.mgchatman.app`, Let's Encrypt ECDSA leaf expiring 2026-10-27, `reuse_key = True` confirmed in the renewal config. TLS **1.3 only** — and see AUDIT 5.16, because it was 1.2-accepting at first while the config read as 1.3-only, and the first probe reported a false pass. Verified end to end from the internet: forging `X-Real-IP` per request does **not** escape the rate limit (8 requests, one bucket, throttled at the 6th). Access log carries no request URI. |
+| I | done | Post-H full scan: **22, 80, 443 open; everything else filtered**, both families. Pre-H the same scan showed 65532 filtered / 2 closed / 1 open, confirming 80 and 443 only became reachable when Nginx was deployed. |
 
 ---
 
 ## 0. Before the first command
 
 **Ownership.** Stages A–G need shell access and are the operator's to run, or Claude's once the
-`cipher-staging` alias resolves. Stage H is blocked on a code change (§H.0) — read it before
-starting Stage H, not after.
+`cipher-staging` alias resolves. Stage H additionally needs a DNS record and an ACME email, which
+only the operator can supply. §H.0 is the one part of H that needs neither — do it first.
 
 **Never paste into a chat transcript:** the OVH password, the contents of `~/.ssh/cipher_staging`,
 `server/.env`, or any TLS private key. The IP and hostname are public the moment DNS resolves and
@@ -405,17 +406,38 @@ budget denies invite redemption to everyone**. `httpx.RealIP` (P5.S05) fixes thi
 told which peer is the proxy. `BACKEND.md` §9.2 has the full reasoning.
 
 **The obvious value is wrong.** `ports: "127.0.0.1:8080:8080"` puts `docker-proxy` in the path,
-and it opens a *fresh* connection into the container from the compose bridge gateway. The relay
-therefore sees the bridge subnet, never `127.0.0.1` — so a config naming loopback trusts nothing
-while looking configured. Read the real value off the running network:
+and it opens a *fresh* connection into the container from the compose bridge **gateway**. The
+relay therefore never sees `127.0.0.1` — so a config naming loopback trusts nothing while looking
+configured. Read the real value off the running network, and use it as a `/32`:
 
 ```sh
 cd ~/cipher/server
-SUBNET=$(docker network inspect cipher-relay_internal \
-           --format '{{ (index .IPAM.Config 0).Subnet }}')
-echo "$SUBNET"
-printf 'RELAY_TRUSTED_PROXY=%s\n' "$SUBNET" >> .env
+GW=$(docker network inspect cipher-relay_internal \
+       --format '{{ (index .IPAM.Config 0).Gateway }}')
+echo "$GW"
+if grep -q '^RELAY_TRUSTED_PROXY=' .env; then
+  sed -i "s|^RELAY_TRUSTED_PROXY=.*|RELAY_TRUSTED_PROXY=${GW}/32|" .env
+else
+  printf 'RELAY_TRUSTED_PROXY=%s/32\n' "$GW" >> .env
+fi
 docker compose up -d
+```
+
+**The gateway, not the subnet.** Proxied requests only ever arrive from the gateway, so a `/16`
+is wider than needed — and the extra width is `postgres` and `redis`, at `.2` and `.3`. Under a
+subnet a compromised datastore container could name any client address it liked; under the `/32`
+it cannot. Prove it, from inside a container that is *not* the gateway:
+
+```sh
+# Rotates X-Real-IP every request. If the header were believed this would never
+# be throttled; it must still reach 429.
+for i in $(seq 1 7); do
+  docker exec cipher-relay-postgres-1 wget -q -O /dev/null -S \
+    --header="Content-Type: application/json" \
+    --header="X-Real-IP: 192.0.2.$i" \
+    --post-data='{"code":"aaaaaaaaaaaaaaaaaaaaaaaaaa","identity_key":"","registration_id":1}' \
+    http://api:8080/v1/invite/redeem 2>&1 | grep -oE 'HTTP/1.1 [0-9]+'
+done
 ```
 
 Verify the relay actually took it, rather than assuming:
@@ -436,9 +458,9 @@ you are keeping v6 reachable. Then per **P5.S04**: a `CAA` record restricting is
 Let's Encrypt, DNSSEC if the registrar supports it, and no records that are not needed.
 
 ```sh
-dig +short A relay.example.app
-dig +short AAAA relay.example.app
-dig +short CAA relay.example.app
+dig +short A relay.mgchatman.app
+dig +short AAAA relay.mgchatman.app
+dig +short CAA relay.mgchatman.app
 ```
 
 The name enters public Certificate Transparency logs at first issuance, permanently. That is the
@@ -453,7 +475,7 @@ sudo tee /etc/nginx/sites-available/cipher >/dev/null <<'EOF'
 server {
     listen 80;
     listen [::]:80;
-    server_name relay.example.app;
+    server_name relay.mgchatman.app;
     location /.well-known/acme-challenge/ { root /var/www/acme; }
     location / { return 301 https://$host$request_uri; }
 }
@@ -470,9 +492,9 @@ here.
 
 ```sh
 sudo certbot certonly --webroot -w /var/www/acme \
-  -d relay.example.app \
+  -d relay.mgchatman.app \
   --key-type ecdsa --reuse-key \
-  --agree-tos -m <acme-email> --no-eff-email
+  --agree-tos -m jandajhdbahc@seznam.cz --no-eff-email
 ```
 
 **`--reuse-key` is not optional.** Certbot generates a *new* private key on every renewal by
@@ -481,7 +503,7 @@ rotated key at renewal is a total outage for every installed app — roughly 60 
 with no server-side fix. Confirm it stuck:
 
 ```sh
-sudo grep -E 'reuse_key|key_type' /etc/letsencrypt/renewal/relay.example.app.conf
+sudo grep -E 'reuse_key|key_type' /etc/letsencrypt/renewal/relay.mgchatman.app.conf
 ```
 
 Generate the **backup key** now, while the tooling is here. `BACKEND.md` §9.1 rule 2 requires
@@ -527,7 +549,7 @@ sudo tee /etc/logrotate.d/cipher-nginx >/dev/null <<'EOF'
 # 24 hours, and 'rotate 1' so yesterday's file is the only history that exists.
 # The retention policy is the strongest control this service has; a log that
 # outlives it reintroduces exactly what the database deletes on delivery.
-/var/log/nginx/cipher-access.log /var/log/nginx/cipher-error.log {
+/var/log/cipher/*.log {
     daily
     rotate 1
     missingok
@@ -543,8 +565,17 @@ EOF
 sudo logrotate --debug /etc/logrotate.d/cipher-nginx
 ```
 
-Ubuntu's stock `/etc/logrotate.d/nginx` keeps 14 days and will also match these files if they are
-left to the default `*.log` glob — check that it does not, or the 24-hour claim is false.
+**This is why the logs live in `/var/log/cipher/` and not `/var/log/nginx/`.** Ubuntu's stock
+`/etc/logrotate.d/nginx` globs `/var/log/nginx/*.log` at `rotate 14`, which silently claims any
+file put there — logrotate reports `error: nginx:1 duplicate log entry` and which rule wins
+depends on filename ordering, which is no basis for a retention guarantee. Verify there is no
+collision, and note that grepping the stock file for the log's *name* will not find it because
+the overlap is via a glob:
+
+```sh
+sudo mkdir -p /var/log/cipher && sudo chown root:adm /var/log/cipher && sudo chmod 750 /var/log/cipher
+sudo logrotate --debug /etc/logrotate.conf 2>&1 | grep -i duplicate   # must print nothing
+```
 
 ### H.5 The real server block
 
@@ -557,6 +588,14 @@ server {
     listen 443 ssl default_server;
     listen [::]:443 ssl default_server;
     server_name _;
+    # ssl_protocols MUST be here, not only in the relay block below. nginx
+    # negotiates the TLS version from the DEFAULT server's context for the
+    # listening socket, BEFORE SNI selects a virtual server — so a per-server
+    # ssl_protocols is applied too late to refuse anything. Omit this and
+    # Ubuntu's nginx.conf line 33 ("TLSv1 TLSv1.1 TLSv1.2 TLSv1.3") governs the
+    # socket: the config reads as 1.3-only and the server accepts 1.2.
+    # `nginx -t` passes either way. AUDIT 5.16.
+    ssl_protocols TLSv1.3;
     ssl_reject_handshake on;
     return 444;
 }
@@ -564,7 +603,7 @@ server {
 server {
     listen 80;
     listen [::]:80;
-    server_name relay.example.app;
+    server_name relay.mgchatman.app;
     location /.well-known/acme-challenge/ { root /var/www/acme; }
     location / { return 301 https://$host$request_uri; }
 }
@@ -575,10 +614,10 @@ server {
     # "unknown directive" and nginx -t fails. This form works on both.
     listen 443 ssl http2;
     listen [::]:443 ssl http2;
-    server_name relay.example.app;
+    server_name relay.mgchatman.app;
 
-    ssl_certificate     /etc/letsencrypt/live/relay.example.app/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/relay.example.app/privkey.pem;
+    ssl_certificate     /etc/letsencrypt/live/relay.mgchatman.app/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/relay.mgchatman.app/privkey.pem;
 
     # 1.3 only. The sole client is a pinned iOS app; there is no legacy peer to
     # accommodate, and every downgrade-negotiation problem disappears with 1.2.
@@ -605,8 +644,12 @@ server {
     # /v1/keys/3f2b… — the populated-path leak that httpx.pattern() exists to
     # prevent in application logs. Recording it in the proxy instead would defeat
     # the control rather than relocate it. The minimal format has no URI.
-    access_log /var/log/nginx/cipher-access.log minimal;
-    error_log  /var/log/nginx/cipher-error.log warn;
+    # NOT under /var/log/nginx: the stock logrotate globs that directory at
+    # rotate 14 and would silently claim these files, making the 24h retention
+    # claim false. logrotate calls the collision a "duplicate log entry" and the
+    # winner depends on filename ordering. See H.4.
+    access_log /var/log/cipher/cipher-access.log minimal;
+    error_log  /var/log/cipher/cipher-error.log warn;
 
     # Blobs are capped at 100 MiB by the relay. 101m lets the RELAY produce its
     # own tested 413 instead of Nginx short-circuiting with an untested one.
@@ -635,11 +678,11 @@ sudo nginx -t && sudo systemctl reload nginx
 Verify from the Mac:
 
 ```sh
-curl -sS https://relay.example.app/health
-curl -sSI https://relay.example.app/health | grep -i strict-transport
-openssl s_client -connect relay.example.app:443 -tls1_3 </dev/null 2>/dev/null | head -5
+curl -sS https://relay.mgchatman.app/health
+curl -sSI https://relay.mgchatman.app/health | grep -i strict-transport
+openssl s_client -connect relay.mgchatman.app:443 -tls1_3 </dev/null 2>/dev/null | head -5
 # TLS 1.2 must be refused:
-openssl s_client -connect relay.example.app:443 -tls1_2 </dev/null 2>&1 | grep -i 'alert\|failure'
+openssl s_client -connect relay.mgchatman.app:443 -tls1_2 </dev/null 2>&1 | grep -i 'alert\|failure'
 # Bare IP must give nothing:
 curl -skI https://<IP>/health
 ```

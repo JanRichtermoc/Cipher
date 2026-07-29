@@ -349,6 +349,15 @@ Rules that make this real rather than aspirational:
 - **Backups inherit this.** A nightly `pg_dump` retained for a month reintroduces every deleted
   message with a delay. Backups cover schema and account rows only — losing undelivered messages in
   a restore is the correct outcome, not a gap to fix.
+- **Except the provider's, which we do not control.** OVH includes a daily whole-disk snapshot on
+  VPS and it **cannot be disabled on this product** — confirmed on the staging box, 2026-07-29. It
+  images the Postgres volume and the blob directory, so for up to 24 hours a snapshot holds rows
+  and files the relay has already deleted. This is the one place the rule above is not true, and
+  it is recorded as a residual rather than written around: `AUDIT.md` 4.8. Everything in it is
+  ciphertext — keys never touch the server — so what survives is *metadata*: who had mail waiting,
+  and that a blob of a given size existed. Bounded at 24 hours, and held by the same provider
+  already subject to the same legal process as the live host, so it widens the window rather than
+  the set of adversaries.
 - **The user-visible consequence is surfaced honestly**: a device offline past 30 days loses
   undelivered messages. That is a UI string subject to the same honesty rule as every other, and it
   must say so plainly rather than presenting silent loss as delivery.
@@ -542,6 +551,25 @@ with no rotation plan is an outage waiting for a certificate renewal.
 4. Record every pin with its expiry and the date it was extracted.
 5. Pin the SPKI, not the certificate, so renewal with the same key needs no client change.
 
+**Pins extracted 2026-07-29 (P5.S05 stage H).** Public values — an SPKI hash is derived from a
+public key and appears in the certificate, so recording it here discloses nothing. P5.S06 formalises
+this table; P5.S08 ships it.
+
+| Pin | SHA-256(SPKI), base64 | Notes |
+|---|---|---|
+| Staging leaf, `relay.mgchatman.app` | `MRFmm9ckpODEhUXZfYHbhMzIsxiCDsBJD/HwOy/rQBM=` | ECDSA P-256. Certificate expires **2026-10-27**; the *key* does not rotate on renewal — see below. |
+| Backup, not yet in use | `+qAajv1/B4owz+yao2g3R3lSNjD7qPN3eR3JXwA5FCY=` | `/etc/ssl/private/cipher-backup.key` on the staging host. Rule 2's second pin. |
+
+**`--reuse-key` is what makes rule 5 true in practice, and it is not the default.** Certbot
+generates a *fresh* private key on every renewal unless told otherwise, which would change the
+SPKI roughly every 60 days and brick every pinned client with no server-side remedy. Verified
+present in `/etc/letsencrypt/renewal/relay.mgchatman.app.conf` as `reuse_key = True`; re-check it
+after any certbot invocation that rewrites that file.
+
+**The backup key is now the thing that must survive a host move.** INFRASTRUCTURE.md's constraint
+already says moving hosts after P5.S08 means carrying the TLS private key; from here that means
+*both* keys, since a backup pin whose key was left behind is not a backup.
+
 ### 9.2 The reverse proxy and the client address (P5.S05)
 
 Once Nginx is in front, every request reaches the relay from the proxy. `clientAddr` feeds that
@@ -573,18 +601,30 @@ bucket per request — the limit stops existing rather than merely being wrong.
 
 **The value is deployment-specific, and the obvious guess is wrong.** With
 `ports: "127.0.0.1:8080:8080"`, traffic passes through `docker-proxy`, which opens a *new*
-connection into the container from the compose bridge gateway. The relay therefore sees the
-bridge subnet, **not** `127.0.0.1`, and a configuration naming loopback silently trusts nothing
-while appearing configured. Read the actual value off the running network rather than assuming
-it:
+connection into the container from the compose bridge **gateway**. The relay therefore never sees
+`127.0.0.1`, and a configuration naming loopback silently trusts nothing while appearing
+configured. Read the actual value off the running network rather than assuming it:
 
 ```sh
 docker network inspect cipher-relay_internal \
-  --format '{{ (index .IPAM.Config 0).Subnet }}'
+  --format '{{ (index .IPAM.Config 0).Gateway }}'
 ```
 
-Trusting that subnet means trusting the three services on it, which are the relay's own
-containers. It does not extend trust to anything on the host or the internet.
+**The gateway address as a `/32`, not the subnet.** Every proxied request arrives from the gateway
+specifically, so the subnet is wider than it needs to be — and the extra width is the other
+containers. On the staging box `postgres` and `redis` sit at `.2` and `.3`, and under a `/16` a
+compromised datastore container could name any client address it liked and mint rate-limit buckets
+at will. Under `172.18.0.1/32` it cannot. Verified on the deployment, not reasoned about: a loop
+from inside the `postgres` container rotating `X-Real-IP` on every request still hit `429`, while
+the same rotation through the host's published port did not.
+
+**What trusting the gateway does and does not cover.** It is not confined to the compose services:
+*anything on the host* that can reach the published loopback port arrives as the gateway too, and
+is therefore believed. That is accepted rather than overlooked — the port is bound to `127.0.0.1`,
+so reaching it already requires local execution on the host, which is past every boundary the
+relay could defend. What the `/32` buys is that a container escape confined to `postgres` or
+`redis` does *not* also grant it. It grants nothing to the internet: an attacker reaching Nginx
+from outside is never the gateway, and Nginx overwrites `X-Real-IP` on the way through.
 
 ---
 

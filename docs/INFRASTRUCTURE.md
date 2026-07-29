@@ -117,7 +117,28 @@ Flag this before running P5.S06.
 
 ---
 
-## Open decision — OVH's included daily backup
+## Decided — the backup cannot be disabled, and is carried as a residual
+
+**2026-07-29.** The preference was to disable it. **OVH provides no way to.** The operator checked
+the control panel; the included daily backup is not optional on this product.
+
+So it is recorded rather than written around: **`AUDIT.md` 4.8**, status ACCEPTED, and
+`BACKEND.md` §4 now carries the exception directly under the rule it contradicts. The honest
+statement is that "acknowledged means gone" is true of the database and not of the host, for up
+to 24 hours.
+
+**Why this is tolerable at staging and must be re-argued for production.** The snapshot holds
+ciphertext — keys never touch the server — so what it extends is metadata: who had mail waiting.
+It does not widen the adversary set, because OVH already holds the live disk and the same legal
+process reaches both; it widens the window. Encrypting the volume would not help, since a
+hypervisor snapshot of a running system captures a filesystem whose key is already in memory.
+
+**This becomes a selection criterion at P9.S01.** Jurisdiction was the criterion that chose OVH
+(§3.7). "Can provider snapshots be declined?" is now a second one, and it is worth asking *before*
+buying rather than discovering afterwards — Hetzner, already the technical first choice and
+rejected only over a €25 advance payment, bills backups as an opt-in extra.
+
+### The original question, for the record
 
 OVH includes a *"daily backup of the previous 24 hours"* on VPS. It conflicts, mildly, with
 `BACKEND.md` §4:
@@ -133,10 +154,9 @@ after the relay has forgotten it.
 so OVH holds unreadable blobs. What it extends is *metadata*: who had mail waiting. Bounded at
 24 hours.
 
-**Unresolved.** Two options:
+Two options were on the table:
 
 1. Disable the included backup in the OVH control panel, if it can be disabled.
 2. Accept it and record it as a stated residual in `AUDIT.md` and `BACKEND.md` §4.
 
-Preference is (1) — the retention policy is the strongest server-side control there is, and a
-24-hour hole in it should be a decision rather than a default. **Awaiting the operator's call.**
+**(1) turned out not to exist on this product, so (2) it is.** See the top of this section.
