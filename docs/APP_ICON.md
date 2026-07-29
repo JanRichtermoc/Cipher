@@ -17,18 +17,45 @@ unchanged would have put a literal grey checkerboard on the home screen.
 
 ## How the current set was produced
 
-1. Resize to 1024×1024 (Lanczos).
-2. Find light, neutral pixels — `min(R,G,B) ≥ 225` and `max−min ≤ 12` — as *candidates* for
-   background.
-3. Label connected components and fill only those of 1000 px or more. Connectivity is what
-   makes this safe: the whites of the eyes are light and neutral too, but they are small and
-   enclosed. The size histogram had a clean cliff — four background regions of 4,030 to
-   590,597 px, and the next largest component was 58 px.
-4. Fill with white (light), `#1C1C1E` (dark), and black-plus-grayscale (tinted — iOS
-   multiplies the user's tint over luminance, so the artwork must read as brightness rather
-   than as colour).
+Regenerated 2026-07-29 from `Finalikona.png` — a speech-bubble-shaped photograph on a white
+field.
 
-Verified afterwards: 1024×1024, mode `RGB`, and a uniform background.
+That source arrived in better shape than the previous one: already exactly 1024×1024, already
+mode `RGB` with no alpha channel, and with a genuinely uniform pure-white border rather than a
+painted checkerboard. Checked before anything else, because the previous source looked
+transparent and was not (see above), and "it looks fine" is not a property of a file.
+
+Two measurements decided the rest:
+
+- **Nothing is clipped.** iOS masks the icon to a superellipse. Approximating Apple's with
+  exponent 5 and testing every non-white pixel against it gives **zero** outside the mask,
+  despite a left margin of only 26 px. The bubble survives the mask intact.
+- **Near-white is not the same as background.** 49.8% of the canvas is the white field, but
+  **182 near-white pixels sit inside the artwork** — bright highlights on the face and in the
+  photo's own background. Replacing every white pixel would have punched 182 holes through it.
+
+So the background is found by flood fill from the border through near-white (`≥ 245` in all
+channels), exactly as for the previous icon and for the same reason: connectivity is what
+distinguishes "the surrounding canvas" from "a bright part of the picture".
+
+The three variants:
+
+| File | Background | Artwork |
+|---|---|---|
+| `AppIcon.png` | white, untouched | pixel-identical to the source |
+| `AppIcon-dark.png` | `#1C1C1E` | untouched |
+| `AppIcon-tinted.png` | black | grayscale (Rec. 709 luminance) |
+
+Tinted is grayscale on black because iOS multiplies the user's tint over luminance: the
+artwork has to read as brightness rather than as colour, and a non-black background would let
+the tint flood the whole square.
+
+Each output is verified after writing — 1024×1024, mode `RGB`, no alpha band, and a
+single-colour border that matches the intended background.
+
+**The source file is not kept separately.** `AppIcon.png` is pixel-identical to it (asserted,
+not assumed), so a second copy would be the same bytes under a different name and one more
+thing to keep in step.
 
 ## If you replace it
 
