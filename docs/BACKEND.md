@@ -483,6 +483,19 @@ review.
 - **Access logs:** method, route *pattern* (never the populated path — `/v1/keys/{aci}` never
   `/v1/keys/3f2b…`), status, duration. A populated path is a metadata record hiding in a log line.
 - Log volume is itself metadata: an error log that fires once per delivery is a delivery record.
+  Tested as such — five sends must not produce five handler log lines.
+
+**This section is verified by running the relay, not by reading it.** The logging package redacts
+by type and by an attribute-name denylist, and has unit tests for both — but those test the
+*mechanism*, and a mechanism can be correct and still bypassed: one `slog.String("detail", token)`
+under a key nobody thought to deny and the unit tests stay green while the credential is on disk.
+So the integration suite drives a complete flow at **DEBUG** — invite, redeem, publish, fetch a
+bundle, send, fetch, acknowledge, upload, download, rotate, revoke, a panic, and a batch of
+malformed requests — captures everything the process emits, and searches it for the actual secret
+values that flow produced: both session tokens, both invite codes (grouped and ungrouped), both
+client addresses, the envelope in base64 and raw, the blob bytes, all three identifiers, and the
+panic value. Negative-tested by logging a rotated token under `detail`, which the denylist does not
+cover; the audit caught it.
 
 ---
 
