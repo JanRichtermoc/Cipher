@@ -14,13 +14,15 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. *** P5.S05 COMPLETE. ***
+CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. P5.S05 + P5.S06 COMPLETE.
 UNMERGED:       *** branch `p5/stage-h` is pushed and NOT merged. ***
+                Carries P5.S05 stage H, P5.S06, and the AUDIT.md cleanup.
                 The user merges PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
-                *** P5.S05 COMPLETE, all stages, exit criterion met: an
-                external full-port scan shows 22/80/443 and nothing else, on
-                BOTH address families. ***
+                *** P5.S05 COMPLETE — external full-port scan shows
+                22/80/443 and nothing else, on BOTH address families. ***
+                *** P5.S06 COMPLETE — pin set + rotation runbook in
+                BACKEND.md §9.1, guarded by Scripts/verify-pins.sh. ***
                 104 integration tests + 126 iOS tests, verify-all.sh 11/11.
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
                 Ubuntu 24.04, running main. TLS 1.3 only, Let's Encrypt ECDSA,
@@ -40,14 +42,17 @@ FOUND IN S05:   Three things that looked configured and were not. All CLOSED,
                        — ssl_protocols is taken from the DEFAULT server for the
                        socket. Worse, the first probe reported a false pass:
                        macOS `openssl` is LibreSSL and cannot drive -tls1_3.
-NEXT STEP:      P5.S06 — formalise the pin set. Most of the work is already
-                done: both SPKI pins (leaf + unused backup) are extracted and
-                recorded in BACKEND.md §9.1 with the rotation runbook. What
-                remains is the intermediate, and stating the rotation procedure
-                as a procedure. FLAG FIRST: after P5.S08 ships pins, moving
-                hosts requires carrying BOTH TLS private keys across, or an app
-                update (INFRASTRUCTURE.md, "the constraint").
-                Then P5.S08 (iOS client, pinned, failing closed).
+NEXT STEP:      P5.S08 — the iOS network client: HTTPS only, TLS 1.3,
+                SPKI pinning matching BACKEND.md §9.1, FAILING CLOSED.
+                Timeouts, retries with jitter. No ATS exception, ever.
+                Pin the two values marked **YES** in §9.1 — leaf and backup.
+                Do NOT also pin the intermediate: it is recorded there
+                precisely so nobody re-adds it by reflex. Reasoning in §9.1.
+                From the moment this ships, a leaf key change is a total
+                outage with no server-side fix, so Scripts/verify-pins.sh
+                becomes a standing check rather than a nicety.
+                P5.S09 (invite redemption -> Keychain token) and P5.S10
+                (replace MockStore with CryptoEngine + network) follow.
 DECIDED:        OVH daily backup — cannot be disabled; carried as AUDIT 4.8.
                 Re-argue at P9.S01, where "can snapshots be declined?" joins
                 jurisdiction as a provider selection criterion.
@@ -326,7 +331,7 @@ and an encrypted local database **from the first real message**.
 | **P5.S03** | **Provide access material out of band** — never committed: registrar/DNS API token; VPS IP + SSH key (prefer: human creates a deploy user, pastes the host fingerprint); ACME email; chosen hostname. | **HUMAN** | Claude has what it needs | Paste secrets into the repo or chat history |
 | **P5.S04** | DNS: A/AAAA for the API host; CAA restricting CAs; DNSSEC if supported; no unnecessary public records. | AI-after-access | `dig` shows the expected records | Create wildcards |
 | **P5.S05** | VPS hardening + staging deploy: Ubuntu LTS, key-only SSH, no password auth, firewall (22/80/443 only — **no Postgres/Redis exposed**), unattended security updates, minimal packages, non-root Docker, Nginx + **TLS 1.3** + ACME, HSTS (carefully on staging), fail2ban. Secrets via env/files **not in git**. Procedure and observed results: [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md). **DONE 2026-07-29, all stages.** Exit criterion met on both address families. Three latent misconfigurations found and closed on the way: AUDIT 4.8, 5.15, 5.16. | AI-after-access | External port scan shows only 22/80/443 | Expose the database |
-| **P5.S06** | Document the pin set: extract SPKI/pin hashes for the staging leaf/intermediate; write the pin-rotation runbook stub in `docs/BACKEND.md` (created in P4.S01). | AI-after-access | Pins recorded with a rotation procedure | Ship a pin with no rotation plan |
+| **P5.S06** | Document the pin set: extract SPKI/pin hashes for the staging leaf/intermediate; write the pin-rotation runbook stub in `docs/BACKEND.md` (created in P4.S01). **DONE 2026-07-29.** All five chain SPKIs extracted and recorded in `BACKEND.md` §9.1, but only the **leaf and the backup key are pinned** — the intermediate is recorded and deliberately *not* pinned, because a pin set is only as strong as its weakest accepted pin and accepting the LE intermediate accepts any certificate LE issues for the host, which an attacker passing ACME validation can obtain. Runbook now covers routine renewal, planned rotation (two releases), key compromise, both-keys-lost, and host moves. `Scripts/verify-pins.sh` checks the served SPKI against the recorded pins and that `reuse_key` is still set; negative-tested three ways. | AI-after-access | Pins recorded with a rotation procedure | Ship a pin with no rotation plan |
 | **P5.S07** | Review SSH exposure, DNS, and that no secrets landed in the repo. | **HUMAN** | Reviewed | — |
 
 ## 5.B Client transport and the first real message path

@@ -185,7 +185,7 @@ arrive without a break.
 does. Rotate it, and delete it with the account. Otherwise zero retention is undermined by the one
 table that has to persist.
 
-**Amended 2026-07-29 (P4.S01, AUDIT 6.6).** This section originally said to store the token
+**Amended 2026-07-29 (P4.S01, AUDIT 6.10).** This section originally said to store the token
 *hashed*. That is not implementable: the token must be replayed verbatim to APNs, so a one-way
 function cannot be used, and the wording promised a guarantee stronger than anything achievable.
 The strongest achievable property is encryption at rest under a key held only in the service
