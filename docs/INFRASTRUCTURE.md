@@ -1,0 +1,142 @@
+# Infrastructure — hosting, registrar, and access
+
+Where the relay runs, why there, and how a session reaches it. Written during P5 because the
+choice was made across a conversation and a decision that lives only in a chat is a decision
+nobody can review.
+
+Read with [`THREAT_MODEL.md`](THREAT_MODEL.md) §3.7 (jurisdiction) and [`BACKEND.md`](BACKEND.md)
+§9 (deployment shape).
+
+---
+
+## Status
+
+| | |
+|---|---|
+| **Staging VPS** | OVH VPS-1 — **purchased 2026-07-29** |
+| **Domain** | name.com, via the GitHub Student Developer Pack |
+| **Production VPS** | Does not exist. Separate purchase at **P9.S01**, same hardening bar. Do not reuse staging. |
+
+---
+
+## Provider: OVHcloud
+
+**VPS-1** — 2 vCores, 4 GB RAM, 40 GB NVMe, unlimited traffic, public IPv4 included.
+Roughly €5–6/month including Czech VAT. Monthly commitment, deliberately not annual.
+
+Datacentre must be **Gravelines or Roubaix (FR)** or **Frankfurt (DE)**. Not Beauharnois,
+not the US, not Singapore — that is the whole §3.7 point.
+
+`THREAT_MODEL.md` §3.7 already named OVH alongside Hetzner, so this choice needed no amendment
+to the threat model. That is the reason it was preferred over otherwise-equivalent options: a
+provider the threat model has already reasoned about costs nothing to adopt.
+
+**Monthly, not annual.** OVH discounts 12- and 24-month commitments. The discount is worth
+roughly €10 and it removes the ability to move hosts, which the pin constraint below makes a
+live consideration. Ten euros is not worth losing that.
+
+### Providers considered and rejected
+
+| Provider | Why not |
+|---|---|
+| **Hetzner** (🇩🇪) | The best technical and jurisdictional fit, and still the first choice if OVH ever disappoints. Rejected only because new accounts require a **€25 advance payment** to verify. That is *not* a fee — it is account credit that pays your invoices, about four months of hosting — but it is unrecoverable until the account is fully closed, and the upfront amount was the blocker. |
+| **Oracle Cloud** (🇺🇸) | Always Free ARM would have cost **€0**, and an account was created. Abandoned on two counts: the A1.Flex shape returned **"Out of capacity"** in the chosen home region, which is chronic rather than transient; and Oracle is a US company, so an EU region gives data residency but not distance from US legal process. The free tier was also **halved without announcement** on 2026-06-15 (4 OCPU/24 GB → 2 OCPU/12 GB), which is the deeper objection — a tier whose terms move silently is a poor foundation. |
+| **DigitalOcean** (🇺🇸) | $200 of GitHub Student credit was available and **expired 2026-07-31**, with DigitalOcean ending the student programme entirely. Unused credit is forfeited: at ~€6/month the two remaining days would have consumed **under one dollar** of it. Taking DigitalOcean *because of* the credit would have meant choosing a US provider against §3.7 and paying full price from day three. |
+| **Netcup** (🇩🇪) | Genuinely competitive, but not named in `THREAT_MODEL.md` §3.7. Choosing it would have required amending the threat model first, for no advantage over OVH. |
+
+The general lesson, recorded because it nearly cost real money: **an expiring credit is not a
+reason to choose a provider.** Work out what it can actually buy before it lapses.
+
+---
+
+## Registrar and domain
+
+**name.com**, through the GitHub Student Developer Pack — one domain free for the first year.
+
+- `.com` is **not** eligible. `.app` and `.dev` are, and both are on the HSTS preload list, so
+  browsers force HTTPS for the whole TLD. That benefit is **marginal here**: Cipher is a native
+  app with ATS and certificate pinning, so preload only helps someone typing the domain into
+  Safari. It is a tiebreaker, not a reason.
+- Premium domains are not covered by the offer. The checkout total must read `$0.00`.
+- **WHOIS privacy, registrar lock and auto-renew must all be on.**
+- Year two is charged at the standard rate. Note it: this domain gets pinned into the shipped
+  app, so letting it lapse would leave the app pointing at whoever registers it next.
+
+**Whatever name is chosen appears in public Certificate Transparency logs, permanently and
+searchably.** Pick something that does not identify the operator or advertise what the service
+is. This is not a secret you can retract later.
+
+---
+
+## Access
+
+The relay is reached from the developer's own machine. There is no shared credential and
+nothing needs to be transmitted.
+
+```
+Host cipher-staging
+    HostName <server IP>
+    User ubuntu
+    IdentityFile ~/.ssh/cipher_staging
+    IdentitiesOnly yes
+```
+
+- The private key `~/.ssh/cipher_staging` never leaves the Mac.
+- DNS records are created by hand in the name.com panel, so **no registrar API token needs to
+  exist**. P5.S03 anticipated handing one over; it turned out to be unnecessary, and a token
+  that does not exist cannot leak.
+- Relay secrets (`server/.env`) are generated **on the server** and are in neither the
+  repository nor any conversation.
+
+**Nothing secret goes into a chat transcript.** Not the OVH password, not a private key, not a
+database password. The hostname and IP are public the moment DNS resolves and are fine to
+discuss.
+
+### The emailed password
+
+OVH emails the initial `ubuntu` credentials in plaintext. That password is live on a
+publicly-reachable host from the moment the VPS is provisioned, and OVH — unlike Oracle — applies
+no default-deny firewall at either the network or the image level. **Disabling password
+authentication is therefore the first hardening action, not a later one.**
+
+---
+
+## The constraint that decides when hosts can still change
+
+**P5.S06 extracts the TLS SPKI pins. P5.S08 ships them inside the iOS app.**
+
+Before P5.S08, hosts are disposable: DNS is one record, ACME re-issues certificates, and the
+database holds almost nothing because delivered messages are deleted and redeemed invites are
+gone. A migration is a `pg_dump` measured in kilobytes.
+
+After P5.S08, moving hosts means **either carrying the TLS private key across, or shipping an
+app update**. `BACKEND.md` §9.1 rule 5 already requires pinning the SPKI rather than the
+certificate, which is exactly what makes carrying the key sufficient.
+
+Flag this before running P5.S06.
+
+---
+
+## Open decision — OVH's included daily backup
+
+OVH includes a *"daily backup of the previous 24 hours"* on VPS. It conflicts, mildly, with
+`BACKEND.md` §4:
+
+> Backups cover schema and account rows only — losing undelivered messages in a restore is the
+> correct outcome, not a gap to fix.
+
+A provider snapshot images the whole disk, including the Postgres volume. A message deleted on
+delivery at 14:00 can therefore still exist in a snapshot taken at 03:00, for up to 24 hours
+after the relay has forgotten it.
+
+**How much this matters:** the snapshot holds **ciphertext only** — keys never touch the server,
+so OVH holds unreadable blobs. What it extends is *metadata*: who had mail waiting. Bounded at
+24 hours.
+
+**Unresolved.** Two options:
+
+1. Disable the included backup in the OVH control panel, if it can be disabled.
+2. Accept it and record it as a stated residual in `AUDIT.md` and `BACKEND.md` §4.
+
+Preference is (1) — the retention policy is the strongest server-side control there is, and a
+24-hour hole in it should be a decision rather than a default. **Awaiting the operator's call.**
