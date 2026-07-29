@@ -100,6 +100,15 @@ services:
       RELAY_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
       RELAY_BLOB_DIR: /var/lib/cipher/blobs
+      # Empty by default, and empty means trust nobody: X-Real-IP is ignored and
+      # the TCP peer is the client. Correct for local development, where there is
+      # no proxy — and the safe way to be wrong in production, since the failure
+      # is over-throttling rather than no throttling. docs/BACKEND.md §9.2.
+      #
+      # Behind Nginx this is NOT 127.0.0.1: docker-proxy opens a fresh connection
+      # into the container from the compose bridge gateway, so the relay sees the
+      # bridge subnet. Read it off the running network, do not guess it.
+      RELAY_TRUSTED_PROXY: ${RELAY_TRUSTED_PROXY:-}
     depends_on:
       postgres:
         condition: service_healthy

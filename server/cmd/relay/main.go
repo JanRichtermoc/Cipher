@@ -261,6 +261,12 @@ func run() error {
 	handler := httpx.Chain(mux,
 		httpx.Log(log),
 		httpx.Recover(log),
+		// Outermost of the request-shaping middleware, and above all outside
+		// anything that rate-limits: every later decision that depends on who
+		// the client is must see the resolved address, not the proxy's. It sits
+		// under Log and Recover only because those two produce output about a
+		// request regardless of who sent it, and neither reads the address.
+		httpx.RealIP(cfg.TrustedProxies),
 		httpx.SecurityHeaders,
 		// Attachment upload streams megabytes and cannot live under the global
 		// JSON-sized limit; api.BlobsHandler applies MaxBlobBytes itself. An

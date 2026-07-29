@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
-	"net"
 	"net/http"
 	"strconv"
 	"time"
@@ -271,18 +270,18 @@ func (h *InviteHandler) redeem(w http.ResponseWriter, r *http.Request) {
 
 // clientAddr returns the address to rate-limit against.
 //
-// **X-Forwarded-For is deliberately ignored.** In P4 there is no reverse proxy,
-// so the header is attacker-controlled: honouring it would let a single client
-// present a new value per request and defeat the limit entirely — turning the
-// header from a convenience into the bypass. P5 introduces a proxy, and *that*
-// is when a trusted-proxy configuration can be added, with the trust boundary
-// stated explicitly rather than assumed.
+// **Forwarding headers are still not read here** — that has not changed since
+// P4, and it is the property worth keeping. What changed in P5.S05 is that
+// httpx.RealIP now decides, once and at the edge, whether the peer is a proxy
+// permitted to speak for someone else, and rewrites r.RemoteAddr when it is.
+// Everything downstream reads the ordinary field.
+//
+// The P4 reasoning is preserved rather than superseded: an unconfigured relay
+// still ignores the header completely, because httpx.RealIP trusts nothing by
+// default. Deployment is what grants trust, and it grants it to an address, not
+// to a header's existence.
 func clientAddr(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return httpx.ClientAddr(r)
 }
 
 // IssueInvite mints one invite and returns the code.

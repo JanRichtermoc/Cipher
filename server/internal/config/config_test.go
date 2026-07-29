@@ -105,3 +105,71 @@ func TestLoadRejectsNonPositiveBodyLimit(t *testing.T) {
 		t.Fatal("expected a negative body limit to fail startup")
 	}
 }
+
+func TestTrustedProxiesDefaultsToTrustingNobody(t *testing.T) {
+	// The safe default, and the one the P4 threat reasoning depends on: an
+	// operator who never sets this gets a relay that believes no forwarding
+	// header from anyone. Silence must not mean "trust loopback" — a convenience
+	// default here is a rate-limit bypass on any host where something untrusted
+	// can reach the relay over loopback.
+	setEnv(t)
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.TrustedProxies) != 0 {
+		t.Fatalf("TrustedProxies defaulted to %v, want empty", cfg.TrustedProxies)
+	}
+}
+
+func TestTrustedProxiesParsesCIDRsAndBareAddresses(t *testing.T) {
+	setEnv(t)
+	t.Setenv("RELAY_TRUSTED_PROXY", "172.18.0.0/16, 127.0.0.1 ,::1")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := make([]string, 0, len(cfg.TrustedProxies))
+	for _, p := range cfg.TrustedProxies {
+		got = append(got, p.String())
+	}
+	want := []string{"172.18.0.0/16", "127.0.0.1/32", "::1/128"}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("got %v, want %v", got, want)
+		}
+	}
+}
+
+func TestTrustedProxiesRefusesJunkRatherThanIgnoringIt(t *testing.T) {
+	// A typo must stop startup. Skipping an unparseable entry would leave the
+	// operator believing a proxy is trusted when it is not — which presents as
+	// an intermittent, load-dependent rate-limit fault long after deployment.
+	for _, bad := range []string{"not-an-ip", "172.18.0.0/33", "127.0.0.1:8080", "example.com"} {
+		t.Run(bad, func(t *testing.T) {
+			setEnv(t)
+			t.Setenv("RELAY_TRUSTED_PROXY", bad)
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted %q as a trusted proxy", bad)
+			}
+		})
+	}
+}
+
+func TestTrustedProxiesMasksHostBits(t *testing.T) {
+	// 10.0.0.7/8 is what someone writes when they mean 10.0.0.0/8. Contains()
+	// would still behave, but the parsed value is also what gets logged and
+	// eyeballed, and it should say what it means.
+	setEnv(t)
+	t.Setenv("RELAY_TRUSTED_PROXY", "10.0.0.7/8")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := cfg.TrustedProxies[0].String(); got != "10.0.0.0/8" {
+		t.Fatalf("got %q, want 10.0.0.0/8", got)
+	}
+}

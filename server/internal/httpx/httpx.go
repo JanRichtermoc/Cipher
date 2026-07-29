@@ -8,7 +8,9 @@ package httpx
 import (
 	"encoding/json"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/netip"
 	"runtime/debug"
 	"strings"
 	"time"
@@ -87,6 +89,138 @@ func Chain(h http.Handler, middleware ...Middleware) http.Handler {
 		h = middleware[i](h)
 	}
 	return h
+}
+
+// realIPHeader is the single header RealIP will believe.
+//
+// X-Real-IP and not X-Forwarded-For, because the two have different shapes and
+// only one of them has a safe reading. X-Forwarded-For is an append-only list,
+// so honouring it means choosing an element from a list an attacker contributed
+// to — and every "take the last one" rule is correct only for a proxy depth that
+// is assumed rather than checked. X-Real-IP as written by our Nginx is a single
+// value that *overwrites* whatever arrived, so there is nothing to choose.
+const realIPHeader = "X-Real-IP"
+
+// RealIP rewrites r.RemoteAddr to the client address reported by a trusted proxy.
+//
+// # The problem it solves
+//
+// Behind a reverse proxy every request arrives from the proxy, so r.RemoteAddr
+// is the proxy for all of them. api.clientAddr feeds that value to the rate
+// limiter, and POST /v1/invite/redeem is limited to 5/hour/IP — so without this,
+// the only per-IP control in the relay collapses into a single global bucket and
+// any one caller denies invite redemption to everyone. See docs/BACKEND.md §9.2.
+//
+// # Why it is a middleware and not a helper
+//
+// One place decides, at the edge, and every handler downstream — including ones
+// not yet written — reads the ordinary field and gets the right answer. A helper
+// that must be remembered is a helper that will be forgotten by the second
+// route that needs an address.
+//
+// # Every way it declines
+//
+// It rewrites nothing, leaving the proxy's own address in place, when:
+//
+//   - no proxies are trusted (the default, and how development and the
+//     integration suite run);
+//   - the peer that actually connected is not in trusted — which is what makes
+//     the header unspoofable from the internet, since an attacker reaching the
+//     relay directly is never a trusted peer;
+//   - the header is absent, empty, or unparseable as an IP;
+//   - the header contains a comma. Our proxy sets exactly one value, so a list
+//     means something upstream is appending and the depth assumption is wrong.
+//
+// Declining always fails *closed* for the limiter: the fallback is the proxy
+// address, which over-throttles. There is no input that produces no limit.
+func RealIP(trusted []netip.Prefix) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if addr, ok := clientFromProxy(r, trusted); ok {
+				// Shallow copy: the caller's Request must not be mutated, and
+				// the port is deliberately zeroed rather than invented — the
+				// client's source port is not something the proxy reports, and
+				// net.SplitHostPort still has to succeed downstream.
+				r2 := *r
+				r2.RemoteAddr = net.JoinHostPort(addr.String(), "0")
+				r = &r2
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// clientFromProxy returns the address to believe, and whether to believe it.
+func clientFromProxy(r *http.Request, trusted []netip.Prefix) (netip.Addr, bool) {
+	if len(trusted) == 0 {
+		return netip.Addr{}, false
+	}
+
+	peer, ok := peerAddr(r.RemoteAddr)
+	if !ok || !trustedContains(trusted, peer) {
+		return netip.Addr{}, false
+	}
+
+	raw := strings.TrimSpace(r.Header.Get(realIPHeader))
+	if raw == "" || strings.Contains(raw, ",") {
+		return netip.Addr{}, false
+	}
+
+	addr, err := netip.ParseAddr(raw)
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return normalise(addr), true
+}
+
+// peerAddr extracts the address of the peer that actually opened the connection.
+func peerAddr(remoteAddr string) (netip.Addr, bool) {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		// Not every RemoteAddr carries a port — httptest sets bare values.
+		host = remoteAddr
+	}
+	addr, err := netip.ParseAddr(strings.TrimSpace(host))
+	if err != nil {
+		return netip.Addr{}, false
+	}
+	return normalise(addr), true
+}
+
+func trustedContains(trusted []netip.Prefix, addr netip.Addr) bool {
+	for _, p := range trusted {
+		if p.Contains(addr) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalise collapses the spellings of one address into one string.
+//
+// Both steps close a bucket-evasion hole rather than tidying output. The rate
+// limiter keys on the textual form, so ::ffff:203.0.113.9 and 203.0.113.9 would
+// otherwise be two buckets for one host, and a zone suffix would be unbounded
+// many — %1, %2, %eth0 — for the same link-local address.
+func normalise(addr netip.Addr) netip.Addr {
+	return addr.Unmap().WithZone("")
+}
+
+// ClientAddr returns the textual address a request should be attributed to.
+//
+// This is the value rate-limit buckets are keyed on, so it is normalised for the
+// same reason [normalise] exists: one host must not be able to present as two.
+// It reads r.RemoteAddr, which [RealIP] has already made authoritative — a
+// handler calling this needs to know nothing about proxies.
+//
+// Unparseable input is returned verbatim rather than replaced with a constant.
+// A shared fallback string would merge every malformed peer into one bucket,
+// which is a way for one client to throttle others.
+func ClientAddr(r *http.Request) string {
+	if addr, ok := peerAddr(r.RemoteAddr); ok {
+		return addr.String()
+	}
+	return r.RemoteAddr
 }
 
 // Recover turns a panic into a 500 and a log line.

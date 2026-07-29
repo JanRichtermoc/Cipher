@@ -26,7 +26,7 @@ SERVER="$REPO_ROOT/server"
 
 # Floor, not an exact count, so adding a test does not fail the gate. It exists
 # to catch the suite collapsing to zero, which is the failure that looks green.
-MIN_INTEGRATION_TESTS=102
+MIN_INTEGRATION_TESTS=104
 
 # A host port distinct from the development stack's 8080, so running this never
 # collides with a stack the developer has up.

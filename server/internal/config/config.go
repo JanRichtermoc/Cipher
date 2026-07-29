@@ -16,6 +16,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -58,6 +59,23 @@ type Config struct {
 	// envelope (65567 bytes by Envelope.swift) plus JSON framing; attachments go
 	// to a separate streaming route in P4.S09 that does not use this limit.
 	MaxRequestBytes int64
+
+	// TrustedProxies are the peers whose X-Real-IP header may be believed.
+	//
+	// **Empty means trust nobody**, which is the P4 behaviour: the header is
+	// ignored and the TCP peer is the client. That default is the safe one in
+	// both directions — an unconfigured relay behind a proxy over-throttles
+	// (every request shares one bucket), where an unconfigured relay that
+	// trusted the header would under-throttle to the point of having no limit
+	// at all, since a client could mint a fresh bucket per request.
+	//
+	// This is a list of *networks*, not hostnames: the check runs per request
+	// on the address of the peer that actually connected, and a name would have
+	// to be resolved by something an attacker can influence.
+	//
+	// See httpx.RealIP for what is done with it, and docs/BACKEND.md §9.2 for
+	// why the value is deployment-specific rather than a constant.
+	TrustedProxies []netip.Prefix
 }
 
 // Load reads and validates configuration, returning every problem at once.
@@ -100,6 +118,39 @@ func Load() (Config, error) {
 		return d
 	}
 
+	// prefixes parses a comma-separated list of CIDRs or bare addresses.
+	//
+	// A bare address is widened to a single-host prefix rather than rejected:
+	// "127.0.0.1" is what an operator writes, and refusing it would invite the
+	// guess "127.0.0.1/0", which trusts the entire internet.
+	prefixes := func(key string) []netip.Prefix {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			return nil
+		}
+		var out []netip.Prefix
+		for _, field := range strings.Split(raw, ",") {
+			field = strings.TrimSpace(field)
+			if field == "" {
+				continue
+			}
+			if p, err := netip.ParsePrefix(field); err == nil {
+				// Masked so a prefix written with host bits set — 10.0.0.7/8 —
+				// still matches the network the operator meant.
+				out = append(out, p.Masked())
+				continue
+			}
+			if a, err := netip.ParseAddr(field); err == nil {
+				a = a.Unmap()
+				out = append(out, netip.PrefixFrom(a, a.BitLen()))
+				continue
+			}
+			problems = append(problems,
+				fmt.Sprintf("%s: %q is neither an IP address nor a CIDR block", key, field))
+		}
+		return out
+	}
+
 	bytesLimit := func(key string, fallback int64) int64 {
 		raw := strings.TrimSpace(os.Getenv(key))
 		if raw == "" {
@@ -138,6 +189,11 @@ func Load() (Config, error) {
 		ShutdownGrace:     duration("RELAY_SHUTDOWN_GRACE", 15*time.Second),
 
 		MaxRequestBytes: bytesLimit("RELAY_MAX_REQUEST_BYTES", 128*1024),
+
+		// No default, and no error when absent: running with no proxy in front
+		// is a legitimate configuration (it is how the integration suite and
+		// local development run), and it is the strict one.
+		TrustedProxies: prefixes("RELAY_TRUSTED_PROXY"),
 	}
 
 	if len(problems) > 0 {

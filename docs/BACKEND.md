@@ -542,6 +542,50 @@ with no rotation plan is an outage waiting for a certificate renewal.
 4. Record every pin with its expiry and the date it was extracted.
 5. Pin the SPKI, not the certificate, so renewal with the same key needs no client change.
 
+### 9.2 The reverse proxy and the client address (P5.S05)
+
+Once Nginx is in front, every request reaches the relay from the proxy. `clientAddr` feeds that
+value to the rate limiter, and `POST /v1/invite/redeem` is the only per-IP limit there is — 5 per
+hour, §5. Left alone, all callers share one bucket, so **the first caller to spend the budget
+denies invite redemption to everyone**: a global onboarding outage any single address can trigger.
+
+Believing a forwarding header is the opposite failure and the worse one. The header is written by
+the client unless something overwrites it, so a relay that trusts it lets one caller mint a fresh
+bucket per request — the limit stops existing rather than merely being wrong.
+
+**The rule: trust an address, never a header.**
+
+- `RELAY_TRUSTED_PROXY` is a comma-separated list of CIDRs or bare addresses. **Empty — the
+  default — trusts nobody**, which is the P4 behaviour and is what development, CI, and the
+  integration suite run with. An unset value must never mean "trust loopback".
+- `httpx.RealIP` reads `X-Real-IP` **only** when the peer that actually opened the connection
+  falls inside that list, and rewrites `RemoteAddr` so every handler downstream — including ones
+  not yet written — reads the ordinary field.
+- `X-Real-IP`, not `X-Forwarded-For`: Nginx *sets* the former, overwriting whatever arrived, so
+  there is a single value and nothing to choose. `X-Forwarded-For` is an append-only list, and
+  every "take the last element" rule is correct only for a proxy depth that is assumed rather
+  than verified. A comma in `X-Real-IP` is therefore treated as evidence the assumption is broken
+  and the header is discarded.
+- Addresses are normalised (`::ffff:203.0.113.9` → `203.0.113.9`, zone suffixes stripped) because
+  the bucket key *is* this string, and one host must not be able to present as several.
+- Every rejection falls back to the proxy's own address, which over-throttles. There is no input
+  that yields no limit.
+
+**The value is deployment-specific, and the obvious guess is wrong.** With
+`ports: "127.0.0.1:8080:8080"`, traffic passes through `docker-proxy`, which opens a *new*
+connection into the container from the compose bridge gateway. The relay therefore sees the
+bridge subnet, **not** `127.0.0.1`, and a configuration naming loopback silently trusts nothing
+while appearing configured. Read the actual value off the running network rather than assuming
+it:
+
+```sh
+docker network inspect cipher-relay_internal \
+  --format '{{ (index .IPAM.Config 0).Subnet }}'
+```
+
+Trusting that subnet means trusting the three services on it, which are the relay's own
+containers. It does not extend trust to anything on the host or the internet.
+
 ---
 
 ## 10. Open questions, deferred deliberately

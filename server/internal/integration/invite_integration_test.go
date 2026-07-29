@@ -37,10 +37,12 @@ import (
 
 	"cipher.relay/internal/api"
 	"cipher.relay/internal/cache"
+	"cipher.relay/internal/httpx"
 	"cipher.relay/internal/invite"
 	"cipher.relay/internal/logging"
 	"cipher.relay/internal/ratelimit"
 	"cipher.relay/internal/store"
+	"net/netip"
 )
 
 func testDB(t *testing.T) *store.DB {
@@ -566,5 +568,109 @@ func TestRedeemEndpointRejectsBadInput(t *testing.T) {
 		if rec.Code != http.StatusBadRequest {
 			t.Errorf("%s: status = %d, want 400", name, rec.Code)
 		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// P5.S05 — the relay behind a reverse proxy.
+//
+// These run against a real Redis because the property is about bucket identity,
+// and bucket identity is a Redis key. A fake limiter would prove only that the
+// middleware sets a field.
+// ---------------------------------------------------------------------------
+
+// behindProxy wraps a handler as it is deployed in P5: requests arrive from the
+// proxy, and the real client is named in X-Real-IP. trusted is the set of peers
+// permitted to make that claim — empty means nobody is.
+func behindProxy(t *testing.T, h http.Handler, trusted ...string) http.Handler {
+	t.Helper()
+	var prefixes []netip.Prefix
+	for _, s := range trusted {
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			t.Fatalf("bad prefix %q: %v", s, err)
+		}
+		prefixes = append(prefixes, p)
+	}
+	return httpx.RealIP(prefixes)(h)
+}
+
+func postVia(h http.Handler, proxyAddr, realIP string, body io.Reader) *httptest.ResponseRecorder {
+	r := httptest.NewRequest(http.MethodPost, "/v1/invite/redeem", body)
+	r.RemoteAddr = proxyAddr + ":54321"
+	if realIP != "" {
+		r.Header.Set("X-Real-IP", realIP)
+	}
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, r)
+	return rec
+}
+
+func TestRedeemRateLimitIsPerRealClientBehindAProxy(t *testing.T) {
+	// The defect this exists to prevent: with every request arriving from the
+	// proxy, all callers share one bucket, so the first attacker to spend the
+	// 5/hour budget denies invite redemption to everyone. That is a global
+	// onboarding outage triggered by any single IP.
+	//
+	// Against the pre-P5.S05 relay this test fails on the second client.
+	mux, _ := newHandler(t)
+	h := behindProxy(t, mux, "172.18.0.0/16")
+	key := base64.StdEncoding.EncodeToString(make([]byte, 33))
+
+	unknown, err := invite.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	// Exhaust the first client's budget entirely.
+	var exhausted bool
+	for range 10 {
+		rec := postVia(h, "172.18.0.1", "198.51.100.21", redeemBody(unknown.String(), key, 42))
+		if rec.Code == http.StatusTooManyRequests {
+			exhausted = true
+			break
+		}
+	}
+	if !exhausted {
+		t.Fatal("first client was never throttled; the limit is not being applied at all")
+	}
+
+	// A different real client, same proxy, must be unaffected.
+	rec := postVia(h, "172.18.0.1", "198.51.100.22", redeemBody(unknown.String(), key, 42))
+	if rec.Code == http.StatusTooManyRequests {
+		t.Fatal("a second client behind the same proxy inherited the first client's " +
+			"exhausted budget — the per-IP limit has collapsed into one global bucket")
+	}
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("status = %d, want 401 for an unknown code", rec.Code)
+	}
+}
+
+func TestSpoofedRealIPCannotEscapeTheRateLimitWhenUntrusted(t *testing.T) {
+	// The opposite failure, and the worse one: if the header were believed from
+	// an untrusted peer, a client would mint a fresh bucket per request and the
+	// limit would not exist. Here nothing is trusted, so the header is inert.
+	mux, _ := newHandler(t)
+	h := behindProxy(t, mux) // no trusted prefixes at all
+	key := base64.StdEncoding.EncodeToString(make([]byte, 33))
+
+	unknown, err := invite.Generate()
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+
+	var throttled bool
+	for i := range 10 {
+		// A new spoofed identity every single request.
+		spoof := fmt.Sprintf("203.0.113.%d", i+1)
+		rec := postVia(h, "198.51.100.30", spoof, redeemBody(unknown.String(), key, 42))
+		if rec.Code == http.StatusTooManyRequests {
+			throttled = true
+			break
+		}
+	}
+	if !throttled {
+		t.Fatal("rotating X-Real-IP defeated the rate limit — the header is being " +
+			"believed from an untrusted peer")
 	}
 }

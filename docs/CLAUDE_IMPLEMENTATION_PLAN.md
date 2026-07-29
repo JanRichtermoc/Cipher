@@ -14,40 +14,44 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
-UNMERGED:       *** branch `p4/hardening` is pushed and NOT merged. ***
-                One commit: P4.S10/S11 (adversarial pass + logging audit).
+CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. P5.S05 stages A-G done.
+UNMERGED:       *** branch `p5/vps-hardening` is pushed and NOT merged. ***
                 The user merges PRs by hand — give them the link and stop.
-                https://github.com/JanRichtermoc/Cipher/pull/new/p4/hardening
-DONE:           P1-P4 all steps. 102 integration tests + 126 iOS tests,
-                verify-all.sh 11/11. The relay is verified against the real
-                containerised stack, not only in tests.
-BOUGHT:         OVH VPS-1 (FR/DE) and a name.com domain — 2026-07-29.
-                Rationale and rejected alternatives: docs/INFRASTRUCTURE.md.
-                Read it before touching anything host-related.
-WAITING ON USER: the six setup steps — SSH key installed on the box, key-only
-                login verified, `cipher-staging` alias in ~/.ssh/config, DNS A
-                record pointed at the VPS. Then they report the domain name and
-                an ACME email. Do NOT start P5.S05 until key login works: the
-                first hardening action disables password auth, and doing that
-                before the key is proven locks the operator out of their server.
-NEXT STEP:      P5.S05 — VPS hardening + staging deploy, once access is
-                confirmed. Order matters: disable password authentication
-                FIRST (OVH emails the initial password in plaintext and applies
-                no default-deny firewall, so it is live on a public host).
-                Then firewall to 22/80/443 only, unattended upgrades, fail2ban,
-                non-root Docker, Nginx + TLS 1.3 + ACME, relay deployed with
-                secrets generated ON the server. Exit criterion is an external
-                port scan showing only 22/80/443.
+                NOTE: b59378c (INFRASTRUCTURE.md + the P5 hand-off) was never
+                pushed before PR #17 merged, so it is CHERRY-PICKED onto this
+                branch. main does not have INFRASTRUCTURE.md until this merges.
+DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
+                P5.S05 stages A-G on the staging box: key-only SSH, firewall,
+                unattended upgrades, fail2ban, Docker, relay deployed and
+                healthy. Plus the trusted-proxy change stage H depends on.
+                104 integration tests + 126 iOS tests, verify-all.sh 11/11.
+STAGING BOX:    51.83.235.254, `ssh cipher-staging`. Ubuntu 24.04, running
+                main @ 245ee6b. Secrets exist only on the box. What was done
+                and what was OBSERVED for each stage: docs/RUNBOOK-VPS.md.
+                Re-runnable — P9.S01 buys production against the same bar.
+DOMAIN:         mgchatman.app (name.com). No DNS record pointed at it yet.
+WAITING ON USER: an A record for the API host -> 51.83.235.254, and an ACME
+                email. Stage H cannot start without both.
+NEXT STEP:      P5.S05 stage H — DNS, Nginx, TLS 1.3, ACME. Three traps, all
+                written up in RUNBOOK-VPS.md stage H:
+                  1. RELAY_TRUSTED_PROXY must be the compose BRIDGE SUBNET,
+                     never 127.0.0.1 — docker-proxy re-originates the
+                     connection, so loopback there trusts nothing while
+                     looking configured. (BACKEND.md §9.2.)
+                  2. certbot needs --reuse-key, or renewal rotates the key and
+                     bricks every pinned client ~60 days after launch.
+                  3. nginx must not log $request — that is the populated-path
+                     leak httpx.pattern() exists to prevent. Use the `minimal`
+                     format and the 24h rotation in stage H.4.
                 Then P5.S06 (extract SPKI pins) — flag the host-move constraint
-                in INFRASTRUCTURE.md before running it.
+                in INFRASTRUCTURE.md before running it, and generate the backup
+                key (BACKEND.md §9.1 rule 2) while openssl is already to hand.
 OPEN DECISION:  OVH's included daily backup vs the retention policy
                 (INFRASTRUCTURE.md, last section). Needs the operator's call.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
 HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,
                 not a file here. Settings → Branches → add a rule for `main` →
                 "Require status checks to pass" → select `verify`.
-                P5.S01/S02 (domain + VPS) are DONE — see BOUGHT above.
 ```
 
 Update this block when a step completes. One grep answers "where am I".
@@ -318,7 +322,7 @@ and an encrypted local database **from the first real message**.
 | **P5.S02** | **Buy the staging VPS**, same day or immediately after. Hetzner / OVH / DigitalOcean — jurisdiction is a real criterion (`THREAT_MODEL.md` §3.7). 1–2 vCPU, 2–4 GB is enough. | **HUMAN** | VPS provisioned | Buy before P4 exit; use it for production |
 | **P5.S03** | **Provide access material out of band** — never committed: registrar/DNS API token; VPS IP + SSH key (prefer: human creates a deploy user, pastes the host fingerprint); ACME email; chosen hostname. | **HUMAN** | Claude has what it needs | Paste secrets into the repo or chat history |
 | **P5.S04** | DNS: A/AAAA for the API host; CAA restricting CAs; DNSSEC if supported; no unnecessary public records. | AI-after-access | `dig` shows the expected records | Create wildcards |
-| **P5.S05** | VPS hardening + staging deploy: Ubuntu LTS, key-only SSH, no password auth, firewall (22/80/443 only — **no Postgres/Redis exposed**), unattended security updates, minimal packages, non-root Docker, Nginx + **TLS 1.3** + ACME, HSTS (carefully on staging), fail2ban. Secrets via env/files **not in git**. | AI-after-access | External port scan shows only 22/80/443 | Expose the database |
+| **P5.S05** | VPS hardening + staging deploy: Ubuntu LTS, key-only SSH, no password auth, firewall (22/80/443 only — **no Postgres/Redis exposed**), unattended security updates, minimal packages, non-root Docker, Nginx + **TLS 1.3** + ACME, HSTS (carefully on staging), fail2ban. Secrets via env/files **not in git**. Procedure and observed results: [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md). Stages A–G done; **stage H (DNS/Nginx/TLS) outstanding**, and it requires the trusted-proxy configuration in `BACKEND.md` §9.2 or the only per-IP rate limit collapses into one global bucket. | AI-after-access | External port scan shows only 22/80/443 | Expose the database |
 | **P5.S06** | Document the pin set: extract SPKI/pin hashes for the staging leaf/intermediate; write the pin-rotation runbook stub in `docs/BACKEND.md` (created in P4.S01). | AI-after-access | Pins recorded with a rotation procedure | Ship a pin with no rotation plan |
 | **P5.S07** | Review SSH exposure, DNS, and that no secrets landed in the repo. | **HUMAN** | Reviewed | — |
 
