@@ -1,0 +1,122 @@
+# Local development relay: Postgres + Redis + API.
+#
+# Copyright (C) 2026 Jan Richter
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# P4.S02's anti-goal is "expose Postgres/Redis to the host network", and this file
+# is where that is either honoured or violated. Only `api` has a `ports:` entry,
+# and it binds 127.0.0.1 explicitly.
+#
+# `ports: "8080:8080"` — the form everyone writes — binds 0.0.0.0, which publishes
+# the service to every interface including the LAN. On a laptop on a café network
+# that is a relay on the internet. The 127.0.0.1 prefix below is the entire
+# difference and it is one that is easy to drop by accident.
+#
+# Nothing here is production configuration. TLS terminates at a reverse proxy in
+# P5; there is no proxy in P4 because there is no host to put one on.
+
+name: cipher-relay
+
+services:
+  postgres:
+    # postgres:18-alpine, pinned by digest — see Dockerfile for why.
+    image: postgres@sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?set POSTGRES_DB in .env}
+      POSTGRES_USER: ${POSTGRES_USER:?set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      # scram-sha-256 rather than the image's md5 default. md5 authentication is
+      # broken for the purpose it serves, and the initdb argument has to be given
+      # at first init — changing it later requires recreating the volume.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    # No ports:. Reachable only from the compose network, by service name.
+    volumes:
+      # /var/lib/postgresql, NOT /var/lib/postgresql/data.
+      #
+      # Postgres 18 changed this. The image now stores data in a major-version
+      # subdirectory so `pg_upgrade --link` can work without crossing a mount
+      # boundary, and it refuses to start if it finds data at the old path —
+      # which is the path every tutorial and every pre-18 compose file uses.
+      # The failure is a wall of text about pg_ctlcluster that does not obviously
+      # say "your mount point is wrong".
+      - postgres-data:/var/lib/postgresql
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    # redis:8-alpine, pinned by digest.
+    image: redis@sha256:8096655e437712b07503796fb64d81359256cfcff0ab29d95a7da72863786efb
+    restart: unless-stopped
+    # --save "" disables RDB snapshotting and --appendonly no disables the AOF.
+    #
+    # This is the most important line in this file. Redis persistence is ON by
+    # default, and BACKEND.md §3 keeps only ephemeral routing metadata there —
+    # rate-limit counters, presence, quota. Left at the default, all of it is
+    # written to disk, which silently reinstates the retention the schema is
+    # designed to avoid. The relay refuses to start if it finds persistence
+    # enabled (cache.AssertNoPersistence), so this cannot rot unnoticed.
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --requirepass
+      - ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    # No ports:, and no volume — persistence is off, so a volume would only give
+    # it somewhere to write if the flags above were ever dropped.
+    networks: [internal]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" ping | grep -q PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    # The only published port, and only on loopback. See the header.
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    environment:
+      RELAY_LISTEN_ADDR: ":8080"
+      # sslmode=disable is correct here and only here: this connection never
+      # leaves the container network, and there is no CA to validate against in a
+      # local compose stack. P5 moves Postgres behind TLS with a real trust store.
+      RELAY_DATABASE_URL: >-
+        postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RELAY_REDIS_ADDR: "redis:6379"
+      RELAY_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [internal]
+    # Defence in depth for a container that already has no shell: even with
+    # arbitrary code execution there is nothing to write and nothing to escalate.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  internal:
+    # No `external: true`, no host networking. Compose creates a bridge network
+    # that only these three services join.
+    driver: bridge
+
+volumes:
+  postgres-data:

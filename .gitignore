@@ -45,3 +45,16 @@ __pycache__/
 
 # macOS
 .DS_Store
+
+# Relay secrets. server/.env holds the Postgres and Redis passwords; server/.env.example
+# is the tracked template and holds none.
+#
+# The pattern is anchored and broad on purpose: this repository is public, so a
+# committed .env is a credential disclosure that survives in history after the file
+# is deleted. `git rm --cached` does not undo a push.
+.env
+.env.*
+!.env.example
+
+# The relay binary, if someone builds outside the container.
+/server/relay

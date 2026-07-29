@@ -95,6 +95,26 @@ jobs:
           swift --version
           xcrun simctl list runtimes | grep -i ios
 
+      - name: Set up Go for the relay
+        # Pinned explicitly rather than relying on the image's preinstalled Go.
+        # The first version of gate 4 assumed the runner had one; macos-26 does not
+        # put it on PATH, so the gate failed with "the Go toolchain is not on PATH"
+        # — which is the correct behaviour (a gate that skips when its toolchain is
+        # missing passes without having run) but is not a fixed toolchain.
+        #
+        # go-version-file reads server/go.mod, so the CI version and the version the
+        # module declares cannot drift apart. go.mod names 1.25.0, which is the
+        # measured floor rather than a guessed one: 1.23 was written first, and
+        # building under it fails because pgx v5.10.0 declares `go >= 1.25.0`.
+        # Verified by building under both.
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: server/go.mod
+          # vendor/ is committed, so there is nothing to download and nothing to
+          # cache. Leaving the cache on would warn about a missing go.sum lookup
+          # path on every run.
+          cache: false
+
       - uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
         with:
           # Resolved from .ruby-version, which exists so CI and a developer machine agree.
