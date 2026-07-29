@@ -199,17 +199,35 @@ jobs:
         # credentials that exist only for the length of this job, so it makes its own —
         # from /dev/urandom, never a fixed literal. A hardcoded CI password is a real
         # password the moment someone copies the workflow to a deployment.
+        #
+        # `head` is the PRODUCER here, never the consumer. The idiomatic spelling,
+        # `tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32`, is a SIGPIPE trap: /dev/urandom
+        # never ends, so `head` exits first and closes the pipe under `tr`. BSD tr and
+        # BusyBox tr die quietly; GNU coreutils tr — which is what ubuntu-24.04 has —
+        # prints "write error: Broken pipe" and exits non-zero, so `pipefail` fails the
+        # step. It passed on macOS and failed here, which is AUDIT 1.9 exactly, and 1.9 is
+        # about xcodebuild for the same reason. Reversing producer and consumer removes
+        # the mechanism rather than working around it: `head -c 32 /dev/urandom` reads a
+        # finite amount and exits 0, and od and tr each consume all of their input.
+        #
+        # Hex, not base64: this value is interpolated into
+        # postgres://user:PASSWORD@host, so a `/`, `+` or `=` would corrupt the URL.
+        # od+tr rather than openssl because openssl is not in every image, and assuming a
+        # tool is present is the other way this job has already failed once.
         run: |
           set -euo pipefail
           cd server
           cp .env.example .env
-          pg="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
-          rd="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+          pg="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+          rd="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
           sed -i "s/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=${pg}/" .env
           sed -i "s/^REDIS_PASSWORD=$/REDIS_PASSWORD=${rd}/" .env
           # Fail loudly rather than proceed with an empty password, which compose would
           # accept and Postgres would then refuse in a much less obvious way.
-          ! grep -qE '^(POSTGRES|REDIS)_PASSWORD=$' .env
+          if grep -qE '^(POSTGRES|REDIS)_PASSWORD=$' .env; then
+            echo "::error::password substitution produced an empty value"
+            exit 1
+          fi
 
       - name: Integration suite
         run: ./Scripts/verify-relay-integration.sh

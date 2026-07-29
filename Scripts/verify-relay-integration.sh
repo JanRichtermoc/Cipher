@@ -62,7 +62,10 @@ FAILED: server/.env does not exist.
 
 then fill in POSTGRES_PASSWORD and REDIS_PASSWORD. Generate each with:
 
-  LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32; echo
+  head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n'; echo
+
+(head is the producer, not the consumer — see server/.env.example for why the
+more familiar `tr ... | head -c 32` breaks under set -o pipefail on Linux.)
 EOF
   exit 1
 fi
