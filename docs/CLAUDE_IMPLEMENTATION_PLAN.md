@@ -14,32 +14,40 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P4 COMPLETE. P1, P2, P3, P4 all done.
-DONE:           P4.S01-S11. The relay is feature-complete for this phase and
-                verified against the real containerised stack, not only in
-                tests: invite -> session -> prekeys -> send -> fetch -> ack,
-                plus attachments, delete-on-delivery and an hourly sweep.
-                102 integration tests + 126 iOS tests, verify-all.sh 11/11.
-P4 EXIT:        [x] docker compose up runs a working relay locally
-                [x] invite -> token -> prekey -> send/receive works end to end
-                [x] schema review: zero plaintext message columns
-                [x] delivered messages provably deleted, not archived
-                [x] prekey fetch is rate limited
-                [x] still no production host
-NEXT STEP:      *** P5 OPENS THE PURCHASE WINDOW — THIS NEEDS THE USER ***
-                P5.S01 is the first step in the whole plan that costs money:
-                a domain and a VPS. Nothing before it required a purchase and
-                nothing after it works without one. Read THREAT_MODEL.md §3.7
-                before choosing a host: jurisdiction is a real selection
-                criterion under the seizable-host model, and it matters less
-                once §3.1 means there is nothing to hand over.
-                Do NOT buy anything on the user's behalf. Present the options,
-                the tradeoffs and the cost, and wait.
+CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
+UNMERGED:       *** branch `p4/hardening` is pushed and NOT merged. ***
+                One commit: P4.S10/S11 (adversarial pass + logging audit).
+                The user merges PRs by hand — give them the link and stop.
+                https://github.com/JanRichtermoc/Cipher/pull/new/p4/hardening
+DONE:           P1-P4 all steps. 102 integration tests + 126 iOS tests,
+                verify-all.sh 11/11. The relay is verified against the real
+                containerised stack, not only in tests.
+BOUGHT:         OVH VPS-1 (FR/DE) and a name.com domain — 2026-07-29.
+                Rationale and rejected alternatives: docs/INFRASTRUCTURE.md.
+                Read it before touching anything host-related.
+WAITING ON USER: the six setup steps — SSH key installed on the box, key-only
+                login verified, `cipher-staging` alias in ~/.ssh/config, DNS A
+                record pointed at the VPS. Then they report the domain name and
+                an ACME email. Do NOT start P5.S05 until key login works: the
+                first hardening action disables password auth, and doing that
+                before the key is proven locks the operator out of their server.
+NEXT STEP:      P5.S05 — VPS hardening + staging deploy, once access is
+                confirmed. Order matters: disable password authentication
+                FIRST (OVH emails the initial password in plaintext and applies
+                no default-deny firewall, so it is live on a public host).
+                Then firewall to 22/80/443 only, unattended upgrades, fail2ban,
+                non-root Docker, Nginx + TLS 1.3 + ACME, relay deployed with
+                secrets generated ON the server. Exit criterion is an external
+                port scan showing only 22/80/443.
+                Then P5.S06 (extract SPKI pins) — flag the host-move constraint
+                in INFRASTRUCTURE.md before running it.
+OPEN DECISION:  OVH's included daily backup vs the retention policy
+                (INFRASTRUCTURE.md, last section). Needs the operator's call.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
 HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,
                 not a file here. Settings → Branches → add a rule for `main` →
                 "Require status checks to pass" → select `verify`.
-                Later: P5.S01 domain purchase.
+                P5.S01/S02 (domain + VPS) are DONE — see BOUGHT above.
 ```
 
 Update this block when a step completes. One grep answers "where am I".
