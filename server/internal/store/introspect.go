@@ -120,3 +120,18 @@ func (db *DB) TableNames(ctx context.Context) ([]string, error) {
 	}
 	return out, rows.Err()
 }
+
+// CountRows counts a table. Test and operational support only.
+//
+// The table name is interpolated because a parameter cannot name a relation. It
+// comes from TableNames — that is, from information_schema — never from a
+// caller, and it is quoted regardless, because "this input is trusted" is the
+// sentence that precedes most injections.
+func (db *DB) CountRows(ctx context.Context, table string) (int, error) {
+	var n int
+	query := fmt.Sprintf("SELECT count(*) FROM %s", quoteIdent(table))
+	if err := db.pool.QueryRow(ctx, query).Scan(&n); err != nil {
+		return 0, fmt.Errorf("count %s: %w", table, err)
+	}
+	return n, nil
+}

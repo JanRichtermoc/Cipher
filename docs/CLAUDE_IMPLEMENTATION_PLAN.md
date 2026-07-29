@@ -14,31 +14,27 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P4 in progress. P1, P2, P3 COMPLETE.
-DONE:           P1, P2, P3 all steps. P4.S01 (docs/BACKEND.md),
-                P4.S02 (scaffold; `docker compose up` verified 2026-07-29),
-                P4.S03 (invite codes), P4.S04 (session tokens),
-                P4.S05 + P4.S06 (PQXDH prekey directory with mandatory
-                fetch rate limiting), P4.S07 + P4.S08 (message relay,
-                delete-on-delivery, hourly TTL sweep), P4.S09
-                (attachment slots). 86 integration tests.
-NEXT STEP:      P4.S10 — integration tests for the adversarial cases the
-                per-step suites do not cover: malicious envelope rewrite,
-                replay, auth failures across every route, rate limits, and
-                retention. Much of this exists per-step; S10 is the pass that
-                looks for what no single step owned. Then P4.S11 — redacted
-                structured logging, no IP retention beyond a short TTL, no
-                request bodies (THREAT_MODEL.md §3.6). The logging package
-                already redacts by type and by key denylist; S11 is the audit
-                that nothing slipped past it.
-                After that P4 exits and P5 begins — which is the PURCHASE
-                window (domain + VPS). Buy nothing before then.
-TOOLING:        Go 1.26.5 and Docker Desktop are both installed on this
-                machine. server/.env exists locally and is gitignored; it is
-                NOT in the repo, so a fresh clone needs `cp .env.example .env`
-                and two generated passwords before `docker compose up`.
-TESTS:          126 passing (106 CipherCrypto + 20 Cipher) · verify-all.sh 10/10
-                CI green on main since 2026-07-28, first run, all gates.
+CURRENT PHASE:  P4 COMPLETE. P1, P2, P3, P4 all done.
+DONE:           P4.S01-S11. The relay is feature-complete for this phase and
+                verified against the real containerised stack, not only in
+                tests: invite -> session -> prekeys -> send -> fetch -> ack,
+                plus attachments, delete-on-delivery and an hourly sweep.
+                102 integration tests + 126 iOS tests, verify-all.sh 11/11.
+P4 EXIT:        [x] docker compose up runs a working relay locally
+                [x] invite -> token -> prekey -> send/receive works end to end
+                [x] schema review: zero plaintext message columns
+                [x] delivered messages provably deleted, not archived
+                [x] prekey fetch is rate limited
+                [x] still no production host
+NEXT STEP:      *** P5 OPENS THE PURCHASE WINDOW — THIS NEEDS THE USER ***
+                P5.S01 is the first step in the whole plan that costs money:
+                a domain and a VPS. Nothing before it required a purchase and
+                nothing after it works without one. Read THREAT_MODEL.md §3.7
+                before choosing a host: jurisdiction is a real selection
+                criterion under the seizable-host model, and it matters less
+                once §3.1 means there is nothing to hand over.
+                Do NOT buy anything on the user's behalf. Present the options,
+                the tradeoffs and the cost, and wait.
 REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
 HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,
                 not a file here. Settings → Branches → add a rule for `main` →
