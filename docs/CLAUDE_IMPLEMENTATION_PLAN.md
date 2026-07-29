@@ -20,18 +20,19 @@ DONE:           P1, P2, P3 all steps. P4.S01 (docs/BACKEND.md),
                 P4.S03 (invite codes), P4.S04 (session tokens),
                 P4.S05 + P4.S06 (PQXDH prekey directory with mandatory
                 fetch rate limiting), P4.S07 + P4.S08 (message relay,
-                delete-on-delivery, hourly TTL sweep). 72 integration tests.
-NEXT STEP:      P4.S09 — attachment slot API. The attachments table exists
-                (BACKEND.md §2.8): id, size_bytes, expires_at, and NO owner
-                column — the id IS the capability, delivered to the recipient
-                inside the E2E ciphertext, so the server never learns who may
-                read a blob. Client encrypts first; the server stores opaque
-                bytes with a size cap and a 7-day TTL. Blob bytes go on the
-                filesystem keyed by id, not in Postgres: shredding a file is
-                one unlink, whereas a deleted BYTEA lingers in table bloat and
-                WAL. Do not do content scanning of any kind.
-                Then P4.S10 (integration tests incl. malicious envelope
-                rewrite/replay) and P4.S11 (redacted logging, no IP retention).
+                delete-on-delivery, hourly TTL sweep), P4.S09
+                (attachment slots). 86 integration tests.
+NEXT STEP:      P4.S10 — integration tests for the adversarial cases the
+                per-step suites do not cover: malicious envelope rewrite,
+                replay, auth failures across every route, rate limits, and
+                retention. Much of this exists per-step; S10 is the pass that
+                looks for what no single step owned. Then P4.S11 — redacted
+                structured logging, no IP retention beyond a short TTL, no
+                request bodies (THREAT_MODEL.md §3.6). The logging package
+                already redacts by type and by key denylist; S11 is the audit
+                that nothing slipped past it.
+                After that P4 exits and P5 begins — which is the PURCHASE
+                window (domain + VPS). Buy nothing before then.
 TOOLING:        Go 1.26.5 and Docker Desktop are both installed on this
                 machine. server/.env exists locally and is gitignored; it is
                 NOT in the repo, so a fresh clone needs `cp .env.example .env`

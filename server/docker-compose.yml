@@ -99,14 +99,21 @@ services:
       RELAY_REDIS_ADDR: "redis:6379"
       RELAY_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
+      RELAY_BLOB_DIR: /var/lib/cipher/blobs
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks: [internal]
+    volumes:
+      # The only writable path in the container. read_only: true below makes the
+      # rest of the filesystem immutable, so this is the entire write surface —
+      # and it holds ciphertext the client encrypted before it arrived.
+      - blob-data:/var/lib/cipher/blobs
     # Defence in depth for a container that already has no shell: even with
-    # arbitrary code execution there is nothing to write and nothing to escalate.
+    # arbitrary code execution there is nothing to write except the blob
+    # directory, and nothing to escalate.
     read_only: true
     cap_drop: [ALL]
     security_opt:
@@ -120,3 +127,4 @@ networks:
 
 volumes:
   postgres-data:
+  blob-data:

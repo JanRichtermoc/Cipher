@@ -20,6 +20,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // Store is the subset of the database this needs.
@@ -30,19 +32,36 @@ type Store interface {
 	DeleteExpiredMessages(ctx context.Context) (int64, error)
 	DeleteExpiredInvites(ctx context.Context) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
+
+	// Attachments are two-step: the bytes live on the filesystem and the row in
+	// Postgres, so the sweep asks for lapsed ids, removes the files, and only
+	// then removes the rows. Deleting the rows first would orphan the files —
+	// nothing would remember they existed and no query could find them.
+	ExpiredAttachmentIDs(ctx context.Context, limit int) ([]uuid.UUID, error)
+	DeleteAttachment(ctx context.Context, id uuid.UUID) (bool, error)
+}
+
+// Blobs is the filesystem half of attachment deletion.
+type Blobs interface {
+	Delete(id uuid.UUID) error
 }
 
 // Sweeper deletes expired rows on an interval.
 type Sweeper struct {
 	store    Store
+	blobs    Blobs
 	log      *slog.Logger
 	interval time.Duration
 }
 
-// New builds a sweeper.
-func New(store Store, log *slog.Logger, interval time.Duration) *Sweeper {
-	return &Sweeper{store: store, log: log, interval: interval}
+// New builds a sweeper. blobs may be nil, in which case attachments are skipped.
+func New(store Store, blobs Blobs, log *slog.Logger, interval time.Duration) *Sweeper {
+	return &Sweeper{store: store, blobs: blobs, log: log, interval: interval}
 }
+
+// maxAttachmentsPerSweep bounds one pass, so a large backlog is cleared over
+// several ticks rather than in one transaction holding the table for minutes.
+const maxAttachmentsPerSweep = 500
 
 // Run sweeps until ctx is cancelled.
 //
@@ -110,5 +129,48 @@ func (s *Sweeper) once(ctx context.Context) {
 				slog.String("table", t.name),
 				slog.Int64("deleted", n))
 		}
+	}
+
+	s.sweepAttachments(ctx)
+}
+
+// sweepAttachments removes lapsed blobs, bytes before rows.
+//
+// A file whose removal fails leaves its row in place deliberately: the row is the
+// only record that the file exists, so keeping it means the next tick tries
+// again. Deleting the row anyway would turn a transient filesystem error into a
+// permanently orphaned blob.
+func (s *Sweeper) sweepAttachments(ctx context.Context) {
+	if s.blobs == nil {
+		return
+	}
+
+	ids, err := s.store.ExpiredAttachmentIDs(ctx, maxAttachmentsPerSweep)
+	if err != nil {
+		s.log.ErrorContext(ctx, "retention sweep failed",
+			slog.String("table", "attachments"),
+			slog.String("reason", err.Error()))
+		return
+	}
+
+	var deleted int64
+	for _, id := range ids {
+		if err := s.blobs.Delete(id); err != nil {
+			s.log.ErrorContext(ctx, "expired blob bytes could not be removed; "+
+				"its row is kept so the next sweep retries",
+				slog.String("reason", err.Error()))
+			continue
+		}
+		if _, err := s.store.DeleteAttachment(ctx, id); err != nil {
+			s.log.ErrorContext(ctx, "expired attachment row could not be removed",
+				slog.String("reason", err.Error()))
+			continue
+		}
+		deleted++
+	}
+	if deleted > 0 {
+		s.log.InfoContext(ctx, "retention sweep",
+			slog.String("table", "attachments"),
+			slog.Int64("deleted", deleted))
 	}
 }

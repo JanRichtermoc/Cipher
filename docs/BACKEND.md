@@ -71,6 +71,30 @@ accounts. It costs a real client nothing: an `aci` is only obtainable by fetchin
 a legitimate sender never addresses a stranger.
 | `blobs` | Attachment slots: opaque bytes with a size cap and a TTL. | Inspect, transcode, or scan content |
 
+Built in P4.S09. The server records a slot's **length and expiry, and nothing else** — no content
+type, no filename, no extension, no magic-byte sniffing, no scanning of any kind. There is nothing
+to inspect: the bytes are encrypted before they arrive. A response is always
+`application/octet-stream` with `Content-Disposition: attachment`, because a content type echoed
+from upload is an attacker-chosen instruction to whatever eventually renders the bytes.
+
+The only name on disk is the capability itself, and the on-disk path is built from a **parsed**
+`uuid.UUID` rather than from caller text — which is what makes path traversal structurally
+impossible here rather than a matter of sanitising, since a `uuid.UUID` cannot hold `../`.
+
+Uploads are streamed to a temporary file and renamed into place, with an `fsync` first. A partial
+blob must never be visible: writing in place would mean a client that disconnects mid-upload leaves
+a truncated file at the id the database is about to point at, and the recipient would report a
+corrupt attachment for what was a network error. Renaming without the `fsync` allows the opposite —
+a correctly-named empty file after a power loss, which is worse, because nothing will retry it.
+
+**Order matters in both directions and it is not the same order.** On upload the file is written
+before the row, and removed if the row fails: a row without a file is a download that 500s and is
+recoverable, whereas a file without a row is a blob nothing remembers, which no sweep can find and
+no query can see. On deletion the row goes first, because a slot whose row is gone is already
+unreachable. The sweep follows the deletion order — bytes, then row — and deliberately keeps the
+row when the file removal fails, so the next tick retries rather than orphaning it permanently.
+Negative-tested: skipping the file deletion left `row=false disk=true`.
+
 There is deliberately **no seventh module**. See §8.
 
 ---

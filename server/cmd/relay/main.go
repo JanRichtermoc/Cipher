@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"cipher.relay/internal/api"
+	"cipher.relay/internal/blob"
 	"cipher.relay/internal/cache"
 	"cipher.relay/internal/config"
 	"cipher.relay/internal/health"
@@ -239,6 +240,12 @@ func run() error {
 	api.NewKeysHandler(db, authHandler, log).Routes(mux)
 	api.NewMessagesHandler(db, authHandler, log).Routes(mux)
 
+	blobs, err := blob.Open(cfg.BlobDir)
+	if err != nil {
+		return fmt.Errorf("blob store: %w", err)
+	}
+	api.NewBlobsHandler(db, blobs, authHandler, log).Routes(mux)
+
 	// The retention sweep runs for the life of the process. It is what makes
 	// docs/BACKEND.md §4 true for accounts that never come back: every read path
 	// already filters on expiry, so a lapsed row is invisible — and under
@@ -247,7 +254,7 @@ func run() error {
 	//
 	// Hourly. Frequent enough that a lapsed row's extra lifetime is a rounding
 	// error against a 30-day TTL, infrequent enough to be free.
-	go sweep.New(db, log, time.Hour).Run(ctx)
+	go sweep.New(db, blobs, log, time.Hour).Run(ctx)
 
 	// Log OUTSIDE Recover, not the other way round. See httpx.Chain: the
 	// intuitive order silently drops every panicking request from the access log.
@@ -255,7 +262,10 @@ func run() error {
 		httpx.Log(log),
 		httpx.Recover(log),
 		httpx.SecurityHeaders,
-		httpx.LimitBody(cfg.MaxRequestBytes),
+		// Attachment upload streams megabytes and cannot live under the global
+		// JSON-sized limit; api.BlobsHandler applies MaxBlobBytes itself. An
+		// exemption means "the handler owns this limit", never "no limit".
+		httpx.LimitBody(cfg.MaxRequestBytes, api.BlobPathPrefix),
 	)
 
 	srv := &http.Server{

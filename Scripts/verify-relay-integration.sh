@@ -26,7 +26,11 @@ SERVER="$REPO_ROOT/server"
 
 # Floor, not an exact count, so adding a test does not fail the gate. It exists
 # to catch the suite collapsing to zero, which is the failure that looks green.
-MIN_INTEGRATION_TESTS=72
+MIN_INTEGRATION_TESTS=86
+
+# A host port distinct from the development stack's 8080, so running this never
+# collides with a stack the developer has up.
+API_TEST_PORT="${API_TEST_PORT:-18080}"
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 
@@ -124,6 +128,33 @@ for service in postgres redis; do
   esac
 done
 echo "  ok    neither datastore is reachable from the host"
+
+# --- The real image must actually start ------------------------------------
+#
+# The suite below runs the package under a golang container, not under the image
+# the Dockerfile produces — so it cannot see a defect that lives in the image. It
+# did not: the api container crash-looped on
+# "mkdir /var/lib/cipher/blobs/tmp: permission denied", because Docker creates a
+# named volume owned by root and the relay runs as 65532, while every integration
+# test passed. Found only by running the stack by hand.
+#
+# Building and health-checking the real service closes that gap for the price of
+# a cached image build.
+echo "  starting the api image and waiting for it to report healthy"
+if ! API_PORT="$API_TEST_PORT" "${COMPOSE[@]}" up -d --build --wait api; then
+  "${COMPOSE[@]}" logs api >&2
+  echo "FAILED: the api container did not become healthy." >&2
+  exit 1
+fi
+
+# Asked over HTTP as well as through the container health check, so a container
+# reported healthy by a probe that is itself broken cannot pass this.
+if ! curl -fsS --max-time 10 "http://127.0.0.1:${API_TEST_PORT}/health" >/dev/null; then
+  "${COMPOSE[@]}" logs api >&2
+  echo "FAILED: the api image is running but /health did not answer." >&2
+  exit 1
+fi
+echo "  ok    the real image starts and serves /health"
 
 echo "  running the integration suite inside the network"
 

@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 )
 
@@ -160,15 +161,34 @@ func pattern(r *http.Request) string {
 	return "(unmatched)"
 }
 
-// LimitBody caps request bodies at n bytes.
+// LimitBody caps request bodies at n bytes, except on the exempt path prefixes.
 //
 // http.MaxBytesReader rather than a Content-Length check: a chunked request
 // declares no length, so a length check reads as protection while providing
 // none. MaxBytesReader fails the read itself, which is the only thing an
 // attacker cannot lie about.
-func LimitBody(n int64) Middleware {
+//
+// # Why exemptions exist, and what they are not
+//
+// The global limit is sized for the largest JSON body the API has — an envelope
+// plus framing, some tens of kilobytes. Attachment upload streams megabytes, so
+// it cannot live under that limit, and raising the global one to suit it would
+// let every other route accept a body a thousand times larger than anything it
+// could legitimately receive.
+//
+// An exemption is **not** "unlimited". It means the handler owns the limit for
+// that route and must apply its own MaxBytesReader — see api.BlobsHandler, which
+// caps at MaxBlobBytes. The list is deliberately short, spelled out at the call
+// site in main, and matched by prefix so it is greppable.
+func LimitBody(n int64, exempt ...string) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			for _, prefix := range exempt {
+				if strings.HasPrefix(r.URL.Path, prefix) {
+					next.ServeHTTP(w, r)
+					return
+				}
+			}
 			r.Body = http.MaxBytesReader(w, r.Body, n)
 			next.ServeHTTP(w, r)
 		})

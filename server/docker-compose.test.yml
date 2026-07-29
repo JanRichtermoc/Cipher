@@ -38,6 +38,9 @@ services:
       - .:/src:ro
       # GOCACHE needs to be writable and must not be inside the read-only mount.
       - go-build-cache:/gocache
+      # The integration suite opens a real blob store. Writable, and separate
+      # from the api service's volume so a test run cannot touch its data.
+      - test-blob-data:/var/lib/cipher/blobs
     environment:
       GOFLAGS: -mod=vendor
       GOCACHE: /gocache
@@ -47,6 +50,7 @@ services:
         postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
       RELAY_REDIS_ADDR: "redis:6379"
       RELAY_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+      RELAY_BLOB_DIR: /var/lib/cipher/blobs
     command:
       - go
       - test
@@ -64,3 +68,4 @@ services:
 
 volumes:
   go-build-cache:
+  test-blob-data:

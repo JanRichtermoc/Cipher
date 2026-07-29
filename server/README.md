@@ -12,8 +12,8 @@ plaintext, retains nothing past delivery, and has no administrative interface at
 
 ## Status
 
-**P4.S08 — the relay works end to end.** Invite → session token → prekeys → send → fetch → ack,
-with delete-on-delivery and an hourly retention sweep.
+**P4.S09 — the relay is feature-complete for P4.** Invite → session token → prekeys → send →
+fetch → ack, plus attachment slots, delete-on-delivery and an hourly retention sweep.
 
 | | | |
 |---|---|---|
@@ -29,7 +29,9 @@ with delete-on-delivery and an hourly retention sweep.
 | `POST` | `/v1/messages` | **auth** — send an envelope, 60/min |
 | `GET` | `/v1/messages` | **auth** — fetch pending, 120/min, batches of 100 |
 | `POST` | `/v1/messages/ack` | **auth** — delivered means **deleted** |
-| | attachment blobs | P4.S09 |
+| `POST` | `/v1/blobs` | **auth** — upload, ≤100 MiB, 100/day |
+| `GET` | `/v1/blobs/{id}` | **auth** — the id *is* the capability |
+| `DELETE` | `/v1/blobs/{id}` | **auth** — shred early |
 
 ### Creating the first account
 
@@ -139,6 +141,12 @@ property `.gitignore` states for `Pods/`.
 lands in an image containing exactly one executable, and there is nothing to patch. The cost:
 debugging needs a sidecar rather than `docker exec`, and the health check has to be the binary
 itself (`relay --health-check`).
+
+**Attachment bytes live on the filesystem, not in Postgres.** Shredding a file is one `unlink`;
+a deleted `BYTEA` persists in table bloat and in the WAL until vacuum and WAL rotation catch up. For
+a service whose central control is that deleted data is *gone*, "eventually unreachable through the
+query planner" is not the same guarantee. The blob directory is the container's **only** writable
+path — `read_only: true` covers everything else.
 
 **The Postgres volume mounts `/var/lib/postgresql`, not `/var/lib/postgresql/data`.** Postgres 18
 changed this: data now lives in a major-version subdirectory so `pg_upgrade --link` works without
