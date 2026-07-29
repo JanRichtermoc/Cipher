@@ -108,4 +108,30 @@ else
   echo "        run this where the host is reachable before trusting a green result"
 fi
 
+# --- and does the SHIPPED APP pin the same values? ----------------------------
+#
+# The doc and the server agreeing is not enough: what fails closed on a user's
+# phone is the constant compiled into the binary. Checking source against the doc
+# closes the loop source -> doc -> live host, so a pin edited in one place and not
+# the other is caught here rather than by users who cannot connect.
+SOURCE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/Cipher/Networking/RelayEndpoint.swift"
+
+if [ -f "$SOURCE" ]; then
+  # Only the two pin constants, not every base64-looking string in the file.
+  shipped="$(grep -oE 'static let (currentLeaf|backupKey) = "[A-Za-z0-9+/=]+"' "$SOURCE" \
+             | sed -E 's/.*"([A-Za-z0-9+\/=]+)"/\1/' | sort)"
+  recorded="$(printf '%s\n' $pinned | sort)"
+
+  if [ "$shipped" = "$recorded" ]; then
+    echo "  ok    RelayEndpoint.swift pins exactly the values recorded in BACKEND.md 9.1"
+  else
+    echo "" >&2
+    echo "  shipped in RelayEndpoint.swift:" >&2; printf '    %s\n' $shipped >&2
+    echo "  recorded in BACKEND.md 9.1:" >&2;    printf '    %s\n' $recorded >&2
+    fail "the app's pin set and the documented pin set disagree"
+  fi
+else
+  echo "  !     skipped the source check ($SOURCE not found)"
+fi
+
 echo "  ok    pin set verified"
