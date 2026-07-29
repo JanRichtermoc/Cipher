@@ -25,6 +25,7 @@ Cipher/Features/Settings/SettingsViews.swift
 Cipher/MockData/MockStore.swift
 Cipher/Models/Models.swift
 Cipher/Networking/CertificatePinner.swift
+Cipher/Networking/InviteRedemption.swift
 Cipher/Networking/RelayClient.swift
 Cipher/Networking/RelayEndpoint.swift
 Cipher/PrivacyInfo.xcprivacy

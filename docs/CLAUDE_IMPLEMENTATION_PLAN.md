@@ -14,7 +14,7 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. P5.S05/S06/S08 COMPLETE.
+CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. P5.S05/S06/S08/S09 done.
 UNMERGED:       *** branch `p5/stage-h` is pushed and NOT merged. ***
                 Carries P5.S05 stage H, P5.S06, P5.S08 and the AUDIT cleanup.
                 The user merges PRs by hand — give them the link and stop.
@@ -25,6 +25,9 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 BACKEND.md §9.1, guarded by Scripts/verify-pins.sh. ***
                 *** P5.S08 COMPLETE — RelayClient: HTTPS/TLS1.3 only, SPKI
                 pinned, fails closed. 13 tests, negative-tested 4 ways. ***
+                *** P5.S09 COMPLETE — invite redemption -> Keychain. C-01 IS
+                CLOSED: authentication is a server-issued token, not a
+                string-length check. 11 tests, negative-tested 5 ways. ***
                 104 integration tests + 126 iOS tests, verify-all.sh 11/11.
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
                 Ubuntu 24.04, running main. TLS 1.3 only, Let's Encrypt ECDSA,
@@ -49,31 +52,25 @@ FOUND IN S07:   Mechanical half of the review done 2026-07-30; sign-off is the
                 history (971 blobs scanned), no .env ever tracked, no tokens,
                 no 64-hex secrets. SSH is key-only, root refused, one
                 authorized key, fail2ban live (3 bans so far, unprompted).
-                THREE ITEMS OUTSTANDING, all the operator's to action:
-                  1. NO CAA RECORD exists. P5.S04 requires one, and it is the
-                     control that stops a DIFFERENT CA issuing for this host —
-                     which is the gap pinning cannot see, since pinning only
-                     inspects the cert actually presented. Add:
-                     relay.mgchatman.app CAA 0 issue "letsencrypt.org"
+                One item outstanding (2); (1) is closed as a residual, (3) is done:
+                  1. CAA: CANNOT BE DONE on name.com — their DNS editor has
+                     no CAA type (operator confirmed 2026-07-30). Recorded as
+                     AUDIT 5.17, ACCEPTED: pinning refuses a mis-issued cert
+                     regardless of CA, and the host serves no browsers. CAA
+                     support is now a registrar criterion for P9.S01.
                   2. The APEX mgchatman.app also A-records to the VPS. Not
                      needed (the relay is on the subdomain) and P5.S04 says no
                      unnecessary records. nginx returns 444 for it, so this is
                      surface reduction, not an active hole.
-                  3. The `ubuntu` account still has a usable PASSWORD, and it
-                     is the one OVH emailed in plaintext. SSH will not accept
-                     it (authenticationmethods publickey) but the OVH KVM
-                     CONSOLE will. Change it — do NOT lock it, because the
-                     console is the documented lockout recovery path:
-                       ssh cipher-staging 'sudo passwd ubuntu'
-                     Store the new value in a password manager.
-NEXT STEP:      P5.S09 — invite redemption wired to the Keychain. Redeem a
-                code against POST /v1/invite/redeem over RelayClient, store the
-                returned token as SessionCredential(.serverIssued). Closes
-                C-01: a UserDefaults edit must not authenticate. Note the relay
-                returns aci + token + expiry, and that redeem is NOT idempotent
-                (single-use code) — RelayRequest.isIdempotent must be false.
-                Then P5.S10 (replace MockStore with CryptoEngine + network),
-                P5.S11 (encrypted message DB), P5.S12 (safety numbers).
+                  3. ubuntu's password: DONE 2026-07-30. The OVH-emailed
+                     value is no longer live at the console.
+NEXT STEP:      P5.S10 — replace the production MockStore paths with a
+                repository backed by CryptoEngine + RelayClient: encrypt
+                before send, decrypt after fetch, persist ciphertext. Closes
+                C-02 and AUDIT 5.3. Everything it needs now exists — the
+                transport is pinned, the session is real, and CipherTests can
+                import CipherCrypto (the Podfile gained that target in S09).
+                Then P5.S11 (encrypted message DB), P5.S12 (safety numbers).
 STILL HUMAN:    P5.S07 review — see FOUND IN S07 below. Two DNS actions and one
                 password change are outstanding and are the operator's.
 DECIDED:        OVH daily backup — cannot be disabled; carried as AUDIT 4.8.
@@ -191,7 +188,7 @@ a check that stops working fails loudly instead of passing vacuously.
 
 | ID | Problem | Verified at | Closes in |
 |----|---------|-------------|-----------|
-| C-01 | Invite auth is client-side; `AuthFlowView.swift:93` gates on `count >= 4`, `:21` calls `signIn()` which sets a Bool | confirmed 2026-07-28 | P3.S01 + P5.S09 |
+| C-01 | Invite auth was client-side; `AuthFlowView` gated on `count >= 4` and set a Bool. **CLOSED 2026-07-30 (P5.S09):** the code is redeemed against the relay and only a server-issued token authenticates. AUDIT 5.18. | closed 2026-07-30 | P3.S01 + P5.S09 |
 | C-02 | Messaging path is plaintext `MockStore`; no encrypt/decrypt façade | confirmed | P2.S01 + P5.S10 |
 | C-03 | App lock Unlock/Passcode call `session.unlock()` with no `LAContext` (`AuthFlowView.swift:204,209`) while `:196` promises "Unlock with Face ID" | **CLOSED 2026-07-28** | P3.S02 |
 
@@ -362,7 +359,7 @@ and an encrypted local database **from the first real message**.
 | ID | Step | Owner | Closes | Done when | Do not |
 |----|------|-------|--------|-----------|--------|
 | **P5.S08** | iOS network client: HTTPS only, TLS 1.3, **certificate/public-key pinning** matching P5.S06, failing closed. Timeouts, retries with jitter. **DONE 2026-07-30.** `Cipher/Networking/`: `RelayEndpoint` (pins), `CertificatePinner` (+ `PinningSessionDelegate`), `RelayClient` (30 s request / 120 s resource, 3 attempts, full jitter, retries only idempotent requests and never a TLS failure). Chain validation runs **before** the pin, so a pin match can never stand in for validation. No ATS exception exists; TLS 1.3 is set via `tlsMinimumSupportedProtocolVersion`, which tightens rather than relaxes. | AI | 5.1 (part) | Test: a wrong-pin server is refused | Add any ATS exception |
-| **P5.S09** | Wire invite redemption + session token into the Keychain. | AI | **C-01** | Real server-issued token gates access; `UserDefaults` edit cannot authenticate | — |
+| **P5.S09** | Wire invite redemption + session token into the Keychain. **DONE 2026-07-30.** `InviteRedemption` exchanges a code at `POST /v1/invite/redeem` and returns a `.serverIssued` credential; `AppSession.signIn(with:)` remains the single owner of the signed-in transition, so the Keychain has one writer. The request is **non-idempotent** — an invite is single-use and a retry spends a second code or strands an account. `AuthFlowView`'s `count >= 4` gate is gone. | AI | **C-01 CLOSED** | Real server-issued token gates access; `UserDefaults` edit cannot authenticate | — |
 | **P5.S10** | Replace production `MockStore` paths with a repository backed by `CryptoEngine` + network: encrypt before send, decrypt after fetch, persist ciphertext. | AI | **C-02**, 5.3 | No production path reads `MockStore` | Leave a plaintext fallback |
 | **P5.S11** | **Encrypted local message database** (SQLite/SwiftData sealed under Keychain-backed keys, sharing the crypto queue and container rules). *Moved from P6.* | AI | 4.3 | No plaintext message body at rest; test proves the file is unreadable without the Keychain key | Ship a plaintext DB "for now" |
 | **P5.S12** | **Safety-number / QR UI** from real identity keys (LibSignalClient Fingerprint APIs): persist verification tied to the fingerprint, invalidate on identity change, wire to the existing receive-OK / send-blocked policy. *Moved from P6.* | AI | 2.5 | Two devices show matching numbers; a substituted identity visibly changes them | Ship "Mark as Verified" that verifies nothing |

@@ -1,0 +1,6 @@
+framework module Pods_CipherTests {
+  umbrella header "Pods-CipherTests-umbrella.h"
+
+  export *
+  module * { export * }
+}
