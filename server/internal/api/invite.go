@@ -48,28 +48,83 @@ const InviteTTL = 48 * time.Hour
 // reduced by someone who does not read invite.EntropyBits first.
 var redeemLimit = ratelimit.Limit{Capacity: 5, Window: time.Hour}
 
-// InviteHandler serves invite redemption.
+// InviteHandler serves invite redemption and authenticated issuance.
 //
-// Issuance is deliberately not here. See docs/BACKEND.md §8: there is no admin
-// API, and the first account cannot be created by an authenticated call because
-// there is nobody to authenticate. Invites are minted by `relay --issue-invite`
-// on the host, and the authenticated user-to-user issuance endpoint arrives with
-// session tokens in P4.S04.
+// The *first* invite is still not issued here. See docs/BACKEND.md §8: there is
+// no admin API, and the first account cannot be authorised by an authenticated
+// call because there is nobody to authenticate. That one comes from
+// `relay --issue-invite` on the host. Every subsequent invite is issued by an
+// account that already exists, through POST /v1/invite.
 type InviteHandler struct {
 	db      *store.DB
 	limiter *ratelimit.Limiter
+	auth    *AuthHandler
 	log     *slog.Logger
 	ttl     time.Duration
 }
 
 // NewInviteHandler builds the handler.
-func NewInviteHandler(db *store.DB, limiter *ratelimit.Limiter, log *slog.Logger) *InviteHandler {
-	return &InviteHandler{db: db, limiter: limiter, log: log, ttl: InviteTTL}
+//
+// It takes the AuthHandler because redemption issues a session: an account
+// created without one would have to authenticate through some other path, and
+// the only other path is the invite it just consumed.
+func NewInviteHandler(
+	db *store.DB,
+	limiter *ratelimit.Limiter,
+	authHandler *AuthHandler,
+	log *slog.Logger,
+) *InviteHandler {
+	return &InviteHandler{
+		db: db, limiter: limiter, auth: authHandler, log: log, ttl: InviteTTL,
+	}
 }
 
 // Routes registers the endpoints.
 func (h *InviteHandler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /v1/invite/redeem", h.redeem)
+	mux.Handle("POST /v1/invite", h.auth.Require(http.HandlerFunc(h.issue)))
+}
+
+type issueResponse struct {
+	Code      string    `json:"code"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// issue mints an invite on behalf of an authenticated account.
+//
+// **Who issued it is not recorded.** docs/BACKEND.md §2.2: the invite graph is
+// the social graph of a closed circle and is the most valuable thing a seizure
+// could recover, so the `invites` table has two columns and neither is
+// `created_by`. The per-account limit that stops one account minting invites
+// without bound is a Redis counter keyed by an HMAC of the account id — it
+// expires, and a column would not.
+//
+// The account id reaches the rate limiter and nothing else. It is not logged, and
+// it is not written anywhere that outlives the bucket's TTL.
+func (h *InviteHandler) issue(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	aci, ok := AccountFrom(ctx)
+	if !ok {
+		httpx.WriteError(w, http.StatusUnauthorized)
+		return
+	}
+
+	if !h.auth.allow(w, r, "invite-issue", aci.String(), issueLimit) {
+		return
+	}
+
+	code, err := IssueInvite(ctx, h.db, h.ttl)
+	if err != nil {
+		h.log.ErrorContext(ctx, "issue invite failed", slog.String("reason", err.Error()))
+		httpx.WriteError(w, http.StatusInternalServerError)
+		return
+	}
+
+	httpx.WriteJSON(w, http.StatusCreated, issueResponse{
+		Code:      code.String(),
+		ExpiresAt: time.Now().Add(h.ttl),
+	})
 }
 
 type redeemRequest struct {
@@ -82,6 +137,11 @@ type redeemRequest struct {
 
 type redeemResponse struct {
 	ACI string `json:"aci"`
+	// The session that redemption establishes. Without it the new account would
+	// have no way to authenticate: the only credential it ever held was the
+	// invite, and that has just been consumed.
+	Token          string    `json:"token"`
+	TokenExpiresAt time.Time `json:"token_expires_at"`
 }
 
 // redeem consumes an invite and creates an account.
@@ -180,12 +240,33 @@ func (h *InviteHandler) redeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The account now exists and the invite is gone, so this is the only moment
+	// at which a session can be established for it.
+	//
+	// Issued *after* the redemption transaction commits rather than inside it.
+	// The two are not atomic, and that is the correct direction to fail: an
+	// account with no session can redeem nothing further but can be recovered
+	// with a fresh invite, whereas rolling back a committed redemption to undo a
+	// failed token write would mean re-crediting a single-use invite — turning a
+	// transient error into a way to redeem a code twice.
+	token, err := h.auth.Issue(ctx, aci)
+	if err != nil {
+		h.log.ErrorContext(ctx, "account created but session issuance failed",
+			slog.String("reason", err.Error()))
+		httpx.WriteError(w, http.StatusInternalServerError)
+		return
+	}
+
 	// Nothing identifying is logged here either. That an account was created is
 	// the interesting operational fact; which account it was is a record linking
 	// a time to an identifier, and the retention policy exists to not have those.
 	h.log.InfoContext(ctx, "account created")
 
-	httpx.WriteJSON(w, http.StatusCreated, redeemResponse{ACI: aci.String()})
+	httpx.WriteJSON(w, http.StatusCreated, redeemResponse{
+		ACI:            aci.String(),
+		Token:          token.String(),
+		TokenExpiresAt: time.Now().Add(SessionTTL),
+	})
 }
 
 // clientAddr returns the address to rate-limit against.
