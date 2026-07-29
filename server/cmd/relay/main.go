@@ -34,6 +34,7 @@ import (
 	"cipher.relay/internal/logging"
 	"cipher.relay/internal/ratelimit"
 	"cipher.relay/internal/store"
+	"cipher.relay/internal/sweep"
 )
 
 // healthCheck makes the binary able to probe itself.
@@ -236,6 +237,17 @@ func run() error {
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
 	api.NewKeysHandler(db, authHandler, log).Routes(mux)
+	api.NewMessagesHandler(db, authHandler, log).Routes(mux)
+
+	// The retention sweep runs for the life of the process. It is what makes
+	// docs/BACKEND.md §4 true for accounts that never come back: every read path
+	// already filters on expiry, so a lapsed row is invisible — and under
+	// THREAT_MODEL.md §1.1 the adversary reads the disk, where invisible and
+	// absent are not the same thing.
+	//
+	// Hourly. Frequent enough that a lapsed row's extra lifetime is a rounding
+	// error against a 30-day TTL, infrequent enough to be free.
+	go sweep.New(db, log, time.Hour).Run(ctx)
 
 	// Log OUTSIDE Recover, not the other way round. See httpx.Chain: the
 	// intuitive order silently drops every panicking request from the access log.

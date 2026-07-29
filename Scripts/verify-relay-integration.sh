@@ -26,7 +26,7 @@ SERVER="$REPO_ROOT/server"
 
 # Floor, not an exact count, so adding a test does not fail the gate. It exists
 # to catch the suite collapsing to zero, which is the failure that looks green.
-MIN_INTEGRATION_TESTS=54
+MIN_INTEGRATION_TESTS=72
 
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 

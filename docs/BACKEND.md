@@ -41,6 +41,34 @@ to the server as much as the client.
 | `auth` | Issue, rotate, and revoke opaque session tokens. Authenticates every other route. | Hold claims in the token itself |
 | `directory` | Prekey bundle upload and dispense. The one endpoint whose rate limit is load-bearing. | Serve a bundle to an unauthenticated caller |
 | `relay` | Store-and-forward `Envelope` bytes. Delete on acknowledged delivery. | Parse into the ciphertext |
+
+The relay module, built in P4.S07/S08, checks exactly two things about an envelope: that it is
+32–65567 bytes, and that the recipient is a well-formed UUID. The wire version, payload type,
+`sender` field and timestamp are all in those bytes, all readable without any key, and all
+deliberately unread. It relays an unknown wire version, the reserved plaintext type, and a
+sender-key message the client refuses outright, unchanged and without comment — a test pins
+that, because a server that understands the format acquires opinions about it, every opinion
+is a coupling that must be revised in lockstep with the client, and each is a place where a
+hostile operator could make a decision about someone's mail.
+
+It does **not** check that the envelope's `sender` matches the authenticated account. That
+looks like a free integrity win and is not: the field is a routing hint the client is
+documented never to trust, attribution comes from which session decrypted the ciphertext, and
+enforcing it would mean the server both parses the format and appears to vouch for a value
+nothing should rely on.
+
+**Reading does not delete.** Delivery is acknowledged separately, so a response lost in
+transit cannot destroy a message the client never stored. Acknowledgement is scoped to the
+caller's own queue — without that, any account could delete any other's undelivered mail given
+an id, which is a silent, unattributable message-loss primitive and the most damaging thing one
+member of a small circle could do to another. Negative-tested: unscoped, one account
+acknowledged another's message.
+
+**A send to an account that does not exist is accepted and dropped**, with a response identical
+to a real delivery. Reporting it would be an enumeration oracle, and a cleaner one than the
+prekey directory, which already answers identically for unknown, never-published and drained
+accounts. It costs a real client nothing: an `aci` is only obtainable by fetching a bundle, so
+a legitimate sender never addresses a stranger.
 | `blobs` | Attachment slots: opaque bytes with a size cap and a TTL. | Inspect, transcode, or scan content |
 
 There is deliberately **no seventh module**. See §8.
@@ -282,6 +310,15 @@ The highest-value control on the server, and nearly free at schema-design time.
 Rules that make this real rather than aspirational:
 
 - **Acknowledged means gone.** P4.S08's test asserts the row is absent, not that a flag flipped.
+  Negative-tested by replacing the `DELETE` with a hide-it-by-expiring update: the test failed
+  with *"the row survived acknowledgement — it was flagged, not deleted"*, which is the whole
+  distinction and is invisible to any assertion made through the API.
+- **The sweep runs on a timer, not only on demand.** Every read path already filters on
+  `expires_at > now()`, so a lapsed row is invisible — and under §1.1 the adversary reads the
+  disk, where invisible and absent are different things. `internal/sweep` runs hourly, sweeps
+  once immediately on start rather than waiting out the first interval (a relay returning from
+  an outage is holding exactly the rows it should least like to keep), and never fails the
+  process: its work is always still there next tick.
   A test that accepts a flag would pass against a design that retains everything forever.
 - **No archive table, no `messages_history`, no "just in case" dump.** If it would be useful to us
   after delivery, it is useful to whoever seizes the host.

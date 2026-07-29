@@ -12,8 +12,8 @@ plaintext, retains nothing past delivery, and has no administrative interface at
 
 ## Status
 
-**P4.S06 — prekey directory.** Configuration, logging, Postgres, Redis, health, the full schema,
-invite redemption, session tokens, and the PQXDH prekey directory with mandatory fetch throttling.
+**P4.S08 — the relay works end to end.** Invite → session token → prekeys → send → fetch → ack,
+with delete-on-delivery and an hourly retention sweep.
 
 | | | |
 |---|---|---|
@@ -26,7 +26,10 @@ invite redemption, session tokens, and the PQXDH prekey directory with mandatory
 | `DELETE` | `/v1/auth/all` | **auth** — sign out everywhere, including here |
 | `PUT` | `/v1/keys` | **auth** — publish your own prekeys, 6/day |
 | `GET` | `/v1/keys/{aci}` | **auth** — fetch a bundle, 10/hour and 30/day |
-| | relay, blobs | P4.S07 – P4.S09 |
+| `POST` | `/v1/messages` | **auth** — send an envelope, 60/min |
+| `GET` | `/v1/messages` | **auth** — fetch pending, 120/min, batches of 100 |
+| `POST` | `/v1/messages/ack` | **auth** — delivered means **deleted** |
+| | attachment blobs | P4.S09 |
 
 ### Creating the first account
 
