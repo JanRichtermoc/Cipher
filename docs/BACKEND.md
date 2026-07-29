@@ -324,12 +324,32 @@ onto a live service — which is exactly why P4.S06 makes it mandatory in this p
 P6" is listed as the anti-goal. AUDIT 3.1 does not close until this and P6.S01 rotation are both
 live (P6.S02).
 
+Measured, not asserted: with the limit removed, 60 fetch attempts consumed 60 of the target's
+prekeys. With it in place the same 60 attempts consume 10 and the pool survives.
+
 Two supporting measures, since a limit alone leaves a slow-drain path:
 
-- The dispense path **serves the last-resort key without deleting a one-time key** once an account's
-  remaining pool falls below a floor, so a determined attacker degrades that peer's PQ forward
-  secrecy but cannot exhaust the pool outright.
-- The client is told its remaining count on upload and replenishes on a threshold, not a schedule.
+- **The Kyber pool degrades rather than empties.** A one-time Kyber prekey is preferred and
+  consumed; when that pool is exhausted the reusable last-resort key is served and *not* deleted, so
+  PQXDH keeps running. The cost is that the KEM contribution is then shared with every session that
+  also fell back — classical X25519 forward secrecy is unaffected — and that degradation is exactly
+  what a drain buys the attacker.
+- The client is told its remaining counts on upload and replenishes on a threshold, not a schedule.
+  Its own counts only: a peer's pool size is precisely the measurement someone draining it wants.
+
+> **Correction, 2026-07-29 (P4.S05).** This section previously said the dispense path would "serve
+> the last-resort key without deleting a one-time key once an account's remaining pool falls below a
+> floor". That conflated the two pools and is not implementable as written. There is **no last-resort
+> key for the X25519 one-time prekey** — the client's `PeerKeyBundle` requires one and it is not
+> optional in that type — so when *that* pool empties, no bundle can be served at all.
+>
+> The honest statement of the residual: draining an account's one-time prekey pool is a denial of
+> service against **session setup** with that peer until they next replenish. Existing sessions are
+> unaffected; only new ones are blocked. It is bounded by the per-caller fetch limit above and by the
+> fact that fetching requires an authenticated account, which requires an invite — in a closed circle
+> the attacker must already be a member. Serving a bundle without a one-time prekey is possible in
+> PQXDH generally and would remove this, but it requires making the field optional in the client's
+> bundle type, which is a client change and out of scope for P4.
 
 ---
 

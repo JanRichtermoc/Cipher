@@ -60,10 +60,17 @@ DENY = [
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
 # included — must appear verbatim in ACKNOWLEDGED.
+# Czech forms sit beside their English originals, exactly as DENY does. Without them this
+# list was half a check: "Face ID" is a product name and survives translation, so it fired
+# on Czech copy, while "passcode" becomes "kód zařízení" and slipped through — so a Czech
+# string could promise a device-owner check with nothing behind it and the gate would agree.
+# Found when check E's translations were added and only two of the four fired.
 GUARD = [
     ("Face ID", "no LocalAuthentication anywhere until P3.S02"),
     ("Touch ID", "no LocalAuthentication anywhere until P3.S02"),
     ("passcode", "the app does not ask for the device passcode until P3.S02"),
+    ("kód zařízení", "Czech rendering of the device-passcode claim"),
+    ("kódu zařízení", "Czech rendering of the device-passcode claim, inflected"),
 ]
 
 # Reviewed and correct as written. Each of these *denies* the capability it names.
@@ -76,7 +83,34 @@ ACKNOWLEDGED = {
     "Set a device passcode to use the app lock.",
     "Could not verify it is you. Try again.",
     "Require Face ID or your device passcode to reopen Cipher.",
+    # The Czech renderings of the four above, added with check E. Each is a translation of
+    # an already-acknowledged string and promises the same thing it does — which is the only
+    # basis on which anything joins this set.
+    "Odemkněte pomocí Face ID nebo kódu zařízení.",
+    "Pro zámek aplikace nastavte kód zařízení.",
+    "Nepodařilo se ověřit vaši totožnost. Zkuste to znovu.",
+    "Vyžadovat Face ID nebo kód zařízení pro opětovné otevření Cipheru.",
 }
+
+# Markers that identify a string as a *safety warning* rather than ordinary UI copy: text
+# whose whole job is to stop someone trusting this build with something that matters.
+#
+# Check E requires every one of these to be translated into every language the catalog
+# otherwise supports. The failure it prevents is the exact inverse of AUDIT 5.4 and is
+# easier to miss: 5.4 was Czech shipping a *retired claim*, and this is Czech shipping the
+# whole interface while the warnings stay in English. A user then reads the app in their own
+# language and the one paragraph telling them not to rely on it in a foreign one — which
+# selects precisely the sentence they are least likely to read carefully.
+WARNING_MARKERS = [
+    "not implemented yet",
+    "not encrypted yet",
+    "are not deleted yet",
+    "does not send notifications yet",
+    "do not use",
+    "do not treat",
+    "nothing reads this setting",
+    "none of these settings",
+]
 
 # A catalog key holds format specifiers where the source has interpolation; the two are
 # compared with both reduced to this placeholder.
@@ -295,6 +329,37 @@ def analyse(literals, catalog):
                     f"it promises it, delete it."
                 )
 
+    # E — a safety warning that is not translated everywhere the interface is.
+    #
+    # The set of languages is taken from the catalog rather than configured, so adding a
+    # language automatically extends the requirement instead of quietly exempting it.
+    supported = {
+        lang
+        for entry in strings.values()
+        for lang in entry.get("localizations", {})
+        if lang != source_language
+    }
+    for key in sorted(strings):
+        folded = key.casefold()
+        marker = next((m for m in WARNING_MARKERS if m in folded), None)
+        if marker is None:
+            continue
+        # A DEBUG-only warning must NOT be translated — check B forbids exactly that — so
+        # this requirement applies only to strings that ship.
+        entry = literals.get(SPECIFIER.sub(WILD, key))
+        if entry is None or entry[0]:
+            continue
+        missing = sorted(supported - set(strings[key].get("localizations", {})))
+        if missing:
+            findings.append(
+                f"{CATALOG}: {key!r}\n"
+                f"          is a safety warning (matches {marker!r}) but has no "
+                f"{', '.join(missing)} translation, while the rest of the interface does. "
+                f"A reader gets the app in their language and the warning in "
+                f"{source_language} — the inverse of AUDIT 5.4 and the sentence they can "
+                f"least afford to skim. Translate it."
+            )
+
     return findings
 
 
@@ -353,6 +418,21 @@ SELF_TESTS = [
         {"This screen asks for Face ID.": (False, "X.swift:1")},
         {"This screen asks for Face ID.": {}},
         "not ACKNOWLEDGED",
+    ),
+    (
+        # E — the inverse of AUDIT 5.4, and the easier one to miss. The interface is
+        # translated, the warning is not, so the reader gets the app in their language and
+        # the one paragraph telling them not to rely on it in another.
+        "E: safety warning untranslated while the interface is translated",
+        {
+            "Send": (False, "X.swift:1"),
+            "Safety numbers are not implemented yet.": (False, "X.swift:2"),
+        },
+        {
+            "Send": {"localizations": {"cs": {"stringUnit": {"value": "Odeslat"}}}},
+            "Safety numbers are not implemented yet.": {},
+        },
+        "has no cs translation",
     ),
 ]
 
