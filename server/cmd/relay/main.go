@@ -235,6 +235,7 @@ func run() error {
 	authHandler := api.NewAuthHandler(db, limiter, log)
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
+	api.NewKeysHandler(db, authHandler, log).Routes(mux)
 
 	// Log OUTSIDE Recover, not the other way round. See httpx.Chain: the
 	// intuitive order silently drops every panicking request from the access log.

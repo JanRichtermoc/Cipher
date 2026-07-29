@@ -12,8 +12,8 @@ plaintext, retains nothing past delivery, and has no administrative interface at
 
 ## Status
 
-**P4.S04 — session tokens.** Configuration, logging, Postgres, Redis, health, the full schema,
-invite redemption, and opaque session tokens with rotation and revocation.
+**P4.S06 — prekey directory.** Configuration, logging, Postgres, Redis, health, the full schema,
+invite redemption, session tokens, and the PQXDH prekey directory with mandatory fetch throttling.
 
 | | | |
 |---|---|---|
@@ -24,7 +24,9 @@ invite redemption, and opaque session tokens with rotation and revocation.
 | `POST` | `/v1/auth/rotate` | **auth** — exchange for a fresh token, 10/hour |
 | `DELETE` | `/v1/auth` | **auth** — sign out this session |
 | `DELETE` | `/v1/auth/all` | **auth** — sign out everywhere, including here |
-| | directory, relay, blobs | P4.S05 – P4.S09 |
+| `PUT` | `/v1/keys` | **auth** — publish your own prekeys, 6/day |
+| `GET` | `/v1/keys/{aci}` | **auth** — fetch a bundle, 10/hour and 30/day |
+| | relay, blobs | P4.S07 – P4.S09 |
 
 ### Creating the first account
 
