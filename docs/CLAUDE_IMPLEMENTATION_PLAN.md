@@ -16,16 +16,20 @@ E2E messenger.
 ```
 CURRENT PHASE:  P4 in progress. P1, P2, P3 COMPLETE.
 DONE:           P1, P2, P3 all steps. P4.S01 (docs/BACKEND.md),
-                P4.S02 (server/ scaffold — COMPLETE; `docker compose up`
-                verified 2026-07-29: /health and /health/ready both 200,
-                migration applied, all three containers healthy, and
-                postgres/redis confirmed unreachable from the host).
-NEXT STEP:      P4.S03 — invite codes: server-generated, single-use, expiring,
-                rate-limited. Server half of C-01. The `invites` table already
-                exists (2 columns; created_by is deliberately absent — see
-                BACKEND.md §2.2). A redeemed invite is DELETEd, never flagged.
-                Redemption creates the account and returns its aci.
-                Do not hardcode codes anywhere.
+                P4.S02 (scaffold; `docker compose up` verified 2026-07-29),
+                P4.S03 (invite codes — 17 integration tests against a real
+                Postgres and Redis: reuse rejected, expiry enforced, brute
+                force throttled, and exactly one account from 16 concurrent
+                redemptions of one code).
+NEXT STEP:      P4.S04 — opaque session tokens: random, hashed at rest,
+                rotatable, revocable. The session_tokens table already exists
+                (BACKEND.md §2.3). Revocation is DELETE, never a flag, which
+                is why there is no `revoked` column. Do NOT use a JWT: it
+                carries its claims, so revocation needs a denylist that must
+                be consulted on every request and grows forever.
+                Then wire POST /v1/invite (authenticated issuance, 3/day/
+                account) — the endpoint deliberately deferred from P4.S03
+                because it needs auth to exist first.
 TOOLING:        Go 1.26.5 and Docker Desktop are both installed on this
                 machine. server/.env exists locally and is gitignored; it is
                 NOT in the repo, so a fresh clone needs `cp .env.example .env`

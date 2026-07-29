@@ -175,6 +175,45 @@ jobs:
           path: /tmp/cipher-verify-tests.log
           if-no-files-found: ignore
 
+  # The relay's integration suite, against a real Postgres and a real Redis.
+  #
+  # A separate job on Linux, and it has to be. GitHub's macOS runners are virtual machines
+  # without a Linux container runtime, so the `verify` job above cannot start Postgres at
+  # all — which is why `verify-all.sh` gate 4 covers only what runs without a container and
+  # this job covers the rest. Splitting them is not a preference; running these on macos-26
+  # is not an option that exists.
+  #
+  # Linux runners also bill at 1x rather than 10x, so this is close to free.
+  relay-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No setup-go step: the suite runs inside a digest-pinned golang container on the
+      # compose network (docker-compose.test.yml), so the runner's own Go is irrelevant.
+      # Docker and the compose plugin are preinstalled on ubuntu-24.04.
+
+      - name: Generate a throwaway .env
+        # The real one is gitignored and holds this machine's local passwords. CI needs
+        # credentials that exist only for the length of this job, so it makes its own —
+        # from /dev/urandom, never a fixed literal. A hardcoded CI password is a real
+        # password the moment someone copies the workflow to a deployment.
+        run: |
+          set -euo pipefail
+          cd server
+          cp .env.example .env
+          pg="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+          rd="$(LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 32)"
+          sed -i "s/^POSTGRES_PASSWORD=$/POSTGRES_PASSWORD=${pg}/" .env
+          sed -i "s/^REDIS_PASSWORD=$/REDIS_PASSWORD=${rd}/" .env
+          # Fail loudly rather than proceed with an empty password, which compose would
+          # accept and Postgres would then refuse in a much less obvious way.
+          ! grep -qE '^(POSTGRES|REDIS)_PASSWORD=$' .env
+
+      - name: Integration suite
+        run: ./Scripts/verify-relay-integration.sh
+
   # Releases must never pass because a check was skipped. `verify-all.sh --offline` exists
   # for working on a plane; it prints a warning and moves on, and that must not be how a
   # release-tagged build reaches green.

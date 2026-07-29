@@ -56,6 +56,14 @@ func (c *Client) Close() error { return c.rdb.Close() }
 // Ping reports whether Redis is reachable. Used by readiness only.
 func (c *Client) Ping(ctx context.Context) error { return c.rdb.Ping(ctx).Err() }
 
+// Scripter exposes the client for Lua evaluation.
+//
+// Narrowed to [redis.Scripter] rather than returning *redis.Client: the rate
+// limiter needs to run a script and nothing else, and handing it the full client
+// would let a future edit reach for GET/SET and store something in the tier that
+// is documented as holding nothing durable.
+func (c *Client) Scripter() redis.Scripter { return c.rdb }
+
 // AssertNoPersistence fails if Redis would write state to disk.
 //
 // This is a startup assertion, not a nicety. The compose file disables RDB and

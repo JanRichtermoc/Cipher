@@ -341,6 +341,26 @@ invite code ──redeem──▶ account (aci) ──▶ session token ──�
 
 - Invite codes: 128 bits from a CSPRNG, rendered in an unambiguous alphabet, single-use, expiring.
   Never hardcoded — C-01 is the client-side half of this and the server half is P4.S03.
+  - **Alphabet:** Crockford base32 — digits and uppercase letters less `I`, `L`, `O`, `U`. 32
+    symbols carry exactly 5 bits, so masking a uniform random byte to its low 5 bits is unbiased
+    and needs no rejection sampling. 26 symbols carry 130 bits, at or above the 128 claimed.
+    `Parse` maps `I`/`L`→`1` and `O`→`0` on input only, so transcription is forgiving without the
+    key space widening.
+  - **Single use is a property of one SQL statement**, not of two. `DELETE … WHERE … RETURNING`
+    decides and consumes atomically; exactly one concurrent caller gets a row. The obvious
+    `SELECT`-then-`DELETE` passes every sequential test and creates several accounts from one code
+    under concurrency — measured at 3 of 16 when negative-tested.
+  - **Expiry is in the same `WHERE` clause**, evaluated against `now()`. Checked in Go against a
+    row read a moment earlier, it would be checked against a clock that is not the database's.
+  - **Unknown, redeemed, expired and lost-race are one error**, all the way from SQL to the 401.
+    The schema genuinely cannot tell them apart — a redeemed invite is deleted — so the API is not
+    papering over a database that knows more than it should.
+  - **Bootstrapping is `relay --issue-invite` on the host, not an endpoint.** The first account
+    cannot be authorised by an authenticated call because there is nobody to authenticate, and the
+    usual answer to that is an admin API, which §8 refuses. Running a command requires shell access
+    to the host — the §1.1 adversary already assumed to read the database — so it grants that
+    adversary nothing new and a remote attacker nothing at all. The code is printed to stdout once
+    and never logged.
 - Session tokens: 256 bits from a CSPRNG, hashed at rest, rotatable, revocable by `DELETE`.
 - Presented as `Authorization: Bearer`. Compared with a constant-time comparison after hashing.
 - **No password, no recovery flow, no email.** There is nothing to phish and nothing to reset. Losing

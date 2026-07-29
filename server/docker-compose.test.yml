@@ -1,0 +1,66 @@
+# Integration-test overlay. Used with the base file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.test.yml run --rm tests
+#
+# Copyright (C) 2026 Jan Richter
+# SPDX-License-Identifier: AGPL-3.0-only
+#
+# The tests run INSIDE the compose network rather than on the host, because the
+# alternative is publishing Postgres and Redis to localhost so a host-side test
+# process can reach them — which is precisely the anti-goal P4.S02 names, and
+# which `Scripts/verify-relay.sh` fails the build over.
+#
+# "Only for tests" is how that exposure always starts. A compose file that
+# publishes 5432 during development publishes it on the laptop that later gets
+# taken to a conference, and the port stays open because nothing was ever wrong.
+# Running the tests on the internal network costs one small overlay file and
+# removes the temptation entirely.
+
+services:
+  tests:
+    # golang:1.26.5 — the Debian-based image, digest-pinned like every other.
+    #
+    # Not the -alpine variant the Dockerfile builds with, and the difference is
+    # forced rather than chosen: `go test -race` requires cgo, and alpine ships
+    # no C toolchain, so the run fails with "-race requires cgo". Installing gcc
+    # and musl-dev into the test container would work and would mean the test
+    # image drifts from any pinned digest on every rebuild.
+    #
+    # The race detector is worth the larger image here. The concurrency test is
+    # the one that proves single-use redemption is atomic, and a data race in
+    # the code it exercises is exactly the failure that only appears under load.
+    image: golang@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c70636647
+    working_dir: /src
+    volumes:
+      # Read-only: the test run must not be able to modify the working tree it
+      # was launched from. A test that rewrites go.sum or drops a binary into
+      # the repository is a supply-chain surprise, not a test.
+      - .:/src:ro
+      # GOCACHE needs to be writable and must not be inside the read-only mount.
+      - go-build-cache:/gocache
+    environment:
+      GOFLAGS: -mod=vendor
+      GOCACHE: /gocache
+      # Service names on the internal network. Neither host is reachable from
+      # outside it.
+      RELAY_DATABASE_URL: >-
+        postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable
+      RELAY_REDIS_ADDR: "redis:6379"
+      RELAY_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    command:
+      - go
+      - test
+      - -tags=integration
+      - -count=1
+      - -race
+      - ./internal/integration/...
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [internal]
+    # No ports. The tests reach the datastores by service name.
+
+volumes:
+  go-build-cache:
