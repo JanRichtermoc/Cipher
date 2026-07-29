@@ -14,6 +14,7 @@
 		0F21E1E366595FE97FCB7EE9 /* LibsignalContractTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E1482589F3434312890CF31 /* LibsignalContractTests.swift */; };
 		0FFF05490392465EA74AC7DB /* CryptoActor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 522E9E6822AC6B3037716496 /* CryptoActor.swift */; };
 		18D3B64D48B455629A0953F0 /* Pods_CipherCryptoTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9CE44AA19BFDB461A18871B2 /* Pods_CipherCryptoTests.framework */; };
+		248BF1E48DC9BCE9C0B8B02E /* CertificatePinnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 368C80198058DFB08844F8C4 /* CertificatePinnerTests.swift */; };
 		328297D5F6B3221D25AE6333 /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8CF345C885BFDA0D8BD6942C /* Foundation.framework */; };
 		37BE7ED821518ACE02604C00 /* ProtocolStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3249604329CEEFC984EF6401 /* ProtocolStoreTests.swift */; };
 		3E30D3D43CA5CA698EF66F86 /* ZeroizationRealityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 323F9EC08DCEA062B0E6744B /* ZeroizationRealityTests.swift */; };
@@ -103,6 +104,7 @@
 		323F9EC08DCEA062B0E6744B /* ZeroizationRealityTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherCryptoTests/ZeroizationRealityTests.swift; sourceTree = SOURCE_ROOT; };
 		3249604329CEEFC984EF6401 /* ProtocolStoreTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherCryptoTests/ProtocolStoreTests.swift; sourceTree = SOURCE_ROOT; };
 		33B17B0B63C5DBA23D90C87D /* RecordStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RecordStore.swift; path = CipherCrypto/Sources/Store/RecordStore.swift; sourceTree = SOURCE_ROOT; };
+		368C80198058DFB08844F8C4 /* CertificatePinnerTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/CertificatePinnerTests.swift; sourceTree = SOURCE_ROOT; };
 		38481AA880A269F23525BE35 /* CipherCryptoTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = CipherCryptoTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		43E7BECB317D1948AACFD6EF /* AppLockTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/AppLockTests.swift; sourceTree = SOURCE_ROOT; };
 		4F782543DE18F03E59EEDEAB /* ServiceIdentifier.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ServiceIdentifier.swift; path = CipherCrypto/Sources/Wire/ServiceIdentifier.swift; sourceTree = SOURCE_ROOT; };
@@ -204,6 +206,7 @@
 			children = (
 				BD9743B27B6E97F0986F9830 /* SessionCredentialTests.swift */,
 				43E7BECB317D1948AACFD6EF /* AppLockTests.swift */,
+				368C80198058DFB08844F8C4 /* CertificatePinnerTests.swift */,
 			);
 			path = CipherTests;
 			sourceTree = "<group>";
@@ -628,6 +631,7 @@
 			files = (
 				042CF938F2EE60FF79FD6052 /* SessionCredentialTests.swift in Sources */,
 				5C2123EC8030E78225AB7C04 /* AppLockTests.swift in Sources */,
+				248BF1E48DC9BCE9C0B8B02E /* CertificatePinnerTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -14,15 +14,17 @@ E2E messenger.
 ## STATUS
 
 ```
-CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. P5.S05 + P5.S06 COMPLETE.
+CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. P5.S05/S06/S08 COMPLETE.
 UNMERGED:       *** branch `p5/stage-h` is pushed and NOT merged. ***
-                Carries P5.S05 stage H, P5.S06, and the AUDIT.md cleanup.
+                Carries P5.S05 stage H, P5.S06, P5.S08 and the AUDIT cleanup.
                 The user merges PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 *** P5.S05 COMPLETE — external full-port scan shows
                 22/80/443 and nothing else, on BOTH address families. ***
                 *** P5.S06 COMPLETE — pin set + rotation runbook in
                 BACKEND.md §9.1, guarded by Scripts/verify-pins.sh. ***
+                *** P5.S08 COMPLETE — RelayClient: HTTPS/TLS1.3 only, SPKI
+                pinned, fails closed. 13 tests, negative-tested 4 ways. ***
                 104 integration tests + 126 iOS tests, verify-all.sh 11/11.
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
                 Ubuntu 24.04, running main. TLS 1.3 only, Let's Encrypt ECDSA,
@@ -42,17 +44,38 @@ FOUND IN S05:   Three things that looked configured and were not. All CLOSED,
                        — ssl_protocols is taken from the DEFAULT server for the
                        socket. Worse, the first probe reported a false pass:
                        macOS `openssl` is LibreSSL and cannot drive -tls1_3.
-NEXT STEP:      P5.S08 — the iOS network client: HTTPS only, TLS 1.3,
-                SPKI pinning matching BACKEND.md §9.1, FAILING CLOSED.
-                Timeouts, retries with jitter. No ATS exception, ever.
-                Pin the two values marked **YES** in §9.1 — leaf and backup.
-                Do NOT also pin the intermediate: it is recorded there
-                precisely so nobody re-adds it by reflex. Reasoning in §9.1.
-                From the moment this ships, a leaf key change is a total
-                outage with no server-side fix, so Scripts/verify-pins.sh
-                becomes a standing check rather than a nicety.
-                P5.S09 (invite redemption -> Keychain token) and P5.S10
-                (replace MockStore with CryptoEngine + network) follow.
+FOUND IN S07:   Mechanical half of the review done 2026-07-30; sign-off is the
+                operator's. Clean: no private key material in ANY blob in git
+                history (971 blobs scanned), no .env ever tracked, no tokens,
+                no 64-hex secrets. SSH is key-only, root refused, one
+                authorized key, fail2ban live (3 bans so far, unprompted).
+                THREE ITEMS OUTSTANDING, all the operator's to action:
+                  1. NO CAA RECORD exists. P5.S04 requires one, and it is the
+                     control that stops a DIFFERENT CA issuing for this host —
+                     which is the gap pinning cannot see, since pinning only
+                     inspects the cert actually presented. Add:
+                     relay.mgchatman.app CAA 0 issue "letsencrypt.org"
+                  2. The APEX mgchatman.app also A-records to the VPS. Not
+                     needed (the relay is on the subdomain) and P5.S04 says no
+                     unnecessary records. nginx returns 444 for it, so this is
+                     surface reduction, not an active hole.
+                  3. The `ubuntu` account still has a usable PASSWORD, and it
+                     is the one OVH emailed in plaintext. SSH will not accept
+                     it (authenticationmethods publickey) but the OVH KVM
+                     CONSOLE will. Change it — do NOT lock it, because the
+                     console is the documented lockout recovery path:
+                       ssh cipher-staging 'sudo passwd ubuntu'
+                     Store the new value in a password manager.
+NEXT STEP:      P5.S09 — invite redemption wired to the Keychain. Redeem a
+                code against POST /v1/invite/redeem over RelayClient, store the
+                returned token as SessionCredential(.serverIssued). Closes
+                C-01: a UserDefaults edit must not authenticate. Note the relay
+                returns aci + token + expiry, and that redeem is NOT idempotent
+                (single-use code) — RelayRequest.isIdempotent must be false.
+                Then P5.S10 (replace MockStore with CryptoEngine + network),
+                P5.S11 (encrypted message DB), P5.S12 (safety numbers).
+STILL HUMAN:    P5.S07 review — see FOUND IN S07 below. Two DNS actions and one
+                password change are outstanding and are the operator's.
 DECIDED:        OVH daily backup — cannot be disabled; carried as AUDIT 4.8.
                 Re-argue at P9.S01, where "can snapshots be declined?" joins
                 jurisdiction as a provider selection criterion.
@@ -338,7 +361,7 @@ and an encrypted local database **from the first real message**.
 
 | ID | Step | Owner | Closes | Done when | Do not |
 |----|------|-------|--------|-----------|--------|
-| **P5.S08** | iOS network client: HTTPS only, TLS 1.3, **certificate/public-key pinning** matching P5.S06, failing closed. Timeouts, retries with jitter. | AI | 5.1 (part) | Test: a wrong-pin server is refused | Add any ATS exception |
+| **P5.S08** | iOS network client: HTTPS only, TLS 1.3, **certificate/public-key pinning** matching P5.S06, failing closed. Timeouts, retries with jitter. **DONE 2026-07-30.** `Cipher/Networking/`: `RelayEndpoint` (pins), `CertificatePinner` (+ `PinningSessionDelegate`), `RelayClient` (30 s request / 120 s resource, 3 attempts, full jitter, retries only idempotent requests and never a TLS failure). Chain validation runs **before** the pin, so a pin match can never stand in for validation. No ATS exception exists; TLS 1.3 is set via `tlsMinimumSupportedProtocolVersion`, which tightens rather than relaxes. | AI | 5.1 (part) | Test: a wrong-pin server is refused | Add any ATS exception |
 | **P5.S09** | Wire invite redemption + session token into the Keychain. | AI | **C-01** | Real server-issued token gates access; `UserDefaults` edit cannot authenticate | — |
 | **P5.S10** | Replace production `MockStore` paths with a repository backed by `CryptoEngine` + network: encrypt before send, decrypt after fetch, persist ciphertext. | AI | **C-02**, 5.3 | No production path reads `MockStore` | Leave a plaintext fallback |
 | **P5.S11** | **Encrypted local message database** (SQLite/SwiftData sealed under Keychain-backed keys, sharing the crypto queue and container rules). *Moved from P6.* | AI | 4.3 | No plaintext message body at rest; test proves the file is unreadable without the Keychain key | Ship a plaintext DB "for now" |
