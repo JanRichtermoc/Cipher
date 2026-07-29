@@ -39,6 +39,11 @@ type Config struct {
 
 	LogLevel string
 
+	// BlobDir is where attachment bytes live. On the filesystem rather than in
+	// Postgres: shredding a file is one unlink, whereas a deleted BYTEA persists
+	// in table bloat and WAL until vacuum catches up (docs/BACKEND.md §2.8).
+	BlobDir string
+
 	// ReadHeaderTimeout bounds the slowloris window: a client that opens a
 	// connection and dribbles headers holds a goroutine until this fires.
 	ReadHeaderTimeout time.Duration
@@ -121,6 +126,10 @@ func Load() (Config, error) {
 		RedisPassword: require("RELAY_REDIS_PASSWORD"),
 
 		LogLevel: optional("RELAY_LOG_LEVEL", "info"),
+
+		// A default is fine here: this is a path, not a secret, and a wrong one
+		// fails loudly at startup when the directory cannot be created.
+		BlobDir: optional("RELAY_BLOB_DIR", "/var/lib/cipher/blobs"),
 
 		ReadHeaderTimeout: duration("RELAY_READ_HEADER_TIMEOUT", 5*time.Second),
 		ReadTimeout:       duration("RELAY_READ_TIMEOUT", 15*time.Second),

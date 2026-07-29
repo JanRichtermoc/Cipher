@@ -37,6 +37,11 @@ COPY internal/ internal/
 ENV CGO_ENABLED=0 GOFLAGS=-mod=vendor
 RUN go build -trimpath -buildvcs=false -ldflags='-s -w' -o /relay ./cmd/relay
 
+# The blob directory is created here, in a stage that has a shell, because the
+# runtime stage is `scratch` and cannot run mkdir. It is copied below with an
+# explicit owner.
+RUN mkdir -p /var/lib/cipher/blobs
+
 # ---------------------------------------------------------------------------
 # Runtime stage
 # ---------------------------------------------------------------------------
@@ -57,6 +62,20 @@ FROM scratch
 USER 65532:65532
 
 COPY --from=build /relay /relay
+
+# Ships an empty, correctly-owned directory at the blob path.
+#
+# This is not cosmetic. Docker creates a named volume owned by root:root, and
+# mounting one over a path the image does not contain leaves it root-owned — so
+# the relay, running as 65532, cannot create its temp directory and crash-loops
+# with "mkdir /var/lib/cipher/blobs/tmp: permission denied". When the path DOES
+# exist in the image, Docker seeds the empty volume from it and carries the
+# ownership across, which is what makes this work.
+#
+# The integration suite cannot catch this: it runs the package under a golang
+# image, not this one. It was found by running the real stack, which is why
+# Scripts/verify-relay-integration.sh is not the only thing worth running.
+COPY --from=build --chown=65532:65532 /var/lib/cipher/blobs /var/lib/cipher/blobs
 
 EXPOSE 8080
 

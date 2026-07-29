@@ -497,7 +497,7 @@ func TestSweeperRunsOnItsOwn(t *testing.T) {
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	go sweep.New(db, logging.New(io.Discard, slog.LevelError), time.Hour).Run(runCtx)
+	go sweep.New(db, nil, logging.New(io.Discard, slog.LevelError), time.Hour).Run(runCtx)
 	defer cancel()
 
 	deadline := time.Now().Add(5 * time.Second)
