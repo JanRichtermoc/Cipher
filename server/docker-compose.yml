@@ -106,8 +106,9 @@ services:
       # is over-throttling rather than no throttling. docs/BACKEND.md §9.2.
       #
       # Behind Nginx this is NOT 127.0.0.1: docker-proxy opens a fresh connection
-      # into the container from the compose bridge gateway, so the relay sees the
-      # bridge subnet. Read it off the running network, do not guess it.
+      # into the container from the compose bridge GATEWAY. Use that address as a
+      # /32 — the subnet would also trust postgres and redis. Read it off the
+      # running network, do not guess it.
       RELAY_TRUSTED_PROXY: ${RELAY_TRUSTED_PROXY:-}
     depends_on:
       postgres:

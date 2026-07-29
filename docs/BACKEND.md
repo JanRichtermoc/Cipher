@@ -349,6 +349,15 @@ Rules that make this real rather than aspirational:
 - **Backups inherit this.** A nightly `pg_dump` retained for a month reintroduces every deleted
   message with a delay. Backups cover schema and account rows only — losing undelivered messages in
   a restore is the correct outcome, not a gap to fix.
+- **Except the provider's, which we do not control.** OVH includes a daily whole-disk snapshot on
+  VPS and it **cannot be disabled on this product** — confirmed on the staging box, 2026-07-29. It
+  images the Postgres volume and the blob directory, so for up to 24 hours a snapshot holds rows
+  and files the relay has already deleted. This is the one place the rule above is not true, and
+  it is recorded as a residual rather than written around: `AUDIT.md` 4.8. Everything in it is
+  ciphertext — keys never touch the server — so what survives is *metadata*: who had mail waiting,
+  and that a blob of a given size existed. Bounded at 24 hours, and held by the same provider
+  already subject to the same legal process as the live host, so it widens the window rather than
+  the set of adversaries.
 - **The user-visible consequence is surfaced honestly**: a device offline past 30 days loses
   undelivered messages. That is a UI string subject to the same honesty rule as every other, and it
   must say so plainly rather than presenting silent loss as delivery.
@@ -529,18 +538,106 @@ network — the P4.S02 anti-goal, and the most common way a development relay en
 
 TLS terminates at a reverse proxy in P5, not in P4. Nothing is purchased before P5.
 
-### 9.1 Certificate pin rotation runbook — stub (filled in by P5.S06)
+### 9.1 Certificate pinning: the pin set and the rotation runbook (P5.S06)
 
-Placed here so P5.S06 has a home and so pinning is never shipped without a rotation story — a pin
-with no rotation plan is an outage waiting for a certificate renewal.
+The client pins the server's public key and **fails closed** (P5.S08). That makes this section
+operational: a mistake here is not a weakened control, it is every installed app unable to
+connect, with no server-side remedy.
 
-1. Extract the SPKI SHA-256 of the staging leaf **and** its issuing intermediate.
-2. Ship **two** pins: current, and a backup key that is not yet in use. A single pin plus a lost key
-   is a permanently bricked client.
-3. Rotation: publish the new pin in a client release, wait for adoption, *then* switch the
-   certificate. Never the other order.
-4. Record every pin with its expiry and the date it was extracted.
-5. Pin the SPKI, not the certificate, so renewal with the same key needs no client change.
+#### What is pinned, and what is deliberately not
+
+| SPKI SHA-256 (base64) | What | Pinned? |
+|---|---|---|
+| `MRFmm9ckpODEhUXZfYHbhMzIsxiCDsBJD/HwOy/rQBM=` | Staging leaf, `relay.mgchatman.app`, ECDSA P-256. Cert expires **2026-10-27**; the key does not rotate with it. | **YES** |
+| `+qAajv1/B4owz+yao2g3R3lSNjD7qPN3eR3JXwA5FCY=` | Backup key, generated 2026-07-29, **not yet in use**. `/etc/ssl/private/cipher-backup.key`. | **YES** |
+| `brzvtCELCIZUo4sD/qPX0ccRtPsd3DY6RfmxpOU9oB4=` | Let's Encrypt intermediate `YE1`, expires 2028-09-02. | no — recorded only |
+| `sCkq5UWXjg+7mKu9lMhhYF5bGLsy7VI/UNW3tccdR7w=` | ISRG `Root YE`, expires 2032-09-02. | no — recorded only |
+| `diGVwiVYbubAI3RW4hB9xU8e/CH2GnkuvVFZE8zmgzI=` | `ISRG Root X2` (cross-signed by X1), expires 2032-09-02. | no — recorded only |
+
+All five are **public values** — an SPKI hash is derived from a public key that appears in the
+certificate — so recording them here discloses nothing. Extracted 2026-07-29 from the live chain.
+
+**The intermediate is recorded and not pinned, which is a deliberate departure from this section's
+original rule 1.** The effective strength of a pin set is its *weakest accepted* pin. Accepting
+`YE1` means accepting **any certificate Let's Encrypt issues for this hostname**, and an attacker
+who can pass ACME validation — by controlling DNS, or the host, which are exactly §1.1 and §1.3 —
+can obtain one. Pinning the intermediate would therefore reduce the control to "must be a Let's
+Encrypt certificate", which ordinary PKI validation already provides, while stopping none of the
+adversaries pinning exists for. The availability argument that usually justifies an intermediate
+pin is already met by the backup key, and better: a backup key we hold cannot be rotated out from
+under us, whereas Let's Encrypt rotates intermediates on their own schedule. Recording them is
+still worth doing — the rotation procedure below needs to recognise a chain change, and that needs
+a baseline.
+
+#### Rules
+
+1. **Pin the SPKI, not the certificate**, so renewal with the same key needs no client change.
+2. **Ship at least two pins, one of which is a backup key not in the current chain.** One pin plus
+   one lost key is a permanently bricked client with no recovery path.
+3. **New pin first, certificate second. Never the other order.** Publish the pin in a client
+   release, wait for adoption, *then* switch the certificate.
+4. **Record every pin with what it is, when it was extracted, and when it expires.**
+5. **Both private keys must survive a host move.** `INFRASTRUCTURE.md` says moving hosts after
+   P5.S08 means carrying the TLS private key; from here it means carrying *both*, because a backup
+   pin whose key was left behind is not a backup.
+
+#### `--reuse-key` is load-bearing, and it is not the default
+
+Certbot generates a **fresh private key on every renewal** unless told otherwise. That changes the
+SPKI roughly every 60 days and breaks every pinned client, with no server-side fix — the clients
+are already shipped. `reuse_key = True` is set in
+`/etc/letsencrypt/renewal/relay.mgchatman.app.conf`.
+
+**Re-check it after any certbot command that rewrites that file** (`certonly` with new flags,
+`reconfigure`, a `--force-renewal` with options). `Scripts/verify-pins.sh` checks it, along with
+the live SPKI, against the table above.
+
+#### Routine renewal (no client action)
+
+The expected case, every ~60 days, fully automatic: certbot renews, reuses the key, the SPKI is
+unchanged, the deploy hook reloads Nginx. Nothing to do. `Scripts/verify-pins.sh` is what tells you
+this is still true rather than assuming it.
+
+#### Planned key rotation (the procedure that must not be improvised)
+
+Required when the leaf key is deliberately retired, and it takes **two client releases**.
+
+1. **Verify the backup key is still present** on the host and its SPKI still matches the table.
+   Rotating toward a backup that no longer exists is the failure this is designed to avoid.
+2. **Generate the *next* backup key** — call it C. The pin set is now {A current, B backup, C
+   next-backup}.
+3. **Ship a client release pinning {A, B, C}.** Do not switch the certificate yet.
+4. **Wait for adoption.** Anyone still on the previous release pins only {A, B}, so switching to B
+   is safe for them, but switching to C is not. This wait is the whole reason rotation is not a
+   same-day operation.
+5. **Switch the certificate to key B** — reissue with `--key-type ecdsa --reuse-key` against B, and
+   confirm the served leaf's SPKI equals B's.
+6. **Ship a client release pinning {B, C}**, dropping the retired A.
+7. **Destroy A's private key** only after step 6 has adopted. Until then it is the rollback.
+
+#### Emergency: the leaf key is compromised
+
+Availability now costs less than continuing to serve with a known-compromised key.
+
+1. Reissue immediately against the backup key B (`--key-type ecdsa --reuse-key`). Every shipped
+   client already pins B, so **this requires no client release** — that is precisely what B is for.
+2. Revoke the old certificate: `certbot revoke --cert-path … --reason keyCompromise`.
+3. Generate a new backup key and ship it as a pin in the next release. **Until that release
+   adopts, the service is one lost key away from a total outage**, so treat it as urgent rather
+   than as done.
+
+#### Emergency: both keys are lost
+
+There is no recovery. Every installed client fails closed against a host that cannot present a
+pinned key. The only path is a client release with a new pin set, and users who cannot or do not
+update are permanently disconnected. This is the outage rule 2 exists to prevent, and the reason
+the backup key's storage and host-move handling are written down rather than assumed.
+
+#### Changing hosts
+
+Carry `/etc/letsencrypt/` **and** `/etc/ssl/private/cipher-backup.key` to the new host. Do not let
+certbot issue a fresh key on the new host: that is a rotation, and rotations follow the procedure
+above. See `INFRASTRUCTURE.md`, "the constraint that decides when hosts can still change".
 
 ### 9.2 The reverse proxy and the client address (P5.S05)
 
@@ -573,18 +670,30 @@ bucket per request — the limit stops existing rather than merely being wrong.
 
 **The value is deployment-specific, and the obvious guess is wrong.** With
 `ports: "127.0.0.1:8080:8080"`, traffic passes through `docker-proxy`, which opens a *new*
-connection into the container from the compose bridge gateway. The relay therefore sees the
-bridge subnet, **not** `127.0.0.1`, and a configuration naming loopback silently trusts nothing
-while appearing configured. Read the actual value off the running network rather than assuming
-it:
+connection into the container from the compose bridge **gateway**. The relay therefore never sees
+`127.0.0.1`, and a configuration naming loopback silently trusts nothing while appearing
+configured. Read the actual value off the running network rather than assuming it:
 
 ```sh
 docker network inspect cipher-relay_internal \
-  --format '{{ (index .IPAM.Config 0).Subnet }}'
+  --format '{{ (index .IPAM.Config 0).Gateway }}'
 ```
 
-Trusting that subnet means trusting the three services on it, which are the relay's own
-containers. It does not extend trust to anything on the host or the internet.
+**The gateway address as a `/32`, not the subnet.** Every proxied request arrives from the gateway
+specifically, so the subnet is wider than it needs to be — and the extra width is the other
+containers. On the staging box `postgres` and `redis` sit at `.2` and `.3`, and under a `/16` a
+compromised datastore container could name any client address it liked and mint rate-limit buckets
+at will. Under `172.18.0.1/32` it cannot. Verified on the deployment, not reasoned about: a loop
+from inside the `postgres` container rotating `X-Real-IP` on every request still hit `429`, while
+the same rotation through the host's published port did not.
+
+**What trusting the gateway does and does not cover.** It is not confined to the compose services:
+*anything on the host* that can reach the published loopback port arrives as the gateway too, and
+is therefore believed. That is accepted rather than overlooked — the port is bound to `127.0.0.1`,
+so reaching it already requires local execution on the host, which is past every boundary the
+relay could defend. What the `/32` buys is that a container escape confined to `postgres` or
+`redis` does *not* also grant it. It grants nothing to the internet: an attacker reaching Nginx
+from outside is never the gateway, and Nginx overwrites `X-Real-IP` on the way through.
 
 ---
 

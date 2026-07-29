@@ -224,7 +224,7 @@ CREATE INDEX attachments_expires_at_idx ON attachments (expires_at);
 --
 -- THREAT_MODEL.md §3.3 originally required this to be stored hashed. That cannot be
 -- built: the token is replayed verbatim to APNs, so a one-way function is unusable
--- (AUDIT 6.6). Encrypted at rest under a key held ONLY in the service environment
+-- (AUDIT 6.10). Encrypted at rest under a key held ONLY in the service environment
 -- and never in this database, so a dump, a backup, or a stolen replica is
 -- insufficient alone. It does NOT defeat host seizure, where the environment is
 -- seized with the disk — rotation and the cascade below are what work there.
