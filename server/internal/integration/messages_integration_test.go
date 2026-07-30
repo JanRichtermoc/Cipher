@@ -650,3 +650,36 @@ func TestMalformedRequestsAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// --- Acknowledgement limit (AUDIT 5.23) -----------------------------------
+
+func TestAcknowledgeIsRateLimited(t *testing.T) {
+	// Acknowledgement had no limit at all. Each call is a `DELETE ... WHERE
+	// aci = $1 AND id = ANY($2)` with up to 200 ids, so an authenticated caller
+	// could hold a database connection busy indefinitely for free.
+	//
+	// The ids need not exist: acknowledging something already gone succeeds by
+	// design, so an attacker's cheapest version of this attack is exactly the
+	// request this test makes.
+	h, db := relayStack(t)
+	_, token := enrol(t, h, db, "198.51.100.180")
+
+	var refusedAt int
+	for i := 1; i <= 130; i++ {
+		rec := do(h, http.MethodPost, "/v1/messages/ack", token, "198.51.100.180",
+			ackBody(uuid.NewString()))
+		if rec.Code == http.StatusTooManyRequests {
+			refusedAt = i
+			break
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("ack %d: status %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if refusedAt == 0 {
+		t.Fatal("130 acknowledgements were all accepted — the endpoint is unthrottled")
+	}
+	if refusedAt <= 120 {
+		t.Fatalf("refused at %d, before the documented capacity of 120", refusedAt)
+	}
+}

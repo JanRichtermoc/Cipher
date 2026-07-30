@@ -42,6 +42,11 @@ var (
 	blobUploadLimit   = ratelimit.Limit{Capacity: 100, Window: 24 * time.Hour}
 	blobBytesLimit    = ratelimit.Limit{Capacity: 500, Window: 24 * time.Hour}
 	blobDownloadLimit = ratelimit.Limit{Capacity: 300, Window: time.Hour}
+	// Delete is a capability operation, not a cheap one: it removes a row and
+	// unlinks a file. Unthrottled it was the only authenticated write on this
+	// service with no ceiling at all (AUDIT 5.23). Generous, because the honest
+	// caller is a recipient shredding attachments it has already stored.
+	blobDeleteLimit = ratelimit.Limit{Capacity: 200, Window: time.Hour}
 )
 
 // BlobsHandler serves attachment slots.
@@ -124,6 +129,19 @@ func (h *BlobsHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The byte quota, before the write. One megabyte is charged up front and the
+	// remainder afterwards, because the size is not known until the upload has
+	// finished and Content-Length is a claim.
+	//
+	// **This check is what makes the quota a quota.** It used to be absent: the
+	// bytes were charged after the fact in a loop whose result was discarded, and
+	// nothing ever consulted the bucket, so "500 MB per day" was a number in a
+	// document while the real ceiling was 100 uploads — ten gigabytes (AUDIT 5.22).
+	byteSubject := h.auth.limiter.Subject("blob-bytes", aci.String())
+	if !h.chargeBytes(w, r, byteSubject, 1) {
+		return
+	}
+
 	id, err := uuid.NewRandom()
 	if err != nil {
 		h.log.ErrorContext(ctx, "blob id generation failed",
@@ -148,16 +166,27 @@ func (h *BlobsHandler) upload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Charge the byte quota after the fact, because the size is not known until
-	// the upload finishes and Content-Length is a claim. A single upload can
-	// therefore exceed the remaining daily allowance by up to one blob; the next
-	// one is refused. Bounding it exactly would mean trusting the declared
-	// length, which is the thing MaxBytesReader exists to avoid.
-	megabytes := int(size >> 20)
-	for range megabytes {
-		if _, err := h.auth.limiter.Allow(ctx,
-			h.auth.limiter.Subject("blob-bytes", aci.String()), blobBytesLimit); err != nil {
-			break
+	// Charge the rest of the size now that it is known — one call, saturating, so
+	// an overrun empties the bucket instead of deducting nothing (see
+	// ratelimit.Charge). A single upload can still exceed the remaining allowance
+	// by up to one blob, which is the documented cost of not trusting the declared
+	// length; the *next* upload is then refused by the pre-charge above, which is
+	// the part that was missing.
+	//
+	// A limiter error here fails closed: the bytes are removed and the upload is
+	// refused, because an unmeasurable quota is the same as no quota.
+	if megabytes := int(size >> 20); megabytes > 1 {
+		if _, err := h.auth.limiter.Charge(
+			ctx, byteSubject, blobBytesLimit, megabytes-1,
+		); err != nil {
+			h.log.ErrorContext(ctx, "byte quota could not be charged, refusing the upload",
+				slog.String("reason", err.Error()))
+			if rmErr := h.blobs.Delete(id); rmErr != nil {
+				h.log.ErrorContext(ctx, "orphaned blob could not be removed",
+					slog.String("reason", rmErr.Error()))
+			}
+			httpx.WriteError(w, http.StatusServiceUnavailable)
+			return
 		}
 	}
 
@@ -179,6 +208,30 @@ func (h *BlobsHandler) upload(w http.ResponseWriter, r *http.Request) {
 		Size:      size,
 		ExpiresAt: time.Now().Add(h.ttl),
 	})
+}
+
+// chargeBytes takes cost megabytes from the byte quota, writing the response
+// itself when it refuses.
+//
+// Separate from `AuthHandler.allow` because that one always costs exactly one
+// token and never saturates; this is the same fail-closed shape with a cost.
+func (h *BlobsHandler) chargeBytes(
+	w http.ResponseWriter, r *http.Request, subject string, cost int,
+) bool {
+	decision, err := h.auth.limiter.Charge(r.Context(), subject, blobBytesLimit, cost)
+	if err != nil {
+		h.log.ErrorContext(r.Context(), "rate limiter unavailable, refusing",
+			slog.String("route", "blob-bytes"),
+			slog.String("reason", err.Error()))
+		httpx.WriteError(w, http.StatusServiceUnavailable)
+		return false
+	}
+	if !decision.OK {
+		w.Header().Set("Retry-After", strconv.Itoa(int(decision.RetryAfter.Seconds())+1))
+		httpx.WriteError(w, http.StatusTooManyRequests)
+		return false
+	}
+	return true
 }
 
 // download streams a blob back.
@@ -257,8 +310,15 @@ func (h *BlobsHandler) download(w http.ResponseWriter, r *http.Request) {
 func (h *BlobsHandler) delete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	if _, ok := AccountFrom(ctx); !ok {
+	aci, ok := AccountFrom(ctx)
+	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized)
+		return
+	}
+	// Keyed by the caller, like every other limit here. Not by blob id: a
+	// per-id limit is no limit at all when the caller supplies the id, and it
+	// would also create one Redis key per attachment anyone probed.
+	if !h.auth.allow(w, r, "blob-delete", aci.String(), blobDeleteLimit) {
 		return
 	}
 

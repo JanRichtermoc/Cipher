@@ -87,6 +87,23 @@ public enum MessagingError: Error, Equatable, Sendable {
     /// so nothing can be attributed. Should be unreachable; treated as a failure, never as
     /// an unattributed message.
     case unattributableMessage
+    /// This peer's identity key has changed and the user has not accepted the new one, so
+    /// **sending** is refused (locked decision §0.2.1). Receiving is unaffected.
+    ///
+    /// libsignal raises this as `SignalError.untrustedIdentity`, and it used to be rethrown
+    /// verbatim. That was a hole in the module boundary that `verify-api-boundary.sh` cannot
+    /// see: a thrown type does not appear in any signature, so the digester finds nothing —
+    /// yet a caller that wanted to tell "verify the new key" from "the network is down" had to
+    /// `import LibSignalClient` to name the case, which is exactly what AUDIT 5.12 closed.
+    /// Mapping it keeps the original intent, which was that a caller must not be able to
+    /// mistake it for a transport failure and retry.
+    case identityNotAccepted
+    /// The record container could not be read or written. **Distinct from every other failure
+    /// because it is the only transient one**: the receive path must acknowledge a message it
+    /// cannot decrypt (retrying will never succeed, and the relay would retain the ciphertext
+    /// forever), but must *not* acknowledge one it failed to store — that message is still on
+    /// the relay and can be collected again.
+    case storeUnavailable
 }
 
 // MARK: - The messaging API
@@ -157,9 +174,28 @@ extension CryptoEngine {
         } catch let error as MessagingError {
             throw error
         } catch {
+            // An identity refusal here is the *same* decision as the send-side block, arriving
+            // one step earlier, so it must not be flattened into "the bundle was bad": the
+            // caller has to tell "compare a safety number" from "this bundle does not parse".
+            if let mapped = Self.boundaryError(error) { throw mapped }
             CipherLog.session.error("prekey bundle refused")
             throw MessagingError.sessionSetupFailed
         }
+    }
+
+    /// Maps the two library-level failures the app has to be able to name, and only those.
+    ///
+    /// Returns `nil` for anything else, which the caller then handles as it sees fit. Every
+    /// remaining libsignal error still escapes as an opaque `Error` — that is deliberate and
+    /// bounded: no caller pattern-matches one, the receive path treats any unmapped failure as
+    /// permanent for that envelope, and adding a case here means adding a *behaviour* that
+    /// depends on it.
+    private static func boundaryError(_ error: Error) -> MessagingError? {
+        if case SignalError.untrustedIdentity = error { return .identityNotAccepted }
+        if let store = error as? RecordStoreError, case .ioFailure = store {
+            return .storeUnavailable
+        }
+        return nil
     }
 
     /// Whether a session exists with this peer.
@@ -173,18 +209,24 @@ extension CryptoEngine {
 
     /// Encrypts `plaintext` for `peer` and returns an encoded `Envelope` ready to relay.
     ///
-    /// Refuses when the peer's identity key has changed and the user has not accepted it —
-    /// surfaced by libsignal as `SignalError.untrustedIdentity`, deliberately passed through
-    /// unchanged so a caller cannot mistake it for a transport failure and retry.
+    /// Refuses when the peer's identity key has changed and the user has not accepted it, as
+    /// `MessagingError.identityNotAccepted` — a distinct case precisely so a caller cannot
+    /// mistake it for a transport failure and retry. See that case for why it is no longer
+    /// libsignal's own error type.
     public func encrypt(_ plaintext: Data, to peer: PeerAddress) throws -> Data {
         try requireLive()
         let localAddress = try requireLocalAddress()
 
-        let message = try signalEncrypt(
-            message: plaintext,
-            for: try peer.makeProtocolAddress(),
-            localAddress: try localAddress.makeProtocolAddress(),
-            sessionStore: store, identityStore: store, context: NullContext())
+        let message: CiphertextMessage
+        do {
+            message = try signalEncrypt(
+                message: plaintext,
+                for: try peer.makeProtocolAddress(),
+                localAddress: try localAddress.makeProtocolAddress(),
+                sessionStore: store, identityStore: store, context: NullContext())
+        } catch {
+            throw Self.boundaryError(error) ?? error
+        }
 
         let ciphertext = message.serialize()
         guard ciphertext.count <= Envelope.maxCiphertextBytes else {
@@ -234,22 +276,29 @@ extension CryptoEngine {
         let context = NullContext()
 
         let plaintext: Data
-        switch envelope.type {
-        case .preKey:
-            plaintext = try signalDecryptPreKey(
-                message: try PreKeySignalMessage(bytes: envelope.ciphertext),
-                from: address, localAddress: try localAddress.makeProtocolAddress(),
-                sessionStore: store, identityStore: store,
-                preKeyStore: store, signedPreKeyStore: store,
-                kyberPreKeyStore: store, context: context)
-        case .whisper:
-            guard try store.loadSession(for: address, context: context) != nil else {
-                throw MessagingError.noSession
+        do {
+            switch envelope.type {
+            case .preKey:
+                plaintext = try signalDecryptPreKey(
+                    message: try PreKeySignalMessage(bytes: envelope.ciphertext),
+                    from: address, localAddress: try localAddress.makeProtocolAddress(),
+                    sessionStore: store, identityStore: store,
+                    preKeyStore: store, signedPreKeyStore: store,
+                    kyberPreKeyStore: store, context: context)
+            case .whisper:
+                guard try store.loadSession(for: address, context: context) != nil else {
+                    throw MessagingError.noSession
+                }
+                plaintext = try signalDecrypt(
+                    message: try SignalMessage(bytes: envelope.ciphertext),
+                    from: address, to: try localAddress.makeProtocolAddress(),
+                    sessionStore: store, identityStore: store, context: context)
             }
-            plaintext = try signalDecrypt(
-                message: try SignalMessage(bytes: envelope.ciphertext),
-                from: address, to: try localAddress.makeProtocolAddress(),
-                sessionStore: store, identityStore: store, context: context)
+        } catch {
+            // Only the container failure is remapped, because it is the only one the caller
+            // must treat differently — a message that failed to decrypt can never decrypt, and
+            // a message that failed to *store* is still waiting on the relay.
+            throw Self.boundaryError(error) ?? error
         }
 
         // The identity key the session is bound to. Read *after* decryption, so it is the key

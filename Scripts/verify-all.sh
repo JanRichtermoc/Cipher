@@ -47,8 +47,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=11
-[ "$FAST" -eq 1 ] && TOTAL=8
+TOTAL=12
+[ "$FAST" -eq 1 ] && TOTAL=9
 
 step() {
   STEP=$((STEP + 1))
@@ -87,7 +87,19 @@ if grep -rnE '(^|[^A-Za-z_.])(print|NSLog|debugPrint|dump)[[:space:]]*\(' \
 fi
 echo "  ok    no direct print/NSLog in the crypto module"
 
-# --- 4. Relay ---------------------------------------------------------------
+# --- 4. Dependency vulnerabilities ------------------------------------------
+# Next to the supply chain, because it answers the other half of that question:
+# step 1 proves the dependencies are the ones we pinned, this one proves that
+# what we pinned has no known reachable hole. `golang.org/x/text` sat here with a
+# published CVE for two whole phases because nothing asked.
+step "reachable vulnerabilities in the relay dependency tree"
+if [ "$OFFLINE" -eq 1 ]; then
+  echo "  skipped (--offline); this check MUST run before any release"
+else
+  ./Scripts/verify-vulns.sh || fail "a reachable dependency vulnerability (see the output above)"
+fi
+
+# --- 5. Relay ---------------------------------------------------------------
 # Placed here, before anything that invokes xcodebuild, because it takes seconds
 # and the iOS gates take half an hour. A relay defect discovered after a full
 # simulator build is the same defect discovered thirty minutes later.
@@ -98,7 +110,7 @@ echo "  ok    no direct print/NSLog in the crypto module"
 step "relay: build, vet, tests, compose invariants"
 ./Scripts/verify-relay.sh || fail "relay (see docs/BACKEND.md)"
 
-# --- 5. UI honesty and localization drift -----------------------------------
+# --- 6. UI honesty and localization drift -----------------------------------
 # Cipher must not present a control implying protection it does not provide, in any
 # language. See Scripts/verify-localization.py for what it checks and why.
 #
@@ -110,14 +122,14 @@ step "UI honesty and localization drift"
 ./Scripts/verify-localization.py --self-test || fail "the localization gate cannot be trusted"
 ./Scripts/verify-localization.py || fail "a retired claim is rendered, or the string catalog has drifted (docs/AUDIT.md 5.4, 5.11)"
 
-# --- 6. Module boundary -----------------------------------------------------
+# --- 7. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
 ./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
 
-# --- 7. Crypto tests --------------------------------------------------------
+# --- 8. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -180,7 +192,7 @@ grep -q "SessionCredentialTests" "$LOG" ||
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
-# --- 8. App builds ----------------------------------------------------------
+# --- 9. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -193,7 +205,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 9. Release device build ------------------------------------------------
+# --- 10. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then
@@ -209,7 +221,7 @@ if [ "$FAST" -eq 0 ]; then
     fail "Release device build"
   echo "  ok    release arm64 builds"
 
-  # --- 8. No debug affordance survives into a shipping bundle ----------------
+  # --- 11. No debug affordance survives into a shipping bundle ---------------
   # Fencing the *buttons* that drive a debug switch is not the same as fencing the switch:
   # `debugSkipToMain` was a live authentication bypass in Release for exactly that reason
   # (AUDIT 5.6). This asserts against the built artifact, which is the only place the
@@ -223,21 +235,32 @@ if [ "$FAST" -eq 0 ]; then
   APP="$(ls -d "$HOME/Library/Developer/Xcode/DerivedData/Cipher-"*/Build/Products/Release-iphoneos/Cipher.app 2>/dev/null | head -1)"
   [ -n "$APP" ] && [ -d "$APP" ] || fail "could not locate the Release bundle to audit"
 
+  # A positive control, first. Every check below is "grep found nothing", and "found nothing"
+  # is also what a broken search looks like — a wrong path, a bundle that never built, a
+  # `grep` that cannot read the file. This asserts the search *can* see a symbol that is
+  # definitely there, so the all-clear below means something. See AUDIT R2.
+  if ! grep -rlaF "ChatsListView" "$APP" >/dev/null 2>&1; then
+    fail "the Release bundle audit found no ChatsListView — the search itself is broken, so its all-clear would be meaningless"
+  fi
+
   leaked=0
   for sym in \
     debugSkipToMain resetDemoState UICatalogView NewGroupView createGroup \
+    CallsListView ActiveCallView IncomingCallView AttachmentSheet GroupInfoView \
+    MediaGalleryGrid previewCalls previewChatID \
     "Skip to App" "Unlock & Show Main" "Demo Controls" "UI Catalog" "Reset Onboarding" \
-    "Leave & Reset Demo"; do
+    "Leave & Reset Demo" "Simulate incoming call" "Hold to record" \
+    "Recording… release to cancel"; do
     # -a: treat every file as text, so Mach-O, Assets.car and .strings are all searched.
     if hits="$(grep -rlaF "$sym" "$APP" 2>/dev/null)" && [ -n "$hits" ]; then
       echo "  !     '$sym' is present in: $(printf '%s\n' "$hits" | sed "s|$APP/||" | tr '\n' ' ')"
       leaked=1
     fi
   done
-  [ "$leaked" -eq 0 ] || fail "a debug affordance ships in Release (AUDIT 5.6, 5.11)"
+  [ "$leaked" -eq 0 ] || fail "a debug affordance ships in Release (AUDIT 5.6, 5.11, 5.19)"
   echo "  ok    no debug affordance anywhere in the Release bundle"
 
-  # --- 9. Required-reason APIs are declared ----------------------------------
+  # --- 12. Required-reason APIs are declared ---------------------------------
   # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol
   # surface ships whether Cipher calls it or not — a required-reason API can appear with no
   # source change on our side, and the first sign would otherwise be App Review.

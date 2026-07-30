@@ -51,6 +51,7 @@ struct InviteCodeView: View {
     @State private var errorMessage: String?
 
     @Environment(AppSession.self) private var session
+    @Environment(ConversationStore.self) private var store
 
     /// Whether the button is *offered*, not whether the code is valid.
     ///
@@ -137,9 +138,20 @@ struct InviteCodeView: View {
         defer { isRedeeming = false }
 
         do {
-            let engine = try await CryptoEngine.open()
+            // The store owns the engine: two `CryptoEngine.open()` calls would each build their
+            // own record store over the same container and the same Keychain key, with no
+            // coordination between them — the shape of a lost write.
+            let engine = try await store.engine()
             let redeemed = try await InviteRedemption().redeem(code: code, using: engine)
             try session.signIn(with: redeemed.credential)
+
+            // **The ACI was previously dropped on the floor here.** Redemption returned the
+            // address the relay had assigned and nothing recorded it, so the installation had a
+            // valid session and no identity it could send from or be addressed at. Adopting it
+            // and publishing prekeys is what makes the account reachable, and it happens after
+            // `signIn` because publishing needs the token that call just stored.
+            await store.register(aci: redeemed.aci)
+
             onContinue()
         } catch let failure as InviteRedemption.Failure {
             // The relay does not distinguish unknown from spent from expired, and neither does
@@ -310,12 +322,15 @@ struct AppLockView: View {
     }
 }
 
+#if DEBUG
 #Preview("Auth") {
     AuthFlowView()
         .environment(AppSession())
+        .environment(ConversationStore.preview())
 }
 
 #Preview("Lock") {
     AppLockView()
         .environment(AppSession())
 }
+#endif

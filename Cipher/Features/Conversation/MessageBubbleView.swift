@@ -92,11 +92,17 @@ struct MessageBubbleView: View {
         }
         .contextMenu {
             Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
+            // Reactions have no wire representation: `MessagePayload` carries text and nothing
+            // else, so a reaction would render on this device and never reach the peer — a
+            // local decoration presented as something they can see. The picker stays for the
+            // phase that adds the payload type.
+            #if DEBUG
             Menu("React", systemImage: "face.smiling") {
                 ForEach(reactionChoices, id: \.self) { emoji in
                     Button(emoji) { onReact(emoji) }
                 }
             }
+            #endif
             Button("Copy", systemImage: "doc.on.doc") {
                 if case .text(let t) = message.kind {
                     // Not `UIPasteboard.general.string = t` — that syncs a decrypted
@@ -191,28 +197,6 @@ struct MessageBubbleView: View {
             Image(systemName: "checkmark")
                 .font(.caption2)
                 .foregroundStyle(.secondary)
-        case .delivered:
-            Image(systemName: "checkmark")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(.secondary)
-                .overlay(alignment: .trailing) {
-                    Image(systemName: "checkmark")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(.secondary)
-                        .offset(x: 4)
-                }
-                .padding(.trailing, 4)
-        case .read:
-            Image(systemName: "checkmark")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(CipherTheme.accent)
-                .overlay(alignment: .trailing) {
-                    Image(systemName: "checkmark")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(CipherTheme.accent)
-                        .offset(x: 4)
-                }
-                .padding(.trailing, 4)
         case .failed:
             Image(systemName: "exclamationmark.circle.fill")
                 .font(.caption2)

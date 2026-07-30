@@ -84,6 +84,7 @@ const tokenBucket = `
 local capacity   = tonumber(ARGV[1])
 local window_ms  = tonumber(ARGV[2])
 local cost       = tonumber(ARGV[3])
+local saturate   = tonumber(ARGV[4])
 
 local time  = redis.call('TIME')
 local now   = (tonumber(time[1]) * 1000) + math.floor(tonumber(time[2]) / 1000)
@@ -106,10 +107,20 @@ if elapsed > 0 then
   ts     = now
 end
 
-local allowed = 0
+local allowed  = 0
+local retry_ms = 0
 if tokens >= cost then
   tokens  = tokens - cost
   allowed = 1
+else
+  retry_ms = math.ceil(((cost - tokens) * window_ms) / capacity)
+  -- Saturating mode: take what is left rather than nothing. See Charge — a
+  -- refusal that deducts zero would let a caller exceed a *measured* quota
+  -- repeatedly, because every subsequent check would find the bucket exactly as
+  -- full as it was before the overrun.
+  if saturate == 1 then
+    tokens = 0
+  end
 end
 
 redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', ts)
@@ -118,11 +129,6 @@ redis.call('HSET', KEYS[1], 'tokens', tokens, 'ts', ts)
 -- refilled completely, so its state is indistinguishable from absent and
 -- keeping it would only retain the fact that this subject made a request.
 redis.call('PEXPIRE', KEYS[1], window_ms)
-
-local retry_ms = 0
-if allowed == 0 then
-  retry_ms = math.ceil(((cost - tokens) * window_ms) / capacity)
-end
 
 return {allowed, math.floor(tokens), retry_ms}
 `
@@ -182,15 +188,54 @@ func (l *Limiter) Subject(kind, value string) string {
 // that switches itself off under load is not a limit; it is a limit with a
 // documented bypass.
 func (l *Limiter) Allow(ctx context.Context, subject string, limit Limit) (Decision, error) {
+	return l.run(ctx, subject, limit, 1, false)
+}
+
+// Charge deducts cost tokens, taking whatever is left when the bucket holds
+// fewer than that.
+//
+// # Why saturating, and why that is not the same as Allow
+//
+// `Allow` deducts nothing when it refuses, which is right for a request that is
+// then not served: the caller got no work out of it. It is wrong for charging a
+// cost that has *already been incurred* — the blob byte quota, where the size is
+// not known until the upload has finished. A non-deducting refusal there is a
+// quota that never binds: the bucket ends every overrun exactly as full as it
+// started, so the next upload is permitted, and the next, bounded only by the
+// separate count limit. That was AUDIT 5.22.
+//
+// So a refusal here still empties the bucket, and `OK` reports whether the whole
+// cost fitted. A caller that has already done the work uses the deduction and
+// treats `OK` false as "this subject is now over quota"; the next check refuses.
+//
+// cost 0 is a peek: nothing is deducted and `Remaining` reports the balance.
+func (l *Limiter) Charge(
+	ctx context.Context, subject string, limit Limit, cost int,
+) (Decision, error) {
+	if cost < 0 {
+		return Decision{}, errors.New("ratelimit: cost must not be negative")
+	}
+	return l.run(ctx, subject, limit, cost, true)
+}
+
+func (l *Limiter) run(
+	ctx context.Context, subject string, limit Limit, cost int, saturate bool,
+) (Decision, error) {
 	if err := limit.Validate(); err != nil {
 		return Decision{}, err
+	}
+
+	saturating := 0
+	if saturate {
+		saturating = 1
 	}
 
 	raw, err := l.script.Run(ctx, l.rdb,
 		[]string{subject},
 		limit.Capacity,
 		limit.Window.Milliseconds(),
-		1, // cost
+		cost,
+		saturating,
 	).Slice()
 	if err != nil {
 		return Decision{}, fmt.Errorf("ratelimit: %w", err)

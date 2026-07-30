@@ -188,8 +188,10 @@ struct PermissionsView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     OnboardingFlowView()
         .environment(AppSession())
-        .environment(MockStore())
+        .environment(ConversationStore.preview())
 }
+#endif

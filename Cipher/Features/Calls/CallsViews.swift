@@ -5,15 +5,25 @@
 
 import SwiftUI
 
+// Calls do not exist. There is no signalling, no media transport, and nothing in `Envelope` that
+// could carry either — so every screen in this file depicts a capability the build does not have,
+// and until P5.S10 the list was populated with fabricated call history. The whole file is
+// DEBUG-only on the same grounds as group creation (AUDIT 5.5). Note that the fence is not the
+// only thing holding it back: the fixtures it renders are DEBUG-only too, so un-fencing this
+// file does not compile in Release rather than shipping a fake call log.
+#if DEBUG
+
 struct CallsListView: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     @State private var activeCall: ActiveCallPresentation?
     @State private var showIncomingDemo = false
+
+    private var calls: [CallRecord] { store.previewCalls }
 
     var body: some View {
         NavigationStack {
             Group {
-                if store.calls.isEmpty {
+                if calls.isEmpty {
                     EmptyStateView(
                         systemImage: "phone",
                         title: "No Recent Calls",
@@ -22,7 +32,7 @@ struct CallsListView: View {
                 } else {
                     ScrollView {
                         LazyVStack(spacing: 0) {
-                            ForEach(Array(store.calls.enumerated()), id: \.element.id) { index, call in
+                            ForEach(Array(calls.enumerated()), id: \.element.id) { index, call in
                                 Button {
                                     if let contact = store.contact(id: call.contactID) {
                                         activeCall = ActiveCallPresentation(contact: contact, kind: call.kind, mode: .outgoing)
@@ -35,12 +45,7 @@ struct CallsListView: View {
                                         .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .contextMenu {
-                                    Button("Delete", systemImage: "trash", role: .destructive) {
-                                        store.calls.removeAll { $0.id == call.id }
-                                    }
-                                }
-                                if index < store.calls.count - 1 {
+                                if index < calls.count - 1 {
                                     Divider()
                                         .padding(.leading, 16 + CipherTheme.avatarM + CipherTheme.spacingM)
                                 }
@@ -294,7 +299,11 @@ struct IncomingCallView: View {
     }
 }
 
+#endif
+
+#if DEBUG
 #Preview {
     CallsListView()
-        .environment(MockStore())
+        .environment(ConversationStore.preview())
 }
+#endif

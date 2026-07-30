@@ -30,6 +30,10 @@ internal enum RecordKind: String, CaseIterable, Sendable {
     case baseKeyWitness = "base-key-witness"
     /// Small counters and flags owned by this module.
     case metadata
+    /// Application records — conversations and message bodies (P5.S10). Sealed and destroyed
+    /// exactly like everything above, which is the whole reason they live here rather than in
+    /// a second store the app would have to key separately. See `SealedAppStore.swift`.
+    case appData = "app-data"
 }
 
 /// A synchronous, namespaced blob store.

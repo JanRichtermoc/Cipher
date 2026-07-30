@@ -52,7 +52,25 @@ CRYPTO_COMMON = {
   'GCC_TREAT_WARNINGS_AS_ERRORS'        => 'YES',
   'CLANG_ENABLE_MODULES'                => 'YES',
   'SWIFT_ENABLE_EXPLICIT_MODULES'       => 'NO',
-  'ENABLE_USER_SCRIPT_SANDBOXING'       => 'NO',
+  # Sandboxed here, and asserted rather than inherited (security audit L-04).
+  #
+  # CocoaPods needs this OFF, which is AUDIT 1.5 — but it used to be switched off
+  # for *everything*, and the exemption is only actually needed by targets that
+  # **embed** the pod framework: `[CP] Embed Pods Frameworks` shells out to
+  # `rsync`, and sandboxed that fails with `deny(1) file-write-unlink` on
+  # `LibSignalClient.framework/Info.plist`. Measured, target by target, not
+  # reasoned about — see TEST_SETTINGS and the app-target block for the three
+  # that must keep the exemption and why.
+  #
+  # `CipherCrypto` links the framework without embedding it, so it is the one
+  # target that can be sandboxed, and it is the one that matters most: it is where
+  # the identity key and the record store live.
+  #
+  # Set to YES explicitly instead of being omitted: this generator overwrites named
+  # keys and never removes them, so a value dropped from this table survives in the
+  # project file from the last run that wrote it. That is AUDIT 6.11 in the other
+  # direction, and is exactly how a "removed" setting stays live.
+  'ENABLE_USER_SCRIPT_SANDBOXING'       => 'YES',
   'TARGETED_DEVICE_FAMILY'              => '1',
   'CODE_SIGN_STYLE'                     => 'Automatic',
   'DEVELOPMENT_TEAM'                    => TEAM,
@@ -72,6 +90,16 @@ FRAMEWORK_SETTINGS = CRYPTO_COMMON.merge(
 ).freeze
 
 TEST_SETTINGS = CRYPTO_COMMON.merge(
+  # A test bundle embeds the pod framework into its own .xctest, so it runs the
+  # same rsync-based embed phase the app does and cannot be sandboxed either:
+  #
+  #   Sandbox: rsync(...) deny(1) file-write-create
+  #     .../CipherCryptoTests.xctest/Frameworks/LibSignalClient.framework/...
+  #
+  # Kept as an explicit override rather than by omitting the key from
+  # CRYPTO_COMMON, so the difference between the framework target and the test
+  # bundles is stated where a reader will look for it.
+  'ENABLE_USER_SCRIPT_SANDBOXING'       => 'NO',
   'PRODUCT_NAME'                        => TEST_TARGET,
   'PRODUCT_BUNDLE_IDENTIFIER'           => "cz.janrichtermoc.#{TEST_TARGET}",
   'LD_RUNPATH_SEARCH_PATHS'             => ['$(inherited)', '@executable_path/Frameworks',
@@ -104,6 +132,11 @@ TEST_SETTINGS = CRYPTO_COMMON.merge(
 # app lock, and keeping the dependency out means a break there cannot be mistaken for a
 # crypto failure.
 APP_TEST_SETTINGS = {
+  # Same reason as TEST_SETTINGS: this bundle embeds the pod framework, so its
+  # `[CP] Embed Pods Frameworks` phase runs rsync and cannot be sandboxed. Stated
+  # here as well as there because these two hashes do not share a base, and a
+  # setting that is only correct in one of them is the drift AUDIT 6.11 records.
+  'ENABLE_USER_SCRIPT_SANDBOXING'       => 'NO',
   'PRODUCT_NAME'                        => APP_TEST_TARGET,
   'PRODUCT_BUNDLE_IDENTIFIER'           => "cz.janrichtermoc.#{APP_TEST_TARGET}",
   'SWIFT_VERSION'                       => '6.0',
@@ -238,6 +271,23 @@ app.build_configurations.each do |config|
   config.build_settings['SWIFT_VERSION']             = '6.0'
   config.build_settings['SWIFT_STRICT_CONCURRENCY']  = 'complete'
   config.build_settings['SWIFT_APPROACHABLE_CONCURRENCY'] = 'YES'
+
+  # The app target is the ONE that cannot be sandboxed, and this is measured
+  # rather than assumed (security audit L-04).
+  #
+  # CocoaPods' `[CP] Embed Pods Frameworks` phase belongs to *this* target and
+  # shells out to `rsync` to copy LibSignalClient.framework into the bundle.
+  # Sandboxed, that fails:
+  #
+  #   Sandbox: rsync(...) deny(1) file-write-unlink
+  #     .../Cipher.app/Frameworks/LibSignalClient.framework/Info.plist
+  #
+  # There is no narrower exemption available — the setting is per target, not per
+  # phase — so this one stays off while `CRYPTO_COMMON` keeps the other three
+  # targets and the project default sandboxed. Partial, and worth more than
+  # nothing: the reach it grants is bounded to a phase whose script CocoaPods
+  # generates and `Pods/` puts in the diff (AUDIT 1.7).
+  config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
 end
 puts "#{APP_TARGET}: Swift 6, strict concurrency complete"
 
@@ -354,6 +404,18 @@ end
 app.build_configurations.each do |config|
   config.build_settings['TARGETED_DEVICE_FAMILY'] = '1'
 end
+
+# ---------------------------------------------------------------------------
+# Project-level script sandboxing
+# ---------------------------------------------------------------------------
+# The four targets above set this themselves, but the *project* default matters
+# too: it is what a target added later inherits, and CocoaPods used to write NO
+# here for the whole project. Asserted rather than left alone, so the sandboxed
+# default is the one a new target starts from.
+project.build_configurations.each do |config|
+  config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'YES'
+end
+puts 'project: user script sandboxing on (pods keep their own exemption)'
 
 project.save
 puts "saved #{PROJECT_PATH}"

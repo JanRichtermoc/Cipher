@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct ConversationView: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     let chatID: UUID
 
     @State private var draft = ""
@@ -16,8 +16,10 @@ struct ConversationView: View {
     @State private var showForward = false
     @State private var forwardingMessage: Message?
     @State private var mediaMessage: Message?
+    #if DEBUG
     @State private var showCall = false
     @State private var callKind: CallRecord.CallKind = .audio
+    #endif
 
     var body: some View {
         Group {
@@ -60,15 +62,17 @@ struct ConversationView: View {
                                     message: message,
                                     replyPreview: replyText(for: message),
                                     onReply: { replyTo = message },
-                                    onReact: { emoji in
-                                        store.addReaction(emoji, to: message.id)
-                                        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                                    onReact: { _ in
+                                        // Reactions have no wire representation; the picker that
+                                        // calls this is DEBUG-only. See MessageBubbleView.
                                     },
                                     onForward: {
                                         forwardingMessage = message
                                         showForward = true
                                     },
-                                    onDelete: { store.deleteMessage(message.id) },
+                                    onDelete: {
+                                        Task { await store.deleteMessage(message.id, in: chatID) }
+                                    },
                                     onOpenMedia: {
                                         mediaMessage = message
                                     }
@@ -76,15 +80,6 @@ struct ConversationView: View {
                                 .id(message.id)
                                 .padding(.horizontal, CipherTheme.spacingM)
                             }
-                        }
-
-                        if store.typingChatIDs.contains(chatID) {
-                            HStack {
-                                TypingIndicatorView()
-                                Spacer()
-                            }
-                            .padding(.horizontal, CipherTheme.spacingM)
-                            .id("typing")
                         }
 
                         Color.clear
@@ -97,9 +92,9 @@ struct ConversationView: View {
                 .background(.clear)
                 .scrollDismissesKeyboard(.interactively)
                 .onAppear {
-                    store.markRead(chatID: chatID)
                     proxy.scrollTo("bottom", anchor: .bottom)
                 }
+                .task(id: chatID) { await store.markRead(chatID: chatID) }
                 .onChange(of: messages.count) { _, _ in
                     withAnimation {
                         proxy.scrollTo("bottom", anchor: .bottom)
@@ -115,6 +110,7 @@ struct ConversationView: View {
                 )
             }
         }
+        .safeAreaInset(edge: .top) { MessagingFailureBanner() }
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
@@ -124,14 +120,17 @@ struct ConversationView: View {
                         Text(chat.title).font(.headline)
                         if chat.isVerified { VerifiedBadge(compact: true) }
                     }
+                    // No presence: nothing on the wire reports whether a peer is online, so
+                    // there is nothing here but the disappearing-message timer when it is set.
                     if let seconds = chat.disappearingSeconds {
                         DisappearingTimerBadge(seconds: seconds)
-                    } else if let contact = store.otherParticipant(in: chat), contact.isOnline {
-                        Text("Online").font(.caption2).foregroundStyle(.secondary)
                     }
                 }
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
+                // Calls are DEBUG-only: there is no signalling and no media path, so a phone
+                // button in a shipping build is a control that cannot do what it depicts.
+                #if DEBUG
                 Button {
                     callKind = .audio
                     showCall = true
@@ -147,6 +146,7 @@ struct ConversationView: View {
                     Image(systemName: "video")
                 }
                 .accessibilityLabel("Video call")
+                #endif
 
                 Button {
                     showInfo = true
@@ -158,17 +158,25 @@ struct ConversationView: View {
         }
         .sheet(isPresented: $showInfo) {
             NavigationStack {
+                // No production conversation is a group (AUDIT 3.7), so the group screen exists
+                // only where the DEBUG fixtures can reach it.
+                #if DEBUG
                 if chat.isGroup {
                     GroupInfoView(chatID: chatID)
                 } else {
                     ChatInfoView(chatID: chatID)
                 }
+                #else
+                ChatInfoView(chatID: chatID)
+                #endif
             }
         }
+        #if DEBUG
         .sheet(isPresented: $showAttach) {
             AttachmentSheet()
                 .presentationDetents([.medium])
         }
+        #endif
         .sheet(isPresented: $showForward) {
             ForwardMessageView(message: forwardingMessage) {
                 showForward = false
@@ -177,6 +185,7 @@ struct ConversationView: View {
         .fullScreenCover(item: $mediaMessage) { message in
             MediaViewer(message: message)
         }
+        #if DEBUG
         .fullScreenCover(isPresented: $showCall) {
             if let contact = store.otherParticipant(in: chat) ?? store.contacts.first {
                 ActiveCallView(contact: contact, kind: callKind, mode: .outgoing) {
@@ -184,13 +193,17 @@ struct ConversationView: View {
                 }
             }
         }
+        #endif
     }
 
     private func send() {
-        store.sendText(draft, to: chatID, replyTo: replyTo?.id)
+        let outgoing = draft
+        // Cleared before the await, so the composer empties immediately and a second tap cannot
+        // send the same text twice while the first attempt is in flight.
         draft = ""
         replyTo = nil
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+        Task { await store.send(outgoing, to: chatID) }
     }
 
     private func preview(for message: Message) -> String {
@@ -207,7 +220,7 @@ struct ConversationView: View {
 
     private func replyText(for message: Message) -> String? {
         guard let replyID = message.replyToID,
-              let original = store.messages.first(where: { $0.id == replyID }) else { return nil }
+              let original = store.message(id: replyID, in: chatID) else { return nil }
         return preview(for: original)
     }
 
@@ -225,6 +238,11 @@ struct ConversationView: View {
     }
 }
 
+// Attachments have no client path: the relay's blob endpoints exist (P4.S08) but nothing here
+// uploads, encrypts, or references one, and `MessagePayload` carries text only. The sheet listed
+// five sources and dismissed — five controls that did nothing — so it is DEBUG-only until the
+// payload type and the upload exist.
+#if DEBUG
 struct AttachmentSheet: View {
     @Environment(\.dismiss) private var dismiss
 
@@ -259,10 +277,13 @@ struct AttachmentSheet: View {
         }
     }
 }
+#endif
 
+#if DEBUG
 #Preview {
     NavigationStack {
-        ConversationView(chatID: UUID(uuidString: "10000000-0000-0000-0000-000000000001")!)
+        ConversationView(chatID: ConversationStore.previewChatID)
     }
-    .environment(MockStore())
+    .environment(ConversationStore.preview())
 }
+#endif

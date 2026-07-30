@@ -7,7 +7,7 @@ import SwiftUI
 
 #if DEBUG
 struct UICatalogView: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     @Environment(AppSession.self) private var session
 
     var body: some View {

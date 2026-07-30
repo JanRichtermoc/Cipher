@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct ChatsListView: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     @State private var filter: ChatFilter = .all
     @State private var path = NavigationPath()
     @State private var showNewMessage = false
@@ -55,16 +55,19 @@ struct ChatsListView: View {
                                 .buttonStyle(.plain)
                                 .contextMenu {
                                     Button(chat.isPinned ? "Unpin" : "Pin", systemImage: chat.isPinned ? "pin.slash" : "pin") {
-                                        store.togglePin(chatID: chat.id)
+                                        Task { await store.togglePin(chatID: chat.id) }
                                     }
                                     Button(chat.isMuted ? "Unmute" : "Mute", systemImage: chat.isMuted ? "bell" : "bell.slash") {
-                                        store.toggleMute(chatID: chat.id)
+                                        Task { await store.toggleMute(chatID: chat.id) }
                                     }
                                     Button("Mark Unread", systemImage: "message.badge") {
-                                        store.markUnread(chatID: chat.id)
+                                        Task { await store.markUnread(chatID: chat.id) }
                                     }
+                                    // Deletes this device's copy and nothing else. The peer keeps
+                                    // theirs, and the relay has already forgotten anything that
+                                    // was delivered — there is no "delete for everyone".
                                     Button("Delete", systemImage: "trash", role: .destructive) {
-                                        store.deleteChat(chatID: chat.id)
+                                        Task { await store.deleteChat(chatID: chat.id) }
                                     }
                                 }
                                 if index < filteredChats.count - 1 {
@@ -77,6 +80,8 @@ struct ChatsListView: View {
                     }
                 }
             }
+            .safeAreaInset(edge: .top) { MessagingFailureBanner() }
+            .refreshable { await store.receive() }
             .navigationTitle("Chats")
             .navigationDestination(for: UUID.self) { chatID in
                 if store.chat(id: chatID) != nil {
@@ -229,16 +234,18 @@ struct ChatRowView: View {
     }
 }
 
+#if DEBUG
 #Preview("Chats Light") {
     ChatsListView()
         .environment(AppSession())
-        .environment(MockStore())
+        .environment(ConversationStore.preview())
         .preferredColorScheme(.light)
 }
 
 #Preview("Chats Dark") {
     ChatsListView()
         .environment(AppSession())
-        .environment(MockStore())
+        .environment(ConversationStore.preview())
         .preferredColorScheme(.dark)
 }
+#endif

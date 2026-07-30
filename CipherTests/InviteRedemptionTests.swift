@@ -103,7 +103,7 @@ struct InviteRedemptionTests {
         // assertion that separates a real session from the DEBUG development credential.
         #expect(redeemed.credential.origin == .serverIssued)
         #expect(!redeemed.credential.token.isEmpty)
-        #expect(redeemed.aci == "3f2b1c4d-0000-4000-8000-000000000001")
+        #expect(redeemed.aci == UUID(uuidString: "3f2b1c4d-0000-4000-8000-000000000001"))
     }
 
     @Test("the request carries the real identity key and registration id, in the relay's shape")
@@ -196,6 +196,23 @@ struct InviteRedemptionTests {
     func emptyACIIsNotASession() async throws {
         StubRelay.reset([.init(status: 200, json: """
         {"aci":"","token":"opaque-server-issued-token",\
+        "token_expires_at":"2026-08-30T12:00:00.000Z"}
+        """)])
+
+        await #expect(throws: InviteRedemption.Failure.malformedResponse) {
+            try await InviteRedemption(client: stubbedClient())
+                .redeem(code: "GOOD", using: try await engine())
+        }
+    }
+
+    @Test("a 200 with a non-UUID aci does not authenticate")
+    func nonUUIDACIIsNotASession() async throws {
+        // P5.S10 made `aci` a `UUID`, because it is adopted as this installation's address. A
+        // relay answering with something that is not one must be a refused redemption: the
+        // alternative is an account that holds a valid token and can never send, which looks
+        // like a messaging bug rather than a registration failure. Varies only this field.
+        StubRelay.reset([.init(status: 200, json: """
+        {"aci":"not-a-uuid","token":"opaque-server-issued-token",\
         "token_expires_at":"2026-08-30T12:00:00.000Z"}
         """)])
 

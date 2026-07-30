@@ -46,6 +46,13 @@ __pycache__/
 # macOS
 .DS_Store
 
+# Per-developer AI agent tooling. Local wiring (which MCP server to launch), not
+# project source, and it differs per machine and per tool. Ignored rather than
+# left untracked because `git add -A` is a step in the pre-commit secret scan
+# (AGENT_HANDOFF.md §7), so anything untracked gets staged by whoever runs it
+# next. The contract an agent works to IS committed: docs/AGENT_HANDOFF.md.
+.codex/
+
 # Relay secrets. server/.env holds the Postgres and Redis passwords; server/.env.example
 # is the tracked template and holds none.
 #

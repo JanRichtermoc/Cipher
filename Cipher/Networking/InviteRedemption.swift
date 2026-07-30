@@ -67,7 +67,12 @@ nonisolated struct InviteRedemption: Sendable {
     struct Redeemed: Sendable {
         /// This account's identifier on the relay. Not a secret; peers learn it to fetch a
         /// prekey bundle.
-        let aci: String
+        ///
+        /// A `UUID`, not a `String`, since P5.S10: it is adopted as this installation's
+        /// `PeerAddress` and every use of it downstream requires a UUID. Parsing it here means a
+        /// relay that answers with a non-UUID is a refused redemption rather than an account that
+        /// authenticates and then cannot send.
+        let aci: UUID
         let expiresAt: Date
         /// Marked `.serverIssued`, which is the only origin a Release build will read back.
         let credential: SessionCredential
@@ -141,11 +146,11 @@ nonisolated struct InviteRedemption: Sendable {
         }
 
         guard let token = decoded.token.data(using: .utf8), !token.isEmpty,
-              !decoded.aci.isEmpty else {
+              let aci = UUID(uuidString: decoded.aci) else {
             throw Failure.malformedResponse
         }
 
-        return Redeemed(aci: decoded.aci,
+        return Redeemed(aci: aci,
                         expiresAt: decoded.tokenExpiresAt,
                         credential: SessionCredential(token: token,
                                                       issuedAt: Date(),

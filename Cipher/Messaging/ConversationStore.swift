@@ -1,0 +1,497 @@
+//
+//  ConversationStore.swift
+//  Cipher
+//
+//  Copyright (C) 2026 Jan Richter
+//  SPDX-License-Identifier: AGPL-3.0-only
+//
+
+import CipherCrypto
+import Foundation
+import SwiftUI
+
+/// What the screens read. The production replacement for `MockStore`.
+///
+/// `MockStore` was an array of plaintext fixtures with hardcoded names, hardcoded verification
+/// flags, and a `sendText` that appended a struct — AUDIT 5.3. Every view in the app read it, so
+/// "the UI is not wired to the crypto" was not a missing feature but the entire architecture.
+/// This type presents the same shapes (`Chat`, `Message`, `Contact`) so the views did not have
+/// to be rewritten, and derives every one of them from the sealed archive and the relay.
+///
+/// ## What it deliberately cannot show
+///
+/// - **A verified badge.** Verification does not exist until P5.S12, so `Chat.isVerified` is
+///   always false here and `VerificationDisplay` gates the badge anyway. Deriving it from
+///   anything currently available would be inventing it.
+/// - **A display name it was not given.** There is no directory and no server-side profile
+///   (`BACKEND.md` §2.1, `THREAT_MODEL.md` §3.4), so a peer is shown by a short form of their
+///   Cipher ID until the user names them locally. A name the app made up would be worse.
+/// - **Online state, typing state, delivery or read receipts.** None of them exist on the wire.
+///   `Contact.isOnline` is always false rather than randomised for effect.
+///
+/// ## Failures are surfaced, never swallowed
+///
+/// Every operation records `failure` on the way out. A messenger that silently drops a send is
+/// indistinguishable from one that delivered it, and the user acts on that difference.
+@MainActor
+@Observable
+final class ConversationStore {
+
+    // MARK: - Observable state
+
+    private(set) var chats: [Chat] = []
+    /// One per conversation. There is no contact list independent of conversations, because
+    /// there is nowhere to get one from.
+    private(set) var contacts: [Contact] = []
+    private(set) var blockedContactIDs: Set<UUID> = []
+    /// This installation's own ACI, once it has adopted one.
+    private(set) var localAci: UUID?
+    /// The last operation's failure, or nil. Cleared by the next successful operation.
+    private(set) var failure: MessageRepository.Failure?
+    /// True while a fetch or send is in flight, so the UI can say so rather than look frozen.
+    private(set) var isSyncing = false
+
+    private var messagesByChat: [UUID: [Message]] = [:]
+
+    var currentUserID: UUID { localAci ?? Self.unregisteredPlaceholder }
+
+    /// Stands in for "this device has no address yet", so `Chat.participantIDs` is never empty
+    /// and the views have something to compare against. Never sent anywhere.
+    private static let unregisteredPlaceholder = UUID(
+        uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    // MARK: - Dependencies
+
+    /// Memoised as a `Task` rather than a stored value: opening the engine is async and
+    /// throwing, and two screens asking at once must get the same engine. Two `CryptoEngine`
+    /// instances over one container would each hold their own record store — same key, same
+    /// files, no coordination — which is the shape of a lost write.
+    private var engineTask: Task<CryptoEngine, Error>?
+    private var repositoryTask: Task<MessageRepository, Error>?
+
+    /// DEBUG previews build a store with fixtures and no engine at all. In a Release build this
+    /// is always false, and there is no code path that populates state without the archive.
+    private let isPreviewOnly: Bool
+
+    init() {
+        isPreviewOnly = false
+    }
+
+    #if DEBUG
+    /// Preview / test construction: state is set directly and nothing touches the Keychain, the
+    /// container, or the network.
+    init(previewChats: [Chat], previewMessages: [UUID: [Message]], previewContacts: [Contact]) {
+        isPreviewOnly = true
+        chats = previewChats
+        messagesByChat = previewMessages
+        contacts = previewContacts
+        localAci = UUID(uuidString: "00000000-0000-0000-0000-0000000000aa")!
+    }
+    #endif
+
+    /// Opens the engine, once, and hands the same one to every caller.
+    ///
+    /// A **failed** open is not memoised. Caching the failure would poison the store for the
+    /// lifetime of the process: opening touches the Keychain and the container, so a first attempt
+    /// before the device has been unlocked can fail transiently, and the app would then be
+    /// permanently unable to message with nothing but a stale error to show for it.
+    func engine() async throws -> CryptoEngine {
+        if let engineTask { return try await engineTask.value }
+        let task = Task { try await CryptoEngine.open() }
+        engineTask = task
+        do {
+            return try await task.value
+        } catch {
+            engineTask = nil
+            throw error
+        }
+    }
+
+    private func repository() async throws -> MessageRepository {
+        if let repositoryTask { return try await repositoryTask.value }
+        let task = Task { [self] in MessageRepository(engine: try await engine()) }
+        repositoryTask = task
+        do {
+            return try await task.value
+        } catch {
+            repositoryTask = nil
+            throw error
+        }
+    }
+
+    // MARK: - Lifecycle
+
+    /// Called when the app reaches the main UI, and on every return to the foreground.
+    ///
+    /// Order matters: finish any outstanding registration first — an installation whose keys
+    /// never published cannot receive a first message from anyone — then load what is on disk so
+    /// the UI is populated before the network is touched, then collect what is waiting.
+    func start() async {
+        guard !isPreviewOnly else { return }
+
+        if let repository = try? await repository() {
+            do {
+                try await repository.resumeRegistration()
+            } catch MessageRepository.Failure.notRegistered {
+                // Signed in but never registered: only reachable if redemption stored a
+                // credential and then failed before adopting the address. Nothing to do here —
+                // the ACI is not recoverable from the credential, and re-redeeming is the fix.
+                record(.notRegistered)
+            } catch {
+                record(error)
+            }
+        }
+
+        await refresh()
+        await receive()
+    }
+
+    /// Reloads conversations and messages from the sealed archive. No network.
+    func refresh() async {
+        guard !isPreviewOnly else { return }
+
+        do {
+            let repository = try await repository()
+            let aci = await repository.localAci()
+            let stored = try await repository.conversations()
+
+            var loaded: [UUID: [Message]] = [:]
+            var ordinalsByMessage: [UUID: Int] = [:]
+            for conversation in stored {
+                let archived = try await repository.messages(with: conversation.peer)
+                for message in archived { ordinalsByMessage[message.id] = message.ordinal }
+                loaded[conversation.peer] = archived.map {
+                    Self.viewMessage($0, peer: conversation.peer, localAci: aci)
+                }
+            }
+
+            localAci = aci
+            messagesByChat = loaded
+            ordinals = ordinalsByMessage
+            apply(stored)
+            failure = nil
+        } catch {
+            record(error)
+        }
+    }
+
+    /// Collects and stores everything waiting on the relay, then reloads.
+    func receive() async {
+        guard !isPreviewOnly else { return }
+        isSyncing = true
+        defer { isSyncing = false }
+
+        do {
+            let stored = try await repository().receive()
+            failure = nil
+            if stored > 0 { await refresh() }
+        } catch {
+            record(error)
+        }
+    }
+
+    /// Adopts the address the relay assigned at redemption and publishes this device's keys.
+    func register(aci: UUID) async {
+        guard !isPreviewOnly else { return }
+        do {
+            try await repository().register(aci: aci)
+            localAci = aci
+            failure = nil
+        } catch {
+            record(error)
+        }
+    }
+
+    // MARK: - Reading
+
+    func chat(id: UUID) -> Chat? {
+        chats.first { $0.id == id }
+    }
+
+    func messages(for chatID: UUID) -> [Message] {
+        messagesByChat[chatID] ?? []
+    }
+
+    func message(id: UUID, in chatID: UUID) -> Message? {
+        messagesByChat[chatID]?.first { $0.id == id }
+    }
+
+    func contact(id: UUID) -> Contact? {
+        contacts.first { $0.id == id }
+    }
+
+    func otherParticipant(in chat: Chat) -> Contact? {
+        contact(id: chat.id)
+    }
+
+    func searchMessages(query: String) -> [SearchHit] {
+        let needle = query.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard !needle.isEmpty else { return [] }
+
+        var hits: [SearchHit] = []
+        for chat in chats {
+            for message in messages(for: chat.id) {
+                // Only kinds this build can actually produce are searchable. The others exist
+                // in `MessageKind` for the attachment work whose client half is not written yet;
+                // nothing in the production path creates one, so there is nothing to index.
+                let text: String
+                switch message.kind {
+                case .text(let value), .emoji(let value), .system(let value): text = value
+                default: continue
+                }
+                guard text.lowercased().contains(needle) else { continue }
+                hits.append(
+                    SearchHit(
+                        id: message.id, chatID: chat.id, chatTitle: chat.title,
+                        snippet: text, date: message.date))
+            }
+        }
+        return hits.sorted { $0.date > $1.date }
+    }
+
+    // MARK: - Writing
+
+    /// Starts (or reveals) a conversation with a peer named by their Cipher ID.
+    ///
+    /// The ID is typed in or shared out of band. There is deliberately no lookup: server-side
+    /// contact discovery is a standing prohibition (`THREAT_MODEL.md` §4.3), and it is the single
+    /// largest metadata leak in messengers that have it.
+    @discardableResult
+    func startConversation(with aci: UUID, nickname: String?) async -> Chat? {
+        guard !isPreviewOnly else { return chat(id: aci) }
+        guard aci != localAci else {
+            // A conversation with yourself would establish a session with your own address,
+            // which libsignal has no meaning for.
+            record(.relayRefused)
+            return nil
+        }
+
+        do {
+            _ = try await repository().startConversation(with: aci, nickname: nickname)
+            failure = nil
+            await refresh()
+            return chat(id: aci)
+        } catch {
+            record(error)
+            return nil
+        }
+    }
+
+    func send(_ text: String, to chatID: UUID) async {
+        guard !isPreviewOnly else { return }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        isSyncing = true
+        defer { isSyncing = false }
+
+        do {
+            let repository = try await repository()
+            _ = try await repository.send(text: trimmed, to: chatID)
+            failure = nil
+        } catch {
+            record(error)
+        }
+        // Reload either way: a failed send is stored as failed, and the user must see that.
+        await refresh()
+    }
+
+    func togglePin(chatID: UUID) async {
+        guard let chat = chat(id: chatID) else { return }
+        await mutate { try await $0.setPinned(!chat.isPinned, for: chatID) }
+    }
+
+    func toggleMute(chatID: UUID) async {
+        guard let chat = chat(id: chatID) else { return }
+        await mutate { try await $0.setMuted(!chat.isMuted, for: chatID) }
+    }
+
+    func setDisappearing(_ seconds: Int?, chatID: UUID) async {
+        await mutate { try await $0.setDisappearing(seconds, for: chatID) }
+    }
+
+    func rename(chatID: UUID, to nickname: String?) async {
+        let cleaned = nickname?.trimmingCharacters(in: .whitespacesAndNewlines)
+        await mutate { try await $0.setNickname(cleaned?.isEmpty == true ? nil : cleaned, for: chatID) }
+    }
+
+    func markRead(chatID: UUID) async {
+        await mutate { try await $0.markRead(chatID) }
+    }
+
+    func markUnread(chatID: UUID) async {
+        await mutate { try await $0.markUnread(chatID) }
+    }
+
+    func deleteChat(chatID: UUID) async {
+        await mutate { try await $0.deleteConversation(chatID) }
+    }
+
+    func clearMessages(chatID: UUID) async {
+        await mutate { try await $0.clearMessages(in: chatID) }
+    }
+
+    func deleteMessage(_ messageID: UUID, in chatID: UUID) async {
+        guard let ordinal = ordinal(of: messageID) else { return }
+        await mutate { try await $0.deleteMessage(ordinal: ordinal, in: chatID) }
+    }
+
+    func toggleBlock(_ peer: UUID) async {
+        let blocked = blockedContactIDs.contains(peer)
+        await mutate { try await $0.setBlocked(!blocked, for: peer) }
+    }
+
+    /// Runs a repository mutation and reloads. Every writing path goes through here so none of
+    /// them can forget to reload and leave the UI showing state the archive no longer holds.
+    private func mutate(_ body: (MessageRepository) async throws -> Void) async {
+        guard !isPreviewOnly else { return }
+        do {
+            try await body(try await repository())
+            failure = nil
+        } catch {
+            record(error)
+        }
+        await refresh()
+    }
+
+    // MARK: - Failure reporting
+
+    private func record(_ error: Error) {
+        failure = (error as? MessageRepository.Failure) ?? .relayRefused
+    }
+
+    private func record(_ specific: MessageRepository.Failure) {
+        failure = specific
+    }
+
+    func clearFailure() {
+        failure = nil
+    }
+
+    // MARK: - Mapping the archive onto the view models
+
+    /// The view model's message ordinal, which the archive needs to address a deletion. Kept out
+    /// of `Message` itself: the ordinal is a storage detail, and P5.S11 replaces it.
+    private var ordinals: [UUID: Int] = [:]
+
+    private func ordinal(of messageID: UUID) -> Int? { ordinals[messageID] }
+
+    private func apply(_ stored: [ConversationArchive.StoredConversation]) {
+        blockedContactIDs = Set(stored.filter(\.isBlocked).map(\.peer))
+
+        contacts = stored.map { conversation in
+            Contact(
+                id: conversation.peer,
+                name: Self.title(for: conversation),
+                username: Self.shortId(conversation.peer),
+                initials: Self.initials(for: conversation),
+                accentHue: Self.hue(for: conversation.peer),
+                // Nothing verifies an identity until P5.S12, and nothing reports presence at
+                // all. Both are false rather than decorative.
+                isVerified: false,
+                isOnline: false,
+                about: "")
+        }
+
+        chats = stored.map { conversation in
+            let messages = messagesByChat[conversation.peer] ?? []
+            return Chat(
+                id: conversation.peer,
+                title: Self.title(for: conversation),
+                isGroup: false,
+                participantIDs: [currentUserID, conversation.peer],
+                lastMessagePreview: Self.preview(of: messages.last),
+                lastMessageDate: Date(
+                    timeIntervalSince1970: Double(conversation.lastActivityMs) / 1000),
+                unreadCount: max(0, conversation.nextOrdinal - conversation.lastReadOrdinal),
+                isPinned: conversation.isPinned,
+                isMuted: conversation.isMuted,
+                isVerified: false,
+                disappearingSeconds: conversation.disappearingSeconds,
+                avatarInitials: Self.initials(for: conversation),
+                accentHue: Self.hue(for: conversation.peer))
+        }
+        .sorted {
+            if $0.isPinned != $1.isPinned { return $0.isPinned && !$1.isPinned }
+            return $0.lastMessageDate > $1.lastMessageDate
+        }
+    }
+
+    private static func viewMessage(
+        _ stored: ConversationArchive.StoredMessage, peer: UUID, localAci: UUID?
+    ) -> Message {
+        let isMine = stored.direction == .outgoing
+        return Message(
+            id: stored.id,
+            chatID: peer,
+            senderID: isMine ? (localAci ?? unregisteredPlaceholder) : peer,
+            kind: isEmojiOnly(stored.text) ? .emoji(stored.text) : .text(stored.text),
+            date: Date(timeIntervalSince1970: Double(stored.timestampMs) / 1000),
+            status: Self.status(of: stored),
+            isFromCurrentUser: isMine,
+            replyToID: nil,
+            reactions: [:])
+    }
+
+    /// Status is only ever rendered for the user's own messages, and only these three exist:
+    /// there are no delivery or read receipts on the wire, so there is nothing that could
+    /// truthfully report what happened on the other device.
+    private static func status(of stored: ConversationArchive.StoredMessage) -> MessageStatus {
+        switch stored.state {
+        case .sending: return .sending
+        case .sent, .received: return .sent
+        case .failed: return .failed
+        }
+    }
+
+    private static func isEmojiOnly(_ text: String) -> Bool {
+        !text.isEmpty && text.unicodeScalars.count <= 3
+            && text.unicodeScalars.allSatisfy { $0.properties.isEmoji }
+    }
+
+    private static func preview(of message: Message?) -> String {
+        guard let message else { return String(localized: "No messages yet") }
+        switch message.kind {
+        case .text(let value), .emoji(let value), .system(let value): return value
+        default: return String(localized: "No messages yet")
+        }
+    }
+
+    private static func title(for conversation: ConversationArchive.StoredConversation) -> String {
+        if let nickname = conversation.nickname, !nickname.isEmpty { return nickname }
+        return shortId(conversation.peer)
+    }
+
+    /// The first block of the ACI. Not a name and not pretending to be one — a peer has no name
+    /// until the user gives them one, because there is no directory to ask.
+    private static func shortId(_ peer: UUID) -> String {
+        String(peer.uuidString.prefix(8)).uppercased()
+    }
+
+    private static func initials(
+        for conversation: ConversationArchive.StoredConversation
+    ) -> String {
+        if let nickname = conversation.nickname, !nickname.isEmpty {
+            let parts = nickname.split(separator: " ")
+            if parts.count >= 2 {
+                return String(parts[0].prefix(1) + parts[1].prefix(1)).uppercased()
+            }
+            return String(nickname.prefix(2)).uppercased()
+        }
+        return String(conversation.peer.uuidString.prefix(2)).uppercased()
+    }
+
+    /// A stable colour per peer, derived from the identifier rather than stored.
+    ///
+    /// Deterministic on purpose: an avatar colour that changed between launches would be a
+    /// second, unreliable signal of "who am I talking to" sitting next to the name.
+    private static func hue(for peer: UUID) -> Double {
+        var accumulator: UInt64 = 0xcbf2_9ce4_8422_2325
+        withUnsafeBytes(of: peer.uuid) { bytes in
+            for byte in bytes {
+                accumulator = (accumulator ^ UInt64(byte)) &* 0x1000_0000_01b3
+            }
+        }
+        return Double(accumulator % 1000) / 1000.0
+    }
+}

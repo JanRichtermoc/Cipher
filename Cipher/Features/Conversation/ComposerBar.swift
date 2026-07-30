@@ -12,7 +12,9 @@ struct ComposerBar: View {
     var onSend: () -> Void
     var onAttach: () -> Void
 
+    #if DEBUG
     @State private var isRecording = false
+    #endif
     @Namespace private var glassNamespace
 
     var body: some View {
@@ -37,6 +39,11 @@ struct ComposerBar: View {
                 .padding(.horizontal, CipherTheme.spacingM)
             }
 
+            // Voice messages, like attachments, have no client path and no payload type. The
+            // recording affordance was a button with an empty action next to an animated
+            // "Recording…" line — the most convincing kind of control that does nothing — so it
+            // and the indicator are DEBUG-only until there is something to record into.
+            #if DEBUG
             if isRecording {
                 HStack {
                     Image(systemName: "waveform")
@@ -49,9 +56,11 @@ struct ComposerBar: View {
                 }
                 .padding(.horizontal, CipherTheme.spacingM)
             }
+            #endif
 
             GlassEffectContainer(spacing: 20) {
                 HStack(alignment: .bottom, spacing: 12) {
+                    #if DEBUG
                     Button(action: onAttach) {
                         Image(systemName: "plus")
                             .font(.body.weight(.semibold))
@@ -63,6 +72,7 @@ struct ComposerBar: View {
                     .glassEffect(.regular.interactive(), in: Circle())
                     .glassEffectID("composerAttach", in: glassNamespace)
                     .accessibilityLabel("Attach")
+                    #endif
 
                     TextField("Message", text: $text, axis: .vertical)
                         .textFieldStyle(.plain)
@@ -74,6 +84,7 @@ struct ComposerBar: View {
                         .glassEffectID("composerField", in: glassNamespace)
 
                     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        #if DEBUG
                         Button {} label: {
                             Image(systemName: "mic.fill")
                                 .font(.body.weight(.semibold))
@@ -90,6 +101,7 @@ struct ComposerBar: View {
                         )
                         .glassEffectID("composerAction", in: glassNamespace)
                         .accessibilityLabel("Hold to record")
+                        #endif
                     } else {
                         Button(action: onSend) {
                             Image(systemName: "arrow.up")

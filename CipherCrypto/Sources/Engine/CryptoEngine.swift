@@ -66,10 +66,15 @@ public final class CryptoEngine {
         self.now = now
 
         let records = try EncryptedFileRecordStore(root: root, secrets: secrets)
+        // Built from `records` rather than from `secrets`: its keys are derived from the record
+        // encryption key, so there is still exactly one Keychain item whose deletion is a
+        // cryptographic erase of every session, prekey, trust decision, conversation and
+        // message body at once. See `EncryptedFileRecordStore.deriveSubkey`.
+        let database = try SealedRecordDatabase(root: root, keys: records)
         let identity = try DeviceIdentity.loadOrCreate(secrets: secrets)
 
         self.store = CipherProtocolStore(
-            deviceIdentity: identity, records: records, secrets: secrets)
+            deviceIdentity: identity, records: records, database: database, secrets: secrets)
 
         CipherLog.store.info("crypto engine opened")
     }

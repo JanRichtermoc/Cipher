@@ -103,10 +103,20 @@ jobs:
         # missing passes without having run) but is not a fixed toolchain.
         #
         # go-version-file reads server/go.mod, so the CI version and the version the
-        # module declares cannot drift apart. go.mod names 1.25.0, which is the
-        # measured floor rather than a guessed one: 1.23 was written first, and
-        # building under it fails because pgx v5.10.0 declares `go >= 1.25.0`.
-        # Verified by building under both.
+        # module declares cannot drift apart. go.mod names 1.25.12: 1.25.0 is the
+        # measured language floor rather than a guessed one (1.23 was written first,
+        # and building under it fails because pgx v5.10.0 declares `go >= 1.25.0`,
+        # verified by building under both), and the patch level above it is a
+        # security bump — 1.25.0's stdlib carries 21 vulnerabilities reachable from
+        # this module.
+        #
+        # What this pairing does NOT cover, learned the hard way (AUDIT 1.13): it
+        # keeps *CI* aligned with go.mod, and says nothing about a developer's
+        # machine. `Scripts/verify-vulns.sh` scanned whatever Go was on PATH, so it
+        # passed locally under a newer toolchain while failing here — the gate was
+        # green on the machine where the fix would be written. That script now pins
+        # GOTOOLCHAIN to the same declared version, which is what makes a local run
+        # evidence about this job.
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: server/go.mod
@@ -179,7 +189,7 @@ jobs:
   #
   # A separate job on Linux, and it has to be. GitHub's macOS runners are virtual machines
   # without a Linux container runtime, so the `verify` job above cannot start Postgres at
-  # all — which is why `verify-all.sh` gate 4 covers only what runs without a container and
+  # all — which is why `verify-all.sh` gate 5 covers only what runs without a container and
   # this job covers the rest. Splitting them is not a preference; running these on macos-26
   # is not an option that exists.
   #
@@ -248,3 +258,14 @@ jobs:
           fetch-depth: 0
       - name: Supply chain must be verified online for a release
         run: ./Scripts/verify-supply-chain.sh
+
+      # The other half of the same question, and it also needs the network: the
+      # vulnerability database is fetched at run time, so `--offline` skips it.
+      # A release must never be the build where that skip went unnoticed.
+      - name: Set up Go for the vulnerability gate
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: server/go.mod
+          cache: false
+      - name: Dependencies must be scanned online for a release
+        run: ./Scripts/verify-vulns.sh

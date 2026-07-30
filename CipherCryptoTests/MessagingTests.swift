@@ -241,8 +241,13 @@ final class MessagingTests: XCTestCase {
             XCTAssertThrowsError(
                 try pair.engine.encrypt(Data("reply".utf8), to: pair.remote)
             ) { error in
-                guard case SignalError.untrustedIdentity = error else {
-                    return XCTFail("expected untrustedIdentity, got \(error)")
+                // P5.S10 maps this to `MessagingError.identityNotAccepted`. It used to be
+                // libsignal's own `SignalError.untrustedIdentity`, which meant the only way for
+                // the app to distinguish "compare a safety number" from "the network is down"
+                // was to `import LibSignalClient` — reopening, through `throws`, the boundary
+                // AUDIT 5.12 closed and that `verify-api-boundary.sh` cannot see. See AUDIT 5.19.
+                guard case MessagingError.identityNotAccepted = error else {
+                    return XCTFail("expected identityNotAccepted, got \(error)")
                 }
             }
 

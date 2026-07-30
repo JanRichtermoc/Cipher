@@ -217,17 +217,20 @@ func run() error {
 	// The rate-limit pepper keys the subject hash so a Redis dump does not
 	// enumerate the addresses that spoke to the relay (see ratelimit.Subject).
 	//
-	// Generated per process rather than configured. The consequence is that a
-	// restart resets every bucket, which is a real weakness — an attacker who
-	// can force restarts gets a fresh allowance each time — and it is the lesser
-	// of the two available weaknesses at this stage: a configured pepper is
-	// another secret to distribute, and a *fixed* one is worse, because it makes
-	// the hash stable across the whole lifetime of the deployment and so turns
-	// the bucket keys into a persistent identifier. Revisit in P5 when there is
-	// a secret store worth the name.
-	pepper := make([]byte, 32)
-	if _, err := rand.Read(pepper); err != nil {
-		return fmt.Errorf("rate limit pepper: %w", err)
+	// Configured if the operator set one, random per process otherwise. The
+	// trade-off between the two is argued at `config.RateLimitPepper`; what
+	// matters here is that the *unconfigured* case is now announced rather than
+	// silent. A relay whose buckets reset on every restart is a relay whose
+	// brute-force limits reset on every restart, and that was previously visible
+	// only to someone reading this file (AUDIT 5.24).
+	pepper := cfg.RateLimitPepper
+	if len(pepper) == 0 {
+		pepper = make([]byte, 32)
+		if _, err := rand.Read(pepper); err != nil {
+			return fmt.Errorf("rate limit pepper: %w", err)
+		}
+		log.Warn("RELAY_RATELIMIT_PEPPER is not set: rate-limit buckets will reset " +
+			"on restart, so anything that restarts this process grants a fresh allowance")
 	}
 	limiter := ratelimit.New(redis.Scripter(), pepper)
 
