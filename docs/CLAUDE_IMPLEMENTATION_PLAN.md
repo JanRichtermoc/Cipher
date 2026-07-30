@@ -7,6 +7,10 @@ E2E messenger.
 [`AUDIT.md`](AUDIT.md) (what is broken), [`ARCHITECTURE.md`](ARCHITECTURE.md),
 [`../Vendor/libsignal/DECISIONS.md`](../Vendor/libsignal/DECISIONS.md).
 
+**Working here?** [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) is the contract for how a step is done —
+what to read, the gate, negative testing, the secret scan, and where to stop. This file stays the
+authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_NOTES/).
+
 **Priority order:** security > correctness > reliability > maintainability > features > UI polish.
 
 ---
