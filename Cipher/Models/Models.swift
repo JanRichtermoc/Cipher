@@ -51,11 +51,19 @@ enum MessageKind: Hashable {
     case system(String)
 }
 
+/// What is actually known about a message this device sent.
+///
+/// **`delivered` and `read` were removed in P5.S10** rather than left unused. There are no
+/// delivery or read receipts on the wire — nothing in `Envelope`, nothing in the relay, nothing
+/// planned before P7 — so a double checkmark could only ever have been decoration that reads as
+/// a claim about the recipient's device. `sent` means one thing and says it: the relay answered
+/// 202, so it has the ciphertext. Whether a person saw it is not something this build knows.
 enum MessageStatus: Hashable {
+    /// Sealed and stored locally; the relay has not accepted it yet.
     case sending
+    /// The relay accepted the envelope.
     case sent
-    case delivered
-    case read
+    /// Encryption or transmission failed. Retrying re-encrypts.
     case failed
 }
 

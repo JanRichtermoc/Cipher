@@ -8,7 +8,7 @@ import SwiftUI
 @main
 struct CipherApp: App {
     @State private var session = AppSession()
-    @State private var store = MockStore()
+    @State private var store = ConversationStore()
 
     var body: some Scene {
         WindowGroup {

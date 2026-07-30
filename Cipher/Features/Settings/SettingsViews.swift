@@ -7,7 +7,7 @@ import SwiftUI
 
 struct SettingsHubView: View {
     @Environment(AppSession.self) private var session
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
 
     var body: some View {
         NavigationStack {
@@ -30,6 +30,21 @@ struct SettingsHubView: View {
                             }
                         }
                         .padding(.vertical, 4)
+                    }
+                }
+
+                if let aci = store.localAci {
+                    Section {
+                        LabeledContent("Your Cipher ID") {
+                            Text(aci.uuidString.lowercased())
+                                .font(.caption.monospaced())
+                                .textSelection(.enabled)
+                        }
+                        Button("Copy Cipher ID", systemImage: "doc.on.doc") {
+                            SecurePasteboard.copy(aci.uuidString.lowercased())
+                        }
+                    } footer: {
+                        Text("Give this to someone so they can message you. It is the only identifier Cipher has — there is no phone number, email, or searchable username.")
                     }
                 }
 
@@ -213,45 +228,28 @@ struct InviteFriendsView: View {
     }
 }
 
+/// One device, because that is a locked protocol decision rather than a missing feature.
+///
+/// This screen used to list an iPad and a MacBook with plausible "last active" times and a Revoke
+/// button, above a footer admitting it was UI only. `Envelope` has no `deviceId` field at all
+/// (plan §0.2.5): a second device is a `wireVersion` 2 change, so there is nothing to list and
+/// nothing to revoke. Saying so is the whole screen.
 struct LinkedDevicesView: View {
-    @Environment(MockStore.self) private var store
-
     var body: some View {
         List {
             Section {
-                ForEach(store.linkedDevices) { device in
-                    HStack {
-                        Image(systemName: device.isCurrent ? "iphone" : "laptopcomputer")
-                            .foregroundStyle(CipherTheme.accent)
-                            .frame(width: 28)
-                        VStack(alignment: .leading) {
-                            Text(device.name)
-                            Text(device.lastActiveLabel)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if device.isCurrent {
-                            Text("This device")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        } else {
-                            Button("Revoke", role: .destructive) {
-                                store.revokeDevice(device.id)
-                            }
-                            .font(.caption)
-                        }
-                    }
+                HStack {
+                    Image(systemName: "iphone")
+                        .foregroundStyle(CipherTheme.accent)
+                        .frame(width: 28)
+                    Text("This iPhone")
+                    Spacer()
+                    Text("This device")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             } footer: {
-                Text("Revoking a device signs it out immediately. UI only — no real sessions.")
-            }
-
-            Section {
-                Button {
-                } label: {
-                    Label("Link New Device", systemImage: "qrcode.viewfinder")
-                }
+                Text("Cipher is single-device by design. The message format carries no device identifier, so a second device cannot be linked and there is nothing here to revoke.")
             }
         }
         .navigationTitle("Linked Devices")
@@ -328,7 +326,7 @@ struct ChatsSettingsView: View {
 
 struct PrivacySecurityView: View {
     @Environment(AppSession.self) private var session
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
 
     var body: some View {
         @Bindable var session = session
@@ -368,6 +366,9 @@ struct PrivacySecurityView: View {
                 .unimplemented("Messages are not deleted yet. Nothing reads this setting.")
             }
 
+            // Blocking is local and real: `MessageRepository` refuses to send to a blocked peer,
+            // and an incoming message from one is decrypted (the ratchet must advance or the
+            // session desynchronises), then discarded and acknowledged.
             Section("Blocked") {
                 if store.blockedContactIDs.isEmpty {
                     Text("No blocked contacts")
@@ -377,7 +378,7 @@ struct PrivacySecurityView: View {
                         HStack {
                             Text(contact.name)
                             Spacer()
-                            Button("Unblock") { store.toggleBlock(contact.id) }
+                            Button("Unblock") { Task { await store.toggleBlock(contact.id) } }
                         }
                     }
                 }
@@ -420,14 +421,10 @@ struct PrivacySecurityView: View {
 struct StorageSettingsView: View {
     var body: some View {
         Form {
+            // The three figures here were constants — 24 MB, 180 MB, 6 MB — identical on every
+            // install, next to two buttons with empty actions. Nothing measured anything.
             Section {
-                LabeledContent("Messages", value: "24 MB")
-                LabeledContent("Media", value: "180 MB")
-                LabeledContent("Other", value: "6 MB")
-            }
-            Section {
-                Button("Manage Storage") {}
-                Button("Clear Cache", role: .destructive) {}
+                UnimplementedNotice("Storage reporting is not implemented yet. The figures that used to be here were fixed numbers compiled into the app, not a measurement of this device.")
             }
         }
         .navigationTitle("Storage")
@@ -457,21 +454,34 @@ struct AboutView: View {
     var body: some View {
         List {
             Section {
-                LabeledContent("Version", value: "1.0 (UI)")
-                LabeledContent("Build", value: "UI-only shell")
+                LabeledContent("Version", value: Self.version)
+                LabeledContent("Build", value: Self.build)
             }
             Section {
-                Text("Cipher keeps encryption and decryption on your device. This build demonstrates the complete messaging interface with Liquid Glass chrome.")
+                Text("Cipher keeps encryption and decryption on your device. The server relays ciphertext it cannot read and deletes each message as soon as your device confirms it arrived.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
         }
         .navigationTitle("About")
     }
+
+    /// Read from the bundle rather than written here. The previous values — "1.0 (UI)" and
+    /// "UI-only shell" — were accurate when nothing worked and would have become a lie the
+    /// moment they stopped being updated by hand.
+    private static var version: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—"
+    }
+
+    private static var build: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+    }
 }
 
+#if DEBUG
 #Preview {
     SettingsHubView()
         .environment(AppSession())
-        .environment(MockStore())
+        .environment(ConversationStore.preview())
 }
+#endif

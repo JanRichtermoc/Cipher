@@ -160,6 +160,30 @@ internal final class CipherProtocolStore {
         try records.store(.metadata, key, value)
     }
 
+    // MARK: - Application records
+
+    /// The app's own sealed records — conversations and message bodies (P5.S10).
+    ///
+    /// Deliberately a separate `RecordKind` from `.metadata` rather than a shared namespace:
+    /// the kind is part of the AEAD's authenticated data, so app records and this module's own
+    /// counters cannot be swapped for one another by anything with container write access, and
+    /// the `metadata` comment above stays true — that surface remains narrow. The validation
+    /// of the composed key lives at the public boundary in `SealedAppStore.swift`.
+    internal func storeAppData(_ key: String, _ value: Data) throws {
+        CryptoActor.assertIsolated()
+        try records.store(.appData, key, value)
+    }
+
+    internal func loadAppData(_ key: String) throws -> Data? {
+        CryptoActor.assertIsolated()
+        return try records.load(.appData, key)
+    }
+
+    internal func removeAppData(_ key: String) throws {
+        CryptoActor.assertIsolated()
+        try records.remove(.appData, key)
+    }
+
     // MARK: - Peer identity state, for the UI
 
     /// The trust state to render a safety-number screen from, or `nil` if this peer has

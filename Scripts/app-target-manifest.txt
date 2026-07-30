@@ -2,6 +2,7 @@ Cipher/App/AppSession.swift
 Cipher/App/MainTabView.swift
 Cipher/App/RootView.swift
 Cipher/CipherApp.swift
+Cipher/Components/MessagingFailureBanner.swift
 Cipher/Components/SharedComponents.swift
 Cipher/Components/UnimplementedNotice.swift
 Cipher/ContentView.swift
@@ -22,12 +23,18 @@ Cipher/Features/Debug/UICatalogView.swift
 Cipher/Features/Onboarding/OnboardingFlowView.swift
 Cipher/Features/Search/GlobalSearchView.swift
 Cipher/Features/Settings/SettingsViews.swift
-Cipher/MockData/MockStore.swift
+Cipher/Messaging/ConversationArchive.swift
+Cipher/Messaging/ConversationStore+Preview.swift
+Cipher/Messaging/ConversationStore.swift
+Cipher/Messaging/MessageRepository.swift
+Cipher/Messaging/SerialGate.swift
 Cipher/Models/Models.swift
 Cipher/Networking/CertificatePinner.swift
 Cipher/Networking/InviteRedemption.swift
 Cipher/Networking/RelayClient.swift
 Cipher/Networking/RelayEndpoint.swift
+Cipher/Networking/RelayKeyDirectory.swift
+Cipher/Networking/RelayMailbox.swift
 Cipher/PrivacyInfo.xcprivacy
 Cipher/Security/DeviceAuthenticator.swift
 Cipher/Security/SecurePasteboard.swift

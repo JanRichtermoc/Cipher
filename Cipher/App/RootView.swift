@@ -7,7 +7,7 @@ import SwiftUI
 
 struct RootView: View {
     @Environment(AppSession.self) private var session
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
@@ -53,8 +53,27 @@ struct RootView: View {
         // switcher snapshot is taken, so locking here means the snapshot is of the lock
         // screen. Waiting for `.background` would put the last visible screen — a
         // conversation — into the switcher and into the snapshot on disk.
+        //
+        // Returning to the foreground is also the only "new mail" signal this build has. Push
+        // notifications are P7.S03; until then a conversation left open does not update on its
+        // own, which is a real limitation and not one worth papering over with a timer polling a
+        // rate-limited endpoint. Both halves live in one `onChange` so the lock and the fetch
+        // cannot end up reading different notions of "not frontmost".
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { session.lockIfNeeded() }
+            if phase != .active {
+                session.lockIfNeeded()
+            } else if session.destination == .main {
+                Task { await store.receive() }
+            }
+        }
+        // The messaging path is started here rather than in `ChatsListView`, because it has to
+        // run whether or not that screen is on top: an installation whose prekey publication
+        // failed cannot receive a first message from anyone, and the only symptom is other
+        // people's session setup failing. `id:` restarts it when the gate opens, so nothing
+        // touches the relay while the app is behind the lock or the invite screen.
+        .task(id: session.destination) {
+            guard session.destination == .main else { return }
+            await store.start()
         }
     }
 }
@@ -76,8 +95,10 @@ private struct SnapshotRedaction: View {
     }
 }
 
+#if DEBUG
 #Preview {
     RootView()
         .environment(AppSession())
-        .environment(MockStore())
+        .environment(ConversationStore.preview())
 }
+#endif

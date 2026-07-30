@@ -84,10 +84,12 @@ struct UnreadBadge: View {
 
 /// Whether the UI is allowed to show a contact as verified.
 ///
-/// It is not, yet. Every `isVerified` in the app comes from a hardcoded `MockStore` boolean,
-/// so the checkmark is decoration that reads as a cryptographic claim — the same lie the
-/// safety-number screen used to tell, spread across the chat list, the conversation header,
-/// and every contact picker.
+/// It is not, yet. Nothing derives verification from a key: `ConversationStore` reports
+/// `isVerified: false` for every conversation because there is nothing it could honestly report
+/// from, and before P5.S10 the flag was a hardcoded fixture boolean. Either way the checkmark
+/// would be decoration that reads as a cryptographic claim — the same lie the safety-number
+/// screen used to tell, spread across the chat list, the conversation header, and every contact
+/// picker.
 ///
 /// Gated in one place rather than at the eight call sites, so re-enabling it is a single
 /// deliberate edit when P5.S12 derives verification from real fingerprints.

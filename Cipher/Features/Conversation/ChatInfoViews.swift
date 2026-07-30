@@ -6,14 +6,14 @@
 import SwiftUI
 
 struct ChatInfoView: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let chatID: UUID
 
     @State private var showSafety = false
     @State private var confirmBlock = false
     @State private var confirmClear = false
-    @State private var disappearing: Int = 0
+    @State private var nickname = ""
 
     var body: some View {
         Group {
@@ -38,17 +38,40 @@ struct ChatInfoView: View {
                         isOnline: contact.isOnline,
                         isVerified: contact.isVerified
                     )
-                    Text(contact.name).font(.title2.bold())
-                    Text("@\(contact.username)").foregroundStyle(.secondary)
-                    Text(contact.about).font(.subheadline).foregroundStyle(.secondary)
+                    Text(chat.title).font(.title2.bold())
                 }
                 .frame(maxWidth: .infinity)
                 .listRowBackground(Color.clear)
             }
 
+            // The identifier, in full, with no attempt to dress it up as a profile. It is the
+            // only thing about this peer that is a fact rather than a local label — the relay
+            // stores no name, no username and no "about" for anyone (`BACKEND.md` §2.1).
+            Section {
+                LabeledContent("Cipher ID") {
+                    Text(chat.id.uuidString.lowercased())
+                        .font(.caption.monospaced())
+                        .textSelection(.enabled)
+                }
+                Button("Copy Cipher ID", systemImage: "doc.on.doc") {
+                    SecurePasteboard.copy(chat.id.uuidString.lowercased())
+                }
+            }
+
+            Section {
+                TextField("Name (only on this device)", text: $nickname)
+                    .textInputAutocapitalization(.words)
+                    .onSubmit { Task { await store.rename(chatID: chatID, to: nickname) } }
+            } footer: {
+                Text("Names are stored only on this device, inside the encrypted container. Nothing is sent to the server.")
+            }
+
+            // Attachments have no client path, so a media gallery could only ever be empty.
+            #if DEBUG
             Section("Media") {
                 MediaGalleryGrid(chatID: chatID)
             }
+            #endif
 
             Section("Options") {
                 Toggle(isOn: muteBinding(chat)) {
@@ -62,6 +85,7 @@ struct ChatInfoView: View {
                 } label: {
                     Label("Disappearing Messages", systemImage: "timer")
                 }
+                .unimplemented("Messages are not deleted yet. This preference is stored but nothing reads it.")
             }
 
             Section("Security") {
@@ -86,17 +110,18 @@ struct ChatInfoView: View {
                 Button("Done") { dismiss() }
             }
         }
+        .onAppear { nickname = chat.title }
         .sheet(isPresented: $showSafety) {
             SafetyNumberView(contact: contact)
         }
         .confirmationDialog("Block \(contact.name)?", isPresented: $confirmBlock) {
             Button(store.blockedContactIDs.contains(contact.id) ? "Unblock" : "Block", role: .destructive) {
-                store.toggleBlock(contact.id)
+                Task { await store.toggleBlock(contact.id) }
             }
         }
         .confirmationDialog("Clear all messages?", isPresented: $confirmClear) {
             Button("Clear", role: .destructive) {
-                store.messages.removeAll { $0.chatID == chatID }
+                Task { await store.clearMessages(chatID: chatID) }
             }
         }
     }
@@ -104,7 +129,7 @@ struct ChatInfoView: View {
     private func muteBinding(_ chat: Chat) -> Binding<Bool> {
         Binding(
             get: { chat.isMuted },
-            set: { _ in store.toggleMute(chatID: chat.id) }
+            set: { _ in Task { await store.toggleMute(chatID: chat.id) } }
         )
     }
 
@@ -112,16 +137,18 @@ struct ChatInfoView: View {
         Binding(
             get: { chat.disappearingSeconds ?? 0 },
             set: { value in
-                if let i = store.chats.firstIndex(where: { $0.id == chat.id }) {
-                    store.chats[i].disappearingSeconds = value == 0 ? nil : value
-                }
+                Task { await store.setDisappearing(value == 0 ? nil : value, chatID: chat.id) }
             }
         )
     }
 }
 
+// Groups do not exist cryptographically (AUDIT 3.7) and no production conversation is a group,
+// so this screen is unreachable in a shipping build. DEBUG-only rather than deleted: P10.S02
+// builds groups properly and this is the interface it will need.
+#if DEBUG
 struct GroupInfoView: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     let chatID: UUID
     @State private var confirmLeave = false
@@ -170,7 +197,7 @@ struct GroupInfoView: View {
                     Section {
                         Toggle(isOn: Binding(
                             get: { chat.isMuted },
-                            set: { _ in store.toggleMute(chatID: chat.id) }
+                            set: { _ in Task { await store.toggleMute(chatID: chat.id) } }
                         )) {
                             Label("Mute", systemImage: "bell.slash")
                         }
@@ -189,7 +216,7 @@ struct GroupInfoView: View {
                 }
                 .confirmationDialog("Leave this group?", isPresented: $confirmLeave) {
                     Button("Leave", role: .destructive) {
-                        store.deleteChat(chatID: chatID)
+                        Task { await store.deleteChat(chatID: chatID) }
                         dismiss()
                     }
                 }
@@ -206,8 +233,8 @@ struct GroupInfoView: View {
                     username: "you",
                     initials: "YO",
                     accentHue: 0.5,
-                    isVerified: true,
-                    isOnline: true,
+                    isVerified: false,
+                    isOnline: false,
                     about: ""
                 )
             }
@@ -217,7 +244,7 @@ struct GroupInfoView: View {
 }
 
 struct MediaGalleryGrid: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     let chatID: UUID
 
     private var media: [Message] {
@@ -250,6 +277,8 @@ struct MediaGalleryGrid: View {
         }
     }
 }
+
+#endif
 
 struct SafetyNumberView: View {
     let contact: Contact

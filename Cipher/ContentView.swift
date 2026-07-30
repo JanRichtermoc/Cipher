@@ -12,8 +12,10 @@ struct ContentView: View {
     }
 }
 
+#if DEBUG
 #Preview {
     ContentView()
         .environment(AppSession())
-        .environment(MockStore())
+        .environment(ConversationStore.preview())
 }
+#endif

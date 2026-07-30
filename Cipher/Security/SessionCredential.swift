@@ -28,7 +28,16 @@ import Security
 /// authenticate. That is the honest state of an app with no server (AUDIT 5.1) — the
 /// alternative is a locally minted token that looks like authentication and proves nothing,
 /// which the plan forbids in as many words.
-struct SessionCredential: Equatable, Sendable {
+///
+/// ## Deliberately outside the main actor
+///
+/// The project compiles with `MainActor` as its default isolation, which is right for view
+/// state and wrong for this: the messaging actor reads the bearer token on every relay call,
+/// and routing those reads through the main actor would put Keychain I/O on the thread that
+/// draws the UI. This type holds immutable bytes, `SessionStore` holds a service name, and the
+/// only shared mutable state involved is the Keychain itself — which `SecItem` serialises. So
+/// both are `nonisolated`, and the isolation argument is that there is nothing to isolate.
+nonisolated struct SessionCredential: Equatable, Sendable {
 
     /// Where the credential came from. Stored, not inferred, so `origin` survives a relaunch
     /// and a development credential can never be mistaken for a real one after the fact.
@@ -66,7 +75,7 @@ struct SessionCredential: Equatable, Sendable {
 /// `ThisDeviceOnly` and `kSecAttrSynchronizable = false` are non-negotiable for the same
 /// reason they are on the identity key: a session credential that restores onto another
 /// device is a session someone else can resume.
-struct SessionStore {
+nonisolated struct SessionStore: Sendable {
 
     /// Distinct from the crypto module's service string, so `removeAll` on either is exact
     /// and neither can delete the other's items by accident.
@@ -198,7 +207,7 @@ struct SessionStore {
     }
 }
 
-enum SessionStoreError: Error, Equatable {
+nonisolated enum SessionStoreError: Error, Equatable {
     case keychainFailure(operation: String, status: OSStatus)
     /// A development credential was offered to a Release build. Refused rather than stored:
     /// the point of the origin field is that it cannot be laundered.

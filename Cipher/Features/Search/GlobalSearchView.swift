@@ -6,7 +6,7 @@
 import SwiftUI
 
 struct GlobalSearchView: View {
-    @Environment(MockStore.self) private var store
+    @Environment(ConversationStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @State private var query = ""
 

@@ -380,6 +380,26 @@ Token-bucket in Redis. Keyed by session token hash where authenticated, by sourc
 | `POST /v1/blobs` | 100 / day and 500 MB / day / account | Storage |
 | `POST /v1/auth/rotate` | 10 / hour / account | Token grinding |
 
+### What the client does to stay inside these limits (P5.S10)
+
+A limit the client trips routinely is a limit that gets raised. The iOS client's side of the
+contract, recorded here because it is the half this file could not previously see:
+
+- **Publication happens once per installation, not once per launch.** `PUT /v1/keys` is 6 per day,
+  and generating the pool is a hundred keypairs. A flag in the sealed container records that the
+  relay *accepted* the publication — set after the 200, never before, so a failed publication is
+  retried on the next launch rather than remembered as done.
+- **A bundle is fetched only when there is no session with that peer**, never as a refresh. Every
+  fetch consumes one of the target's one-time prekeys, which is exactly the pressure AUDIT 3.1 is
+  about, so the request is also marked non-idempotent client-side: a `GET` that mutates must not be
+  retried automatically.
+- **Sends are never retried automatically.** A duplicate envelope is undecryptable at the far end
+  (the ratchet consumed the message key), so an auto-retry would spend the sender's budget to
+  deliver something the recipient discards, and would look like success. Retrying is the user's
+  action and re-encrypts.
+- **Acknowledgement is retried**, because it is idempotent here by design and a lost
+  acknowledgement leaves ciphertext on the box — which is the one outcome §4 exists to prevent.
+
 ### Why the prekey-fetch limit is a security control (AUDIT 3.1)
 
 Every fetch of `/v1/keys/{aci}` **consumes one of the target's one-time prekeys** — that is what

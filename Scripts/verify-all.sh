@@ -223,18 +223,29 @@ if [ "$FAST" -eq 0 ]; then
   APP="$(ls -d "$HOME/Library/Developer/Xcode/DerivedData/Cipher-"*/Build/Products/Release-iphoneos/Cipher.app 2>/dev/null | head -1)"
   [ -n "$APP" ] && [ -d "$APP" ] || fail "could not locate the Release bundle to audit"
 
+  # A positive control, first. Every check below is "grep found nothing", and "found nothing"
+  # is also what a broken search looks like — a wrong path, a bundle that never built, a
+  # `grep` that cannot read the file. This asserts the search *can* see a symbol that is
+  # definitely there, so the all-clear below means something. See AUDIT R2.
+  if ! grep -rlaF "ChatsListView" "$APP" >/dev/null 2>&1; then
+    fail "the Release bundle audit found no ChatsListView — the search itself is broken, so its all-clear would be meaningless"
+  fi
+
   leaked=0
   for sym in \
     debugSkipToMain resetDemoState UICatalogView NewGroupView createGroup \
+    CallsListView ActiveCallView IncomingCallView AttachmentSheet GroupInfoView \
+    MediaGalleryGrid previewCalls previewChatID \
     "Skip to App" "Unlock & Show Main" "Demo Controls" "UI Catalog" "Reset Onboarding" \
-    "Leave & Reset Demo"; do
+    "Leave & Reset Demo" "Simulate incoming call" "Hold to record" \
+    "Recording… release to cancel"; do
     # -a: treat every file as text, so Mach-O, Assets.car and .strings are all searched.
     if hits="$(grep -rlaF "$sym" "$APP" 2>/dev/null)" && [ -n "$hits" ]; then
       echo "  !     '$sym' is present in: $(printf '%s\n' "$hits" | sed "s|$APP/||" | tr '\n' ' ')"
       leaked=1
     fi
   done
-  [ "$leaked" -eq 0 ] || fail "a debug affordance ships in Release (AUDIT 5.6, 5.11)"
+  [ "$leaked" -eq 0 ] || fail "a debug affordance ships in Release (AUDIT 5.6, 5.11, 5.19)"
   echo "  ok    no debug affordance anywhere in the Release bundle"
 
   # --- 9. Required-reason APIs are declared ----------------------------------
