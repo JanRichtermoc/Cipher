@@ -24,8 +24,8 @@ Executed 2026-07-29 against the OVH VPS. Every "Done when" below was observed, n
 | D | done | Reboot window 04:30 UTC; box set to UTC. |
 | E | done | Needed `backend = systemd` — this image ships no rsyslog, so the stock jail would have run and banned nothing. Verified four ways: jail listed, filter matched 26 real journal lines, live jail counted 3 induced failures, ban reached the packet filter and unban removed it. |
 | F | done | Docker 29.6.2, Compose v5.3.1, log rotation on, `no-new-privileges` global. |
-| G | done | `main` @ `9a279a4`. All three containers healthy, 8080 on loopback only. Secrets generated on the box. |
-| H.0b | **outstanding** | `RELAY_RATELIMIT_PEPPER` is not set on this box, so every deploy resets every rate-limit bucket (AUDIT 5.24). The setting exists from the security-audit remediation commit; apply it at the next deploy — procedure in H.0b. |
+| G | done | All three containers healthy, 8080 on loopback only. Secrets generated on the box. Deployed revision was `9a279a4`; now `3f4cf92` — see H.0b. |
+| H.0b | done 2026-07-30 | `RELAY_RATELIMIT_PEPPER` set, after the deploy that first contains it. The box had been on `9a279a4` and was **four relay-affecting commits behind** — it did not have 5.22 (blob byte quota never checked), 5.23 (ack and blob-delete unmetered) or the Go 1.25.12 stdlib fixes. Fast-forwarded to `3f4cf92`, rebuilt, then the pepper. OBSERVED, in this order: `/health` 200 over the wire on the new build with the old `.env`; the unset-pepper warning appearing for the first time (**0 → 1**, because the build that emits it had not been deployed before); then **1 → 0** after the value was set. See the trap noted in H.0b — the pre-deploy 0 was not a pass. |
 | H.0 | done | `RELAY_TRUSTED_PROXY=172.18.0.1/32` — the bridge **gateway**, not the subnet. Verified live both ways: rotating `X-Real-IP` through the host's published port gets fresh buckets, the same rotation from inside the `postgres` container still hits `429`. |
 | H.1–H.5 | done | `relay.mgchatman.app`, Let's Encrypt ECDSA leaf expiring 2026-10-27, `reuse_key = True` confirmed in the renewal config. TLS **1.3 only** — and see AUDIT 5.16, because it was 1.2-accepting at first while the config read as 1.3-only, and the first probe reported a false pass. Verified end to end from the internet: forging `X-Real-IP` per request does **not** escape the rate limit (8 requests, one bucket, throttled at the 6th). Access log carries no request URI. |
 | I | done | Post-H full scan: **22, 80, 443 open; everything else filtered**, both families. Pre-H the same scan showed 65532 filtered / 2 closed / 1 open, confirming 80 and 443 only became reachable when Nginx was deployed. |
@@ -463,28 +463,61 @@ It is optional because it is a genuine trade-off, argued in `BACKEND.md` §5: a 
 the Redis bucket keys stable for as long as the value lives, so two dumps taken weeks apart can be
 correlated. On a box that is deployed to deliberately and rarely, surviving restarts is worth more.
 
-Run this on the box, in `~/cipher/server`, **after** the deploy that first contains the setting:
+**"After the deploy" is a precondition, not a preference — and the first attempt at this proved
+why.** Run on 2026-07-30 against a box still on `9a279a4`, the original procedure printed
+`already set or absent` and stopped. The cause was neither: the key was **absent from `.env`
+entirely**, because `.env` is gitignored and machine-local, so it was generated from the older
+`.env.example` and **a deploy never regenerates it**. The original `sed` only matched an existing
+empty `RELAY_RATELIMIT_PEPPER=` line, so on this box it could never have matched, at any point,
+however many times it was run. It now appends when the key is missing.
+
+Deploy first, in two stages, so that a failure tells you which change caused it:
+
+```sh
+cd ~/cipher && git pull --ff-only
+cd server && docker compose up -d --build api
+curl -s -o /dev/null -w '%{http_code}\n' https://relay.mgchatman.app/health   # expect 200
+```
+
+Only once that is healthy, set the pepper:
 
 ```sh
 cd ~/cipher/server
-if grep -q '^RELAY_RATELIMIT_PEPPER=$' .env; then
-  PEPPER="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
-  # In place, and never echoed: this value is a secret and belongs only in .env.
-  sed -i "s|^RELAY_RATELIMIT_PEPPER=$|RELAY_RATELIMIT_PEPPER=${PEPPER}|" .env
-  unset PEPPER
-  echo "set"
+# A file with no trailing newline would concatenate the append onto the previous
+# variable and corrupt it silently.
+[ -n "$(tail -c 1 .env)" ] && echo >> .env
+if grep -q '^RELAY_RATELIMIT_PEPPER=' .env; then
+  echo "already set — stopping, nothing changed"
 else
-  echo "already set or absent — check .env by hand"
+  # AUDIT 1.10's spelling: `head` is the PRODUCER, so there is no SIGPIPE. Hex, not
+  # base64. Never echoed: this value is a secret and belongs only in .env.
+  PEPPER="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  printf 'RELAY_RATELIMIT_PEPPER=%s\n' "$PEPPER" >> .env
+  unset PEPPER
+  echo "appended"
 fi
 docker compose up -d api
 ```
 
-Then confirm the warning is **gone** from the startup log, which is the only observable that says
-the relay actually read it:
+Check the shape without printing the value — 32 bytes as hex is 64 characters:
+
+```sh
+awk -F= '/^RELAY_RATELIMIT_PEPPER=/{print "value_length=" length($2)}' .env   # expect 64
+```
+
+Then confirm the warning is **gone**, which is the only observable that says the relay actually
+read it:
 
 ```sh
 docker compose logs api --since 2m | grep -c RATELIMIT_PEPPER   # expect 0
 ```
+
+> **The trap in that last check, and it is R2 exactly.** A build that predates the warning cannot
+> emit it, so `grep -c` returns **0 on an old build too** — the same number that means success. On
+> 2026-07-30 the pre-deploy count was 0 while the pepper was not merely unset but unsupported. The
+> zero is only evidence if you have seen the count be **1** first: deploy, observe the warning
+> appear, then set the value and observe it go away. If you never saw the 1, you have measured
+> nothing.
 
 Rotating the value later resets every bucket once — the same effect a restart used to have every
 time.
