@@ -32,11 +32,21 @@ import (
 	"cipher.relay/internal/api"
 	"cipher.relay/internal/blob"
 	"cipher.relay/internal/logging"
+	"cipher.relay/internal/ratelimit"
 	"cipher.relay/internal/store"
 	"cipher.relay/internal/sweep"
 )
 
 func blobStack(t *testing.T) (http.Handler, *store.DB, *blob.Store, string) {
+	h, db, blobs, root, _ := blobStackWithLimiter(t)
+	return h, db, blobs, root
+}
+
+// blobStackWithLimiter also hands back the limiter, so a test can arrange a
+// bucket's state directly instead of uploading half a gigabyte to reach it.
+func blobStackWithLimiter(
+	t *testing.T,
+) (http.Handler, *store.DB, *blob.Store, string, *ratelimit.Limiter) {
 	t.Helper()
 	db := testDB(t)
 	limiter := testLimiter(t)
@@ -55,7 +65,7 @@ func blobStack(t *testing.T) (http.Handler, *store.DB, *blob.Store, string) {
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
 	api.NewBlobsHandler(db, blobs, authHandler, log).Routes(mux)
-	return mux, db, blobs, root
+	return mux, db, blobs, root, limiter
 }
 
 // upload posts bytes and returns the slot id.
@@ -493,5 +503,96 @@ func TestUploadIsRateLimited(t *testing.T) {
 	}
 	if !throttled {
 		t.Fatal("uploading was never throttled")
+	}
+}
+
+// --- Byte quota and delete limit (AUDIT 5.22, 5.23) ------------------------
+
+// blobBytesLimit mirrors the handler's own limit. Duplicated rather than
+// exported: a test that read the production value would agree with it even if
+// that value were changed to something absurd, which is the opposite of what a
+// limit test is for. docs/BACKEND.md §5 is the authority for the number.
+var testBlobBytesLimit = ratelimit.Limit{Capacity: 500, Window: 24 * time.Hour}
+
+func TestBlobUploadIsRefusedWhenTheByteQuotaIsExhausted(t *testing.T) {
+	// The finding: the byte quota was charged after every upload and *consulted
+	// by nothing*. "500 MB per day" was a sentence in a document while the real
+	// ceiling was the 100-upload count limit — ten gigabytes.
+	//
+	// The bucket is drained directly rather than by uploading 500 MB, which would
+	// make this test slower than the entire rest of the suite and would test the
+	// disk instead of the limit.
+	ctx := context.Background()
+	h, db, _, _, limiter := blobStackWithLimiter(t)
+	aci, token := enrol(t, h, db, "198.51.100.170")
+
+	if _, err := limiter.Charge(
+		ctx, limiter.Subject("blob-bytes", aci.String()), testBlobBytesLimit, 500,
+	); err != nil {
+		t.Fatalf("drain the quota: %v", err)
+	}
+
+	rec := do(h, http.MethodPost, "/v1/blobs", token, "198.51.100.170",
+		bytes.NewReader(randomBytes(1024)))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("status %d, want 429 — an exhausted byte quota must refuse the upload",
+			rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("a refusal must say when to come back")
+	}
+}
+
+func TestBlobUploadChargesTheByteQuotaOnce(t *testing.T) {
+	// Charged, and charged *correctly*: one megabyte up front plus the remainder,
+	// not one call per megabyte (which was 100 Redis round trips for a 100 MiB
+	// upload) and not zero.
+	ctx := context.Background()
+	h, db, _, _, limiter := blobStackWithLimiter(t)
+	aci, token := enrol(t, h, db, "198.51.100.171")
+	subject := limiter.Subject("blob-bytes", aci.String())
+
+	upload(t, h, token, "198.51.100.171", randomBytes(3<<20))
+
+	peek, err := limiter.Charge(ctx, subject, testBlobBytesLimit, 0)
+	if err != nil {
+		t.Fatalf("peek: %v", err)
+	}
+	// 3 MiB: one charged before the write, two after. A small tolerance for the
+	// bucket's continuous refill over the test's own runtime.
+	if peek.Remaining > 497 {
+		t.Fatalf("remaining %d, want <= 497 — the upload was not charged", peek.Remaining)
+	}
+	if peek.Remaining < 495 {
+		t.Fatalf("remaining %d, want >= 495 — the upload was overcharged", peek.Remaining)
+	}
+}
+
+func TestBlobDeleteIsRateLimited(t *testing.T) {
+	// Delete removes a row and unlinks a file, and it was the only authenticated
+	// write on this service with no ceiling at all.
+	h, db, _, _ := blobStack(t)
+	_, token := enrol(t, h, db, "198.51.100.172")
+
+	// The ids need not exist: delete answers 204 either way, because the caller
+	// holds the capability and there is nothing to learn from the distinction.
+	// That is precisely why the *limit* is the only thing bounding the work.
+	var refusedAt int
+	for i := 1; i <= 210; i++ {
+		rec := do(h, http.MethodDelete, "/v1/blobs/"+uuid.NewString(), token,
+			"198.51.100.172", nil)
+		if rec.Code == http.StatusTooManyRequests {
+			refusedAt = i
+			break
+		}
+		if rec.Code != http.StatusNoContent {
+			t.Fatalf("delete %d: status %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+	if refusedAt == 0 {
+		t.Fatal("210 deletes were all accepted — the endpoint is unthrottled")
+	}
+	if refusedAt <= 200 {
+		t.Fatalf("refused at %d, before the documented capacity of 200", refusedAt)
 	}
 }

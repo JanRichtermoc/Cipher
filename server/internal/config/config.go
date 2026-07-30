@@ -60,6 +60,25 @@ type Config struct {
 	// to a separate streaming route in P4.S09 that does not use this limit.
 	MaxRequestBytes int64
 
+	// RateLimitPepper keys the rate limiter's subject hashes (ratelimit.Subject).
+	//
+	// **Optional, and both settings are a real trade-off rather than one being
+	// obviously right.** Empty means the relay generates a fresh 32-byte pepper
+	// at startup, which is the P4 behaviour:
+	//
+	//   - Configured: buckets survive a restart. Without it, anything that can
+	//     make the process restart — a crash loop, a deploy, an OOM — hands every
+	//     caller a fresh allowance, which is a bypass of the invite-redemption
+	//     brute-force limit and the prekey-drain limit at the same time
+	//     (AUDIT 5.24).
+	//   - Configured: the bucket keys become stable for the lifetime of the
+	//     value, so a Redis dump taken twice can be correlated. That is the cost,
+	//     and it is why this is not simply mandatory.
+	//
+	// A deployment that is not restarted casually should set it. Rotating it
+	// resets every bucket once, which is the same effect a restart used to have.
+	RateLimitPepper []byte
+
 	// TrustedProxies are the peers whose X-Real-IP header may be believed.
 	//
 	// **Empty means trust nobody**, which is the P4 behaviour: the header is
@@ -151,6 +170,25 @@ func Load() (Config, error) {
 		return out
 	}
 
+	// secret reads an optional secret and enforces a minimum length.
+	//
+	// Hex or base64 would both be reasonable; raw bytes are accepted so an
+	// operator can use `openssl rand -hex 32` or a passphrase without having to
+	// know which. The floor is what matters: a two-character pepper is worse than
+	// none, because it looks configured.
+	secret := func(key string, minLen int) []byte {
+		raw := strings.TrimSpace(os.Getenv(key))
+		if raw == "" {
+			return nil
+		}
+		if len(raw) < minLen {
+			problems = append(problems,
+				fmt.Sprintf("%s must be at least %d characters", key, minLen))
+			return nil
+		}
+		return []byte(raw)
+	}
+
 	bytesLimit := func(key string, fallback int64) int64 {
 		raw := strings.TrimSpace(os.Getenv(key))
 		if raw == "" {
@@ -189,6 +227,9 @@ func Load() (Config, error) {
 		ShutdownGrace:     duration("RELAY_SHUTDOWN_GRACE", 15*time.Second),
 
 		MaxRequestBytes: bytesLimit("RELAY_MAX_REQUEST_BYTES", 128*1024),
+
+		// 32 characters, matching the 32 random bytes the fallback generates.
+		RateLimitPepper: secret("RELAY_RATELIMIT_PEPPER", 32),
 
 		// No default, and no error when absent: running with no proxy in front
 		// is a legitimate configuration (it is how the integration suite and

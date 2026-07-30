@@ -100,6 +100,10 @@ services:
       RELAY_REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
       RELAY_BLOB_DIR: /var/lib/cipher/blobs
+      # Empty by default, and empty means "a fresh one per process", which resets
+      # every rate-limit bucket on every restart. Set it in .env for a deployment
+      # that is not restarted casually; docs/BACKEND.md §5 argues both sides.
+      RELAY_RATELIMIT_PEPPER: ${RELAY_RATELIMIT_PEPPER:-}
       # Empty by default, and empty means trust nobody: X-Real-IP is ignored and
       # the TCP peer is the client. Correct for local development, where there is
       # no proxy — and the safe way to be wrong in production, since the failure

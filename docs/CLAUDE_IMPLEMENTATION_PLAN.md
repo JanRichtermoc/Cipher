@@ -35,7 +35,20 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 sealed local storage, and acknowledge-only-what-is-durable.
                 AUDIT 5.3 CLOSED; 4.10, 5.19, 5.20, 5.21 found and closed on
                 the way. ***
-                104 integration tests + 179 iOS tests, verify-all.sh 11/11.
+                *** SECURITY AUDIT REMEDIATION 2026-07-30 — docs/SECURITY_AUDIT.md
+                was reviewed and every finding that could and should be fixed
+                now is. Fixed: AUDIT 1.11 (a reachable CVE in x/text sat in
+                go.mod for two phases; bumped, and a govulncheck gate added so
+                the next one is caught), 5.22 (the blob byte quota was charged
+                and never checked — the real ceiling was 10 GB/day/account),
+                5.23 (ack and blob-delete had no rate limit at all), 5.24
+                (every restart reset every rate-limit bucket), 1.5 (the
+                CocoaPods sandbox exemption is now scoped to the three targets
+                that provably need it). NOT pulled forward: safety numbers
+                (P5.S12), prekey rotation (P6.S01), sealed sender (P7.S01),
+                profile fields (P5.S11) — the reasons are in SECURITY_AUDIT.md
+                Appendix C. ***
+                113 integration tests + 179 iOS tests, verify-all.sh 12/12.
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
                 Ubuntu 24.04, running main. TLS 1.3 only, Let's Encrypt ECDSA,
                 cert expires 2026-10-27, renewal reuses the key.

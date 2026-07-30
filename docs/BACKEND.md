@@ -377,8 +377,45 @@ Token-bucket in Redis. Keyed by session token hash where authenticated, by sourc
 | `PUT /v1/keys` | 6 / day / account | Prekey churn has no legitimate reason to be frequent |
 | `POST /v1/messages` | 60 / minute / account | Flood control |
 | `GET /v1/messages` | 120 / minute / account | Polling |
-| `POST /v1/blobs` | 100 / day and 500 MB / day / account | Storage |
+| `POST /v1/messages/ack` | 120 / minute / account | Each call is a `DELETE … id = ANY($2)` with up to 200 ids. **Added after it was found unthrottled** (AUDIT 5.23) |
+| `POST /v1/blobs` | 100 / day and 500 MB / day / account | Storage. The byte half is enforced, not merely counted — see below |
+| `DELETE /v1/blobs/{id}` | 200 / hour / account | Removes a row and unlinks a file. **Added after it was found unthrottled** (AUDIT 5.23) |
 | `POST /v1/auth/rotate` | 10 / hour / account | Token grinding |
+
+### The blob byte quota, and why charging is not enforcing
+
+The 500 MB figure was in this table for a whole phase while nothing consulted it. The bytes were
+charged after each upload, in a loop, whose result was discarded — so the daily ceiling was really
+the 100-upload count limit, which is ten gigabytes (AUDIT 5.22).
+
+Two changes make it real, and both matter:
+
+1. **One megabyte is charged *before* the write and the remainder after.** The size is not known
+   until the upload finishes, and `Content-Length` is a claim, so a single upload can still exceed
+   the remaining allowance by up to one blob. The pre-charge is what refuses the *next* one.
+2. **The post-charge saturates.** A token bucket that refuses without deducting leaves the bucket
+   exactly as full as it was before the overrun, so the next request is permitted, and the next.
+   `ratelimit.Charge` therefore takes whatever is left and reports that the subject is now over
+   quota; `ratelimit.Allow` keeps the non-deducting behaviour, which is the right one for a request
+   that was refused and therefore not served.
+
+A limiter error on either charge **refuses the upload and removes the bytes**. An unmeasurable
+quota is the same as no quota, and the limiter's stated policy is to fail closed (§5's whole
+argument for that is in `ratelimit.Allow`).
+
+### The subject pepper survives a restart only if you configure it
+
+Bucket keys are `HMAC(pepper, kind ‖ 0x00 ‖ value)` so a Redis dump does not enumerate the
+addresses that spoke to the relay. The pepper is `RELAY_RATELIMIT_PEPPER`, and when it is unset the
+relay generates one per process — which means **every restart hands every caller a fresh
+allowance**, including the invite-redemption brute-force limit and the prekey-drain limit
+(AUDIT 5.24). Anything that can restart the process therefore resets the limits.
+
+Configuring it is not free either: the keys become stable for the lifetime of the value, so two
+Redis dumps can be correlated. That is why it is optional rather than mandatory, why the
+unconfigured case is now logged as a warning rather than being silent, and why a deployment that is
+not restarted casually should set it. Rotating it resets every bucket once — the same effect a
+restart used to have every time.
 
 ### What the client does to stay inside these limits (P5.S10)
 

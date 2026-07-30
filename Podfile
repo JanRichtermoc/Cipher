@@ -61,11 +61,12 @@ post_install do |installer|
   # This is a real reduction in build-time isolation, accepted and recorded as a
   # residual risk in Vendor/libsignal/DECISIONS.md. It is compensated by pinning
   # the tag to an immutable commit and verifying the binary checksum independently.
-  installer.pods_project.build_configurations.each do |config|
-    config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
+  # Scoped to the targets that actually run a script phase, rather than applied to
+  # everything. Attempt at L-04 from the security audit.
+  scripted = installer.pods_project.targets.select do |target|
+    target.shell_script_build_phases.any?
   end
-
-  installer.pods_project.targets.each do |target|
+  scripted.each do |target|
     target.build_configurations.each do |config|
       config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
     end
@@ -97,7 +98,6 @@ post_install do |installer|
     project = aggregate.user_project
 
     project.build_configurations.each do |config|
-      config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'NO'
       config.build_settings['SWIFT_ENABLE_EXPLICIT_MODULES'] = 'NO'
     end
 

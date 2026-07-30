@@ -179,7 +179,7 @@ jobs:
   #
   # A separate job on Linux, and it has to be. GitHub's macOS runners are virtual machines
   # without a Linux container runtime, so the `verify` job above cannot start Postgres at
-  # all — which is why `verify-all.sh` gate 4 covers only what runs without a container and
+  # all — which is why `verify-all.sh` gate 5 covers only what runs without a container and
   # this job covers the rest. Splitting them is not a preference; running these on macos-26
   # is not an option that exists.
   #
@@ -248,3 +248,14 @@ jobs:
           fetch-depth: 0
       - name: Supply chain must be verified online for a release
         run: ./Scripts/verify-supply-chain.sh
+
+      # The other half of the same question, and it also needs the network: the
+      # vulnerability database is fetched at run time, so `--offline` skips it.
+      # A release must never be the build where that skip went unnoticed.
+      - name: Set up Go for the vulnerability gate
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: server/go.mod
+          cache: false
+      - name: Dependencies must be scanned online for a release
+        run: ./Scripts/verify-vulns.sh

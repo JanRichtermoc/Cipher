@@ -41,6 +41,16 @@ const maxAckBatch = 200
 var (
 	sendLimit  = ratelimit.Limit{Capacity: 60, Window: time.Minute}
 	fetchLimit = ratelimit.Limit{Capacity: 120, Window: time.Minute}
+	// Acknowledgement had no limit at all (AUDIT 5.23). It is cheap per call but
+	// it is a `DELETE ... WHERE aci = $1 AND id = ANY($2)` with up to 200 ids, so
+	// an authenticated caller could hold a database connection busy indefinitely
+	// for free.
+	//
+	// Sized against the client's real behaviour rather than guessed: one receive
+	// cycle drains at most 20 pages and acknowledges once per page, so 120 per
+	// minute is six full drains a minute — far more than a device that is told
+	// about new mail by push will ever need, and still a ceiling.
+	ackLimit = ratelimit.Limit{Capacity: 120, Window: time.Minute}
 )
 
 // MessagesHandler is the store-and-forward relay.
@@ -228,6 +238,9 @@ func (h *MessagesHandler) acknowledge(w http.ResponseWriter, r *http.Request) {
 	aci, ok := AccountFrom(ctx)
 	if !ok {
 		httpx.WriteError(w, http.StatusUnauthorized)
+		return
+	}
+	if !h.auth.allow(w, r, "message-ack", aci.String(), ackLimit) {
 		return
 	}
 

@@ -63,6 +63,49 @@ go mod verify >/dev/null || {
 }
 echo "  ok    module checksums verified"
 
+# ...and that the committed vendor tree is byte-identical to what those modules
+# contain, which is a different question `go mod verify` does not ask.
+#
+# `go mod verify` checks the module *cache* against go.sum. A `-mod=vendor` build
+# then trusts `vendor/` without comparing it to anything at all — so an edit in
+# there, deliberate or accidental, is invisible to every other gate. Found for
+# real: `github.com/google/uuid`'s vendored copy had had its doc comments
+# reformatted at some point (a stray `gofmt -w .` over the whole tree is the
+# likely cause, since this script deliberately excludes vendor/ from the format
+# check), so the bytes in the diff were not upstream's bytes. Comments only, this
+# time. AUDIT 1.12.
+#
+# Re-vendors into a temporary directory and compares. Needs a warm module cache
+# or the network; `go mod verify` above already needs the cache, so this adds no
+# new requirement.
+VENDOR_CHECK="$(mktemp -d)"
+trap 'rm -rf "$VENDOR_CHECK"' EXIT
+if ! go mod vendor -o "$VENDOR_CHECK" >/dev/null 2>&1; then
+  echo "FAILED: could not re-vendor to verify the committed tree" >&2
+  exit 1
+fi
+# `.DS_Store` is excluded, and only that. It is untracked (`.gitignore:47`) and
+# Finder recreates it in any directory a developer opens, so failing on it would
+# make this gate cry wolf on every macOS machine — which is how a gate gets
+# deleted (AUDIT R2). Nothing else is excluded: an ignore list is where a real
+# modification would eventually hide.
+if ! diff -r -q -x .DS_Store "$VENDOR_CHECK" vendor >/dev/null 2>&1; then
+  cat >&2 <<'EOF'
+FAILED: server/vendor/ is not byte-identical to the modules go.mod selects.
+
+  A -mod=vendor build reads that tree and nothing compares it to upstream, so a
+  modified dependency would ship unnoticed. Restore it:
+
+    cd server && go mod vendor
+
+  Then read the resulting diff before committing it — that is the review this
+  gate exists to force.
+EOF
+  diff -r -q -x .DS_Store "$VENDOR_CHECK" vendor | head -20 >&2 || true
+  exit 1
+fi
+echo "  ok    vendor/ is byte-identical to the selected modules"
+
 # --- Build ------------------------------------------------------------------
 # -mod=vendor explicitly: with a vendor directory present Go uses it by default,
 # but stating it means a future default change cannot silently start resolving
