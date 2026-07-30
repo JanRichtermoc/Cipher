@@ -226,6 +226,92 @@ final class ConversationArchiveTests: XCTestCase {
         XCTAssertTrue(flag)
     }
 
+    // MARK: Migration from the P5.S10 record layout
+
+    /// Records written by a pre-P5.S11 build must survive the storage change.
+    ///
+    /// They are sealed under the same key, so they are perfectly readable — which is exactly
+    /// why not moving them would have been a deletion presented as an empty conversation list,
+    /// rather than a format change.
+    func testRecordsWrittenInTheOldLayoutAreMigratedRatherThanLost() async throws {
+        let engine = try await CryptoEngine.open(container: container)
+        let peer = UUID()
+        let key = peer.uuidString.lowercased()
+
+        // Exactly what P5.S10 wrote: an index of peers, a conversation record, one record per
+        // message, and the publication flag.
+        let conversation = """
+        {"schema":1,"peer":"\(peer.uuidString)","isPinned":false,"isMuted":false,\
+        "isBlocked":false,"firstOrdinal":0,"nextOrdinal":2,"lastReadOrdinal":0,\
+        "lastActivityMs":99}
+        """
+        try await engine.storeSealed(
+            namespace: "conv-index", key: "conversations",
+            value: Data("[\"\(peer.uuidString)\"]".utf8))
+        try await engine.storeSealed(
+            namespace: "conv", key: key, value: Data(conversation.utf8))
+        for ordinal in 0..<2 {
+            let message = """
+            {"schema":1,"id":"\(UUID().uuidString)","ordinal":\(ordinal),"direction":"incoming",\
+            "text":"old \(ordinal)","timestampMs":\(ordinal + 1),"state":"received",\
+            "establishedSession":false}
+            """
+            try await engine.storeSealed(
+                namespace: "msg", key: "\(key)/\(ordinal)", value: Data(message.utf8))
+        }
+        try await engine.storeSealed(namespace: "flag", key: "keys-published", value: Data([1]))
+
+        // First read through the new archive triggers the migration.
+        let archive = ConversationArchive(engine: engine)
+        let messages = try await archive.messages(peer)
+        XCTAssertEqual(messages.map(\.text), ["old 0", "old 1"])
+
+        let stored = try await archive.conversation(peer)
+        XCTAssertEqual(stored?.nextOrdinal, 2)
+        XCTAssertEqual(stored?.lastActivityMs, 99)
+        let ids = try await archive.conversationIds()
+        XCTAssertEqual(ids, [peer])
+        let flag = try await archive.flag(ConversationArchive.keysPublishedFlag)
+        XCTAssertTrue(flag, "the publication flag must survive, or keys are published twice")
+
+        // The originals are gone, so the plaintext-free database is the only copy and a future
+        // read cannot pick up a stale record.
+        let oldConversation = try await engine.loadSealed(namespace: "conv", key: key)
+        XCTAssertNil(oldConversation, "the old conversation record was left behind")
+        let oldMessage = try await engine.loadSealed(namespace: "msg", key: "\(key)/0")
+        XCTAssertNil(oldMessage, "the old message record was left behind")
+        let oldIndex = try await engine.loadSealed(namespace: "conv-index", key: "conversations")
+        XCTAssertNil(oldIndex, "the old index record was left behind")
+
+        // Appending afterwards continues the counter rather than restarting it, so a migrated
+        // conversation cannot overwrite its own history.
+        let appended = try await archive.append(
+            to: peer, direction: .outgoing, text: "new", timestampMs: 100, state: .sent)
+        XCTAssertEqual(appended.ordinal, 2)
+        let all = try await archive.messages(peer)
+        XCTAssertEqual(all.map(\.text), ["old 0", "old 1", "new"])
+    }
+
+    /// A container that never held the old layout must not be disturbed by the migration, and
+    /// the migration must not run a second time.
+    func testMigrationIsANoOpOnAFreshContainerAndDoesNotRepeat() async throws {
+        let (archive, engine) = try await makeArchive()
+        let peer = UUID()
+
+        _ = try await archive.append(
+            to: peer, direction: .outgoing, text: "first", timestampMs: 1, state: .sent)
+
+        // A second archive over the same container re-checks and must leave everything alone.
+        let reopened = ConversationArchive(engine: engine)
+        let reopenedMessages = try await reopened.messages(peer).map(\.text)
+        XCTAssertEqual(reopenedMessages, ["first"])
+
+        _ = try await reopened.append(
+            to: peer, direction: .outgoing, text: "second", timestampMs: 2, state: .sent)
+        let afterAppend = try await reopened.messages(peer).map(\.text)
+        XCTAssertEqual(afterAppend, ["first", "second"])
+    }
+
     // MARK: Refusals
 
     func testARecordFromANewerSchemaIsRefusedRatherThanPartiallyRead() async throws {
@@ -240,8 +326,10 @@ final class ConversationArchiveTests: XCTestCase {
         {"schema":2,"id":"\(UUID().uuidString)","ordinal":0,"direction":"incoming",\
         "text":"from the future","timestampMs":1,"state":"received","establishedSession":false}
         """
-        try await engine.storeSealed(
-            namespace: "msg", key: "\(peer.uuidString.lowercased())/0",
+        // Planted through the row store, which is where messages live since P5.S11. The
+        // invariant is unchanged; only the address of a message record moved.
+        try await engine.storeSealedRow(
+            namespace: "msg", group: peer.uuidString.lowercased(), ordinal: 0,
             value: Data(future.utf8))
 
         do {
@@ -258,8 +346,8 @@ final class ConversationArchiveTests: XCTestCase {
         _ = try await archive.append(
             to: peer, direction: .incoming, text: "ok", timestampMs: 1, state: .received)
 
-        try await engine.storeSealed(
-            namespace: "msg", key: "\(peer.uuidString.lowercased())/0",
+        try await engine.storeSealedRow(
+            namespace: "msg", group: peer.uuidString.lowercased(), ordinal: 0,
             value: Data("not json".utf8))
 
         do {

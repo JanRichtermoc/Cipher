@@ -1,5 +1,6 @@
 Cipher/App/AppSession.swift
 Cipher/App/MainTabView.swift
+Cipher/App/ProfileArchive.swift
 Cipher/App/RootView.swift
 Cipher/CipherApp.swift
 Cipher/Components/MessagingFailureBanner.swift

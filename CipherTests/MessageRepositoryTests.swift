@@ -283,9 +283,15 @@ final class MessageRepositoryTests: XCTestCase {
         // failed to store loses the message permanently — there is nothing to ask for again.
         //
         // The failure is injected from outside rather than through a hook in the shipping code:
-        // the app-record directory is made unwritable, so the session and prekey writes that
-        // `decrypt` performs still succeed (they live in sibling directories) and only the
+        // the sealed database is made unwritable, so the session and prekey writes that
+        // `decrypt` performs still succeed (they are files in sibling directories) and only the
         // archive write fails. That is exactly the shape of a full disk.
+        //
+        // It used to take write permission from the `app-data` directory, which was where
+        // message records lived until P5.S11 moved them into `records.sqlite3`. The test kept
+        // passing for a while afterwards for the wrong reason and then failed outright, which
+        // is the better of the two outcomes: an injection that no longer injects anything is a
+        // test that proves nothing while still reporting success.
         let envelope = try await fixture.envelopeFromPeer("must not be acknowledged")
         var routes = try await defaultRoutes()
         routes["GET /v1/messages"] = [
@@ -294,18 +300,30 @@ final class MessageRepositoryTests: XCTestCase {
         RoutedStubRelay.reset(routes)
         let repository = makeRepository()
 
-        // Create the directory, then take write permission away from it.
+        // Force the database into existence, then take write permission away from it and from
+        // the directory it would create its siblings in.
         try await repository.startConversation(with: UUID(), nickname: nil)
-        let appData = fixture.localContainer.appendingPathComponent("app-data", isDirectory: true)
-        var isDirectory: ObjCBool = false
+
+        let container = fixture.localContainer
+        let databaseFiles = ["records.sqlite3", "records.sqlite3-wal", "records.sqlite3-shm"]
+            .map { container.appendingPathComponent($0) }
         XCTAssertTrue(
-            FileManager.default.fileExists(atPath: appData.path, isDirectory: &isDirectory),
-            "the app-record directory should exist by now — otherwise this test proves nothing")
+            FileManager.default.fileExists(atPath: databaseFiles[0].path),
+            "the sealed database should exist by now — otherwise this test proves nothing")
+
+        for url in databaseFiles where FileManager.default.fileExists(atPath: url.path) {
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o400], ofItemAtPath: url.path)
+        }
         try FileManager.default.setAttributes(
-            [.posixPermissions: 0o500], ofItemAtPath: appData.path)
+            [.posixPermissions: 0o500], ofItemAtPath: container.path)
         defer {
             try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o700], ofItemAtPath: appData.path)
+                [.posixPermissions: 0o700], ofItemAtPath: container.path)
+            for url in databaseFiles where FileManager.default.fileExists(atPath: url.path) {
+                try? FileManager.default.setAttributes(
+                    [.posixPermissions: 0o600], ofItemAtPath: url.path)
+            }
         }
 
         do {

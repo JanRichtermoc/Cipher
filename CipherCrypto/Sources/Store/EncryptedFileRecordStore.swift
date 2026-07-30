@@ -48,7 +48,7 @@ import Security
 ///
 /// Not `Sendable` by construction: like the protocol store it backs, it is confined to the
 /// crypto queue and every entry point says so.
-internal final class EncryptedFileRecordStore: RecordStore {
+internal final class EncryptedFileRecordStore: RecordStore, RecordKeyDeriving {
 
     /// Keychain account holding the 256-bit record encryption key.
     internal static let encryptionKeyAccount = "record-encryption-key"
@@ -325,4 +325,26 @@ internal final class EncryptedFileRecordStore: RecordStore {
     /// introduced without touching a call site, and so this file has exactly one place
     /// where "which key seals this?" is answered.
     private func sealingKey(for _: RecordKind) -> SymmetricKey { masterKey }
+
+    /// A purpose-separated subkey for another store in this container.
+    ///
+    /// `SealedRecordDatabase` needs to seal values and to compute blind-index tags, and it
+    /// must do both under key material that dies with **this** Keychain item — otherwise
+    /// `destroyAllState` stops being a cryptographic erase of everything and becomes one of
+    /// half of it. Handing out derived keys rather than `masterKey` keeps that item's only
+    /// in-memory holder in this file: a subkey cannot be used to open a record file, and
+    /// cannot be walked back to the key that would.
+    ///
+    /// HKDF-SHA256, no salt. A salt earns its place when the input key material is
+    /// low-entropy or reused across contexts; here it is a uniformly random 256-bit CSPRNG
+    /// key, so the `info` string is doing the only work that needs doing — separating one
+    /// purpose from another — and a stored salt would add a moving part rather than an
+    /// unpredictable one.
+    internal func deriveSubkey(info: String) -> SymmetricKey {
+        CryptoActor.assertIsolated()
+        return HKDF<SHA256>.deriveKey(
+            inputKeyMaterial: masterKey,
+            info: Data(info.utf8),
+            outputByteCount: Self.keyByteCount)
+    }
 }

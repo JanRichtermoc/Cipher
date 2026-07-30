@@ -50,6 +50,10 @@ internal final class CipherProtocolStore {
     /// type is how a reviewer misreads which one a line touches.
     private let deviceIdentity: DeviceIdentity
     private let records: RecordStore
+    /// The app's queryable sealed store (P5.S11). Separate from `records` because the two have
+    /// different shapes, not different trust: both are sealed under keys that die with the
+    /// same Keychain item.
+    private let database: SealedRecordDatabase
     private let secrets: SecretStorage
     private let now: () -> UInt64
 
@@ -58,12 +62,14 @@ internal final class CipherProtocolStore {
     internal init(
         deviceIdentity: DeviceIdentity,
         records: RecordStore,
+        database: SealedRecordDatabase,
         secrets: SecretStorage,
         now: @escaping () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) }
     ) {
         CryptoActor.assertIsolated()
         self.deviceIdentity = deviceIdentity
         self.records = records
+        self.database = database
         self.secrets = secrets
         self.now = now
     }
@@ -87,6 +93,11 @@ internal final class CipherProtocolStore {
     /// no longer exists. That property is why the record store is encrypted at all.
     internal func destroyAllState() throws {
         CryptoActor.assertIsolated()
+        // The database goes with the records and before the secrets, for the reason above: it
+        // holds conversations and message bodies, so leaving it while the key disappears would
+        // leave unopenable ciphertext rather than nothing, and leaving it *after* the key is
+        // gone is the same thing. It closes its connection before unlinking.
+        try database.destroy()
         try records.removeAll()
         try DeviceIdentity.destroy(secrets: secrets)
         try secrets.remove(EncryptedFileRecordStore.encryptionKeyAccount)
@@ -183,6 +194,13 @@ internal final class CipherProtocolStore {
         CryptoActor.assertIsolated()
         try records.remove(.appData, key)
     }
+
+    /// The app's queryable sealed store (P5.S11).
+    ///
+    /// `internal` for exactly the reason `CryptoEngine.store` is: the validated public boundary
+    /// is in `SealedRowStore.swift`, and handing the connection out beyond this module would
+    /// hand out the ability to write a row that nothing sealed.
+    internal var appDatabase: SealedRecordDatabase { database }
 
     // MARK: - Peer identity state, for the UI
 

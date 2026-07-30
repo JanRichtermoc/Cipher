@@ -42,6 +42,18 @@ struct RootView: View {
             }
         }
         .animation(.smooth, value: session.destination)
+        // Hand the session its sealed profile storage as soon as the engine is open (P5.S11,
+        // AUDIT 4.7). Here rather than in `CipherApp` because the store owns the engine and
+        // opening it is async and throwing; here rather than in `SettingsView` because the
+        // migration off `UserDefaults` must run whether or not the user visits that screen.
+        //
+        // A failure is not surfaced: `adoptProfileStorage` logs and leaves the placeholder
+        // values in place, and a device that cannot open its own container has a larger problem
+        // that the messaging path reports for real.
+        .task {
+            guard let engine = try? await store.engine() else { return }
+            await session.adoptProfileStorage(engine: engine)
+        }
         // The other half of the app lock, and the half that was missing.
         //
         // `lockIfNeeded()` used to have exactly one caller — a "Lock Now" button in Settings

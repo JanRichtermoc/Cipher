@@ -3,7 +3,9 @@
 //  Cipher
 //
 
+import CipherCrypto
 import Foundation
+import os
 import SwiftUI
 
 @Observable
@@ -41,14 +43,30 @@ final class AppSession {
     var notificationPreviewsEnabled: Bool {
         didSet { defaults.set(notificationPreviewsEnabled, forKey: Keys.previews) }
     }
+    /// The local user's own profile fields.
+    ///
+    /// **Sealed, not in `UserDefaults`** since P5.S11 — see `ProfileArchive` and AUDIT 4.7. They
+    /// persist through `profiles`, which is attached once the engine is open; before that they
+    /// hold the placeholders below and writing to them persists nothing, which is why
+    /// `adoptProfileStorage` loads before anything can render an editor.
     var displayName: String {
-        didSet { defaults.set(displayName, forKey: Keys.displayName) }
+        didSet { persistProfile() }
     }
     var username: String {
-        didSet { defaults.set(username, forKey: Keys.username) }
+        didSet { persistProfile() }
     }
     var about: String {
-        didSet { defaults.set(about, forKey: Keys.about) }
+        didSet { persistProfile() }
+    }
+
+    /// Shown until the sealed profile has been read, and used for a fresh installation.
+    ///
+    /// Deliberately not "" — an empty display name renders as a blank row rather than as
+    /// something the user recognises as not-yet-set.
+    private enum ProfileDefault {
+        static let displayName = "You"
+        static let username = "you"
+        static let about = "Available"
     }
 
     #if DEBUG
@@ -106,9 +124,14 @@ final class AppSession {
         self.appLockEnabled = lockEnabled
         self.defaultDisappearingSeconds = defaults.object(forKey: Keys.disappearing) as? Int ?? 0
         self.notificationPreviewsEnabled = defaults.object(forKey: Keys.previews) as? Bool ?? true
-        self.displayName = defaults.string(forKey: Keys.displayName) ?? "You"
-        self.username = defaults.string(forKey: Keys.username) ?? "you"
-        self.about = defaults.string(forKey: Keys.about) ?? "Available"
+        // Placeholders. The real values are sealed in the container and arrive via
+        // `adoptProfileStorage`, which also moves anything a pre-P5.S11 build left in the plist
+        // and then deletes it. They are not read from `defaults` here even as a fallback: doing
+        // so would keep the plist as a live source and the migration would never be the only
+        // reader, which is how a retired store stays alive indefinitely.
+        self.displayName = ProfileDefault.displayName
+        self.username = ProfileDefault.username
+        self.about = ProfileDefault.about
         self.isAppLocked = lockEnabled
         self.credential = sessions.current()
     }
@@ -183,15 +206,111 @@ final class AppSession {
         credential = nil
         isAppLocked = false
 
-        // Profile fields go too. They live in UserDefaults — unencrypted, readable by
-        // anything with container access — and leaving a display name and an "about" behind
-        // after sign-out means the device still says who used it. Not a secret, but PII, and
-        // sign-out is the moment a user expects it gone. The encrypted store that should
-        // hold this properly is P5.S11; until then this at least does not outlive the
-        // session. See AUDIT 4.7.
-        displayName = ""
-        username = ""
-        about = ""
+        // Profile fields go too: leaving a display name and an "about" behind after sign-out
+        // means the device still says who used it. Sealed since P5.S11 (AUDIT 4.7), so this
+        // deletes the sealed row rather than blanking a plist entry.
+        //
+        // The in-memory values are reset first and the row is deleted after, without waiting:
+        // `signOut` is synchronous because it must not be able to fail half way and leave a
+        // signed-out app holding a credential. The row's deletion is not load-bearing for that
+        // — the record is sealed under a key this device still holds either way, and a
+        // subsequent sign-in overwrites it — so making it a `Task` is a latency decision, not a
+        // security one.
+        displayName = ProfileDefault.displayName
+        username = ProfileDefault.username
+        about = ProfileDefault.about
+        if let profiles {
+            Task {
+                do {
+                    try await profiles.clear()
+                } catch {
+                    AppLog.session.error("clearing the stored profile on sign-out failed")
+                }
+            }
+        }
+    }
+
+    // MARK: - Profile storage
+
+    /// The sealed store for the three profile fields. `nil` until the engine is open.
+    private var profiles: ProfileArchive?
+
+    /// Suppresses the `didSet` writes while `adoptProfileStorage` populates the fields, so
+    /// loading a profile does not immediately write it back.
+    private var isLoadingProfile = false
+
+    /// Attaches sealed storage, loads the profile, and retires the `UserDefaults` copy.
+    ///
+    /// Called once the engine is open. Migration is part of the same pass on purpose: reading
+    /// the plist and deleting it must not be separable, or a build that crashed between them
+    /// would leave the fields in both places, with the unencrypted one still authoritative for
+    /// anyone reading the container.
+    func adoptProfileStorage(engine: CryptoEngine) async {
+        guard profiles == nil else { return }
+        let archive = ProfileArchive(engine: engine)
+
+        do {
+            let stored = try await archive.load()
+            let legacy = legacyProfileFromDefaults()
+
+            isLoadingProfile = true
+            if let stored {
+                displayName = stored.displayName
+                username = stored.username
+                about = stored.about
+            } else if let legacy {
+                displayName = legacy.displayName
+                username = legacy.username
+                about = legacy.about
+            }
+            isLoadingProfile = false
+
+            // A pre-P5.S11 build's values are written into the sealed store before the plist
+            // keys are removed, so an interruption leaves them readable rather than gone.
+            if stored == nil, let legacy {
+                try await archive.save(legacy)
+            }
+            removeLegacyProfileFromDefaults()
+
+            profiles = archive
+        } catch {
+            // Deliberately not fatal and deliberately not silent. The fields keep their
+            // placeholders and nothing persists, which is visibly wrong in the profile editor
+            // rather than quietly wrong on disk.
+            isLoadingProfile = false
+            AppLog.session.error("opening the sealed profile store failed")
+        }
+    }
+
+    private func persistProfile() {
+        guard !isLoadingProfile, let profiles else { return }
+        let snapshot = ProfileArchive.StoredProfile(
+            displayName: displayName, username: username, about: about)
+        Task {
+            do {
+                try await profiles.save(snapshot)
+            } catch {
+                AppLog.session.error("persisting the profile failed")
+            }
+        }
+    }
+
+    /// The three fields as a pre-P5.S11 build left them, or `nil` if it never wrote any.
+    private func legacyProfileFromDefaults() -> ProfileArchive.StoredProfile? {
+        let name = defaults.string(forKey: Keys.displayName)
+        let user = defaults.string(forKey: Keys.username)
+        let about = defaults.string(forKey: Keys.about)
+        guard name != nil || user != nil || about != nil else { return nil }
+        return ProfileArchive.StoredProfile(
+            displayName: name ?? ProfileDefault.displayName,
+            username: user ?? ProfileDefault.username,
+            about: about ?? ProfileDefault.about)
+    }
+
+    private func removeLegacyProfileFromDefaults() {
+        defaults.removeObject(forKey: Keys.displayName)
+        defaults.removeObject(forKey: Keys.username)
+        defaults.removeObject(forKey: Keys.about)
     }
 
     /// Whether the device can perform the owner check at all.

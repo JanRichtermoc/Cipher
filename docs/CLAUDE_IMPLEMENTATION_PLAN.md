@@ -18,11 +18,12 @@ authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_N
 ## STATUS
 
 ```
-CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE. P5.S05/S06/S08/S09/S10 done.
+CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
+                P5.S05/S06/S08/S09/S10/S11 done.
 UNMERGED:       *** branch `p5/stage-h` is pushed and NOT merged. ***
-                Carries P5.S05 stage H, P5.S06, P5.S08, P5.S09, P5.S10 and
-                the AUDIT cleanup. The user merges PRs by hand — give them
-                the link and stop.
+                Carries P5.S05 stage H, P5.S06, P5.S08, P5.S09, P5.S10,
+                P5.S11, the AUDIT cleanup and the CI fix. The user merges
+                PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 *** P5.S05 COMPLETE — external full-port scan shows
                 22/80/443 and nothing else, on BOTH address families. ***
@@ -61,7 +62,27 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 on PATH, so it passed locally under 1.26.5 and failed in CI —
                 green on the one machine where the fix would be written. It now
                 pins GOTOOLCHAIN to the declared version. Negative-tested twice. ***
-                113 integration tests + 179 iOS tests, verify-all.sh 12/12.
+                *** P5.S11 COMPLETE — the encrypted local message DATABASE.
+                AUDIT 4.3 and 4.7 are CLOSED. SealedRecordDatabase: SQLite
+                from the SDK (no new dependency), in the crypto container, on
+                the crypto queue, every value AES-GCM sealed with the AAD
+                binding it to (namespace, group, ordinal). Keys are HKDF
+                subkeys of the EXISTING record key, so one Keychain item is
+                still the erase for everything. Peer ids are a KEYED BLIND
+                INDEX, never a column. ConversationArchive kept its interface,
+                lost its index record, and appends in one transaction. Old
+                records are migrated, not dropped. Profile fields left
+                UserDefaults. FOUND ON THE WAY: with a wrong key the keyed
+                index made every lookup MISS, so reads returned nil — an
+                empty history instead of a failure, which is what AUDIT 4.9
+                forbids. Caught by its own test before commit; fixed with a
+                key-check row, so the container refuses to open. New residual
+                recorded as AUDIT 4.11: an index lets whoever holds the file
+                count messages per conversation. 4.4 NARROWED, not closed —
+                libsignal's own records are still one file each. ***
+                113 integration tests + 227 iOS tests, verify-all.sh 12/12.
+                (The 179 in earlier revisions of this block undercounted;
+                227 = 147 CipherCryptoTests + 56 + 24 CipherTests, measured.)
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
                 Ubuntu 24.04, running main. TLS 1.3 only, Let's Encrypt ECDSA,
                 cert expires 2026-10-27, renewal reuses the key.
@@ -111,16 +132,16 @@ FOUND IN S10:   Four things, all CLOSED, all in AUDIT.md:
                   5.21 Six shipping affordances depicted capabilities that do
                        not exist (calls, attachments, voice recording,
                        delivery/read receipts, linked devices, storage).
-NEXT STEP:      P5.S11 — the encrypted local message DATABASE. The bodies are
-                already sealed in the crypto container (AUDIT 4.3, narrowed):
-                what is missing is a queryable store — reads currently load a
-                conversation record by record, the only index is the ordinal
-                counter, and disappearing-message deletion has nothing to run
-                against. Replace ConversationArchive's storage format, keep
-                its interface, and take over the three profile fields still in
-                UserDefaults (4.7). Then P5.S12 (safety numbers, which also
-                unblocks the identity-change dead end 5.21 leaves behind),
-                P5.S13 (two-device test on staging).
+NEXT STEP:      P5.S12 — safety numbers / QR from real identity keys
+                (LibSignalClient Fingerprint APIs): persist verification tied
+                to the fingerprint, invalidate on identity change, and wire it
+                to the existing receive-OK / send-blocked policy. Closes AUDIT
+                2.5, and it is what unblocks the dead end AUDIT 3.2 leaves
+                behind — a peer whose identity key changed currently cannot be
+                re-approved, because nothing renders the key the user is meant
+                to accept. SECURITY-CRITICAL: identity binding and key
+                comparison. Use the strongest available model.
+                Then P5.S13 (two-device test on staging).
 STILL HUMAN:    P5.S07 review — see FOUND IN S07. Exactly ONE item is still
                 outstanding: dropping the apex A record (item 2). Item 1 is
                 accepted as AUDIT 5.17 and item 3 was done 2026-07-30.
@@ -215,13 +236,11 @@ a check that stops working fails loudly instead of passing vacuously.
 | AUDIT | Item | Closes in |
 |-------|------|-----------|
 | 3.8 | First-contact address is relabellable by the relay | P5.S12 / P7 |
-| 4.4 | No transactional store, so no NSE/App Group yet | P6, gated on P5.S11 |
+| 4.4 | No transactional store for *libsignal's* records, so no NSE/App Group yet | P6 |
 | 2.4 | No key rotation / replenishment | P6.S01 |
 | 2.5 | No safety-number UI | **P5.S12** (moved from P6) |
 | 3.1 | Base-key witness FIFO eviction | P4.S06 + P6.S01, resolved P6.S02 |
-| 4.3 | Message bodies are sealed but not in a queryable database | **P5.S11** |
 | 5.1 | Messaging works, but only against a stub — not yet device to device | P5.S13, closed P5.S14 |
-| 4.7 | The local user's own name / username / about still in UserDefaults | P5.S11 |
 | 6.2 | Acknowledgements not in About screen | P8.S07 |
 | 6.3 | `ITSAppUsesNonExemptEncryption` undeclared | P8.S06 (legal) |
 
@@ -413,7 +432,7 @@ and an encrypted local database **from the first real message**.
 | **P5.S08** | iOS network client: HTTPS only, TLS 1.3, **certificate/public-key pinning** matching P5.S06, failing closed. Timeouts, retries with jitter. **DONE 2026-07-30.** `Cipher/Networking/`: `RelayEndpoint` (pins), `CertificatePinner` (+ `PinningSessionDelegate`), `RelayClient` (30 s request / 120 s resource, 3 attempts, full jitter, retries only idempotent requests and never a TLS failure). Chain validation runs **before** the pin, so a pin match can never stand in for validation. No ATS exception exists; TLS 1.3 is set via `tlsMinimumSupportedProtocolVersion`, which tightens rather than relaxes. | AI | 5.1 (part) | Test: a wrong-pin server is refused | Add any ATS exception |
 | **P5.S09** | Wire invite redemption + session token into the Keychain. **DONE 2026-07-30.** `InviteRedemption` exchanges a code at `POST /v1/invite/redeem` and returns a `.serverIssued` credential; `AppSession.signIn(with:)` remains the single owner of the signed-in transition, so the Keychain has one writer. The request is **non-idempotent** — an invite is single-use and a retry spends a second code or strands an account. `AuthFlowView`'s `count >= 4` gate is gone. | AI | **C-01 CLOSED** | Real server-issued token gates access; `UserDefaults` edit cannot authenticate | — |
 | **P5.S10** | Replace production `MockStore` paths with a repository backed by `CryptoEngine` + network: encrypt before send, decrypt after fetch, persist ciphertext. **DONE 2026-07-30.** `CipherCrypto` gained `MessagePayload` (a versioned plaintext format inside the ciphertext, so a future receipt type is a new case rather than a guess — and an unknown one is refused, never rendered as text), `generatePublishedKeys` (prekey publication whose **private halves are stored before the public ones are returned**), and a namespaced sealed app store in its own container. `Cipher/` gained `RelayKeyDirectory`, `RelayMailbox`, `ConversationArchive`, `MessageRepository` and `ConversationStore`. Three orderings carry the design: store→encrypt→transmit on send; decrypt→store→**acknowledge** on receive; adopt→publish on registration. A message that cannot decrypt is acknowledged and dropped (retrying can never succeed); a message that failed to *store* is not (it is still on the relay) — `MessagingError.storeUnavailable` exists to keep those apart, and the branch is negative-tested by making the record directory unwritable. | AI | **C-02**, 5.3 | No production path reads `MockStore` | Leave a plaintext fallback |
-| **P5.S11** | **Encrypted local message database** (SQLite/SwiftData sealed under Keychain-backed keys, sharing the crypto queue and container rules). *Moved from P6.* | AI | 4.3 | No plaintext message body at rest; test proves the file is unreadable without the Keychain key | Ship a plaintext DB "for now" |
+| **P5.S11** | **Encrypted local message database** (SQLite/SwiftData sealed under Keychain-backed keys, sharing the crypto queue and container rules). *Moved from P6.* **DONE 2026-07-30.** `SealedRecordDatabase` — SQLite from the SDK, so no new dependency — in the crypto container, on the crypto queue, every value AES-GCM sealed with the AAD binding it to `(namespace, group, ordinal)`, keys HKDF-derived from the **existing** record key so one Keychain item is still the erase for everything. Peer ids are a keyed blind index, never a column: a plaintext ACI column would have been the social graph. `ConversationArchive` kept its interface and lost its index record; `append` is one transaction. Old records are migrated, not dropped. Profile fields moved off `UserDefaults` (4.7). Found on the way: a wrong key made reads return `nil` instead of failing, because the index is keyed — fixed with a key-check row, so the container refuses to open rather than reporting an empty history. | AI | **4.3, 4.7** | No plaintext message body at rest; test proves the file is unreadable without the Keychain key | Ship a plaintext DB "for now" |
 | **P5.S12** | **Safety-number / QR UI** from real identity keys (LibSignalClient Fingerprint APIs): persist verification tied to the fingerprint, invalidate on identity change, wire to the existing receive-OK / send-blocked policy. *Moved from P6.* | AI | 2.5 | Two devices show matching numbers; a substituted identity visibly changes them | Ship "Mark as Verified" that verifies nothing |
 | **P5.S13** | Two-device end-to-end test via staging: register, exchange prekeys, send/receive real ciphertext. | AI + HUMAN | — | Real message delivered device-to-device | Test only in the simulator |
 | **P5.S14** | Close AUDIT 5.1 / 5.3 once transport, auth, and the non-mock messaging path work on staging. | AI | 5.1, 5.3 | Both CLOSED with tests named | — |
