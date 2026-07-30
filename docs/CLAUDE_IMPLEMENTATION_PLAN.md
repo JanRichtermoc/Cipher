@@ -20,10 +20,10 @@ authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_N
 ```
 CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
                 P5.S05/S06/S08/S09/S10/S11 done.
-UNMERGED:       *** branch `p5/stage-h` is pushed and NOT merged. ***
-                Carries P5.S05 stage H, P5.S06, P5.S08, P5.S09, P5.S10,
-                P5.S11, the AUDIT cleanup and the CI fix. The user merges
-                PRs by hand — give them the link and stop.
+UNMERGED:       nothing. `p5/stage-h` was MERGED 2026-07-30 as `3f4cf92`,
+                carrying P5.S05 stage H, S06, S08, S09, S10, S11, the AUDIT
+                cleanup and the CI fix. Branch fresh from `main`. The user
+                merges PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 *** P5.S05 COMPLETE — external full-port scan shows
                 22/80/443 and nothing else, on BOTH address families. ***
@@ -53,7 +53,7 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 (P5.S12), prekey rotation (P6.S01), sealed sender (P7.S01),
                 profile fields (P5.S11) — the reasons are in SECURITY_AUDIT.md
                 Appendix C. ***
-                *** CI FIX 2026-07-30 — the `verify` run for PR #49 failed gate 4
+                *** CI FIX 2026-07-30 — the `verify` run on `p5/stage-h` failed gate 4
                 and the gate was RIGHT: all 21 reachable findings were in the Go
                 STANDARD LIBRARY, which comes from the toolchain, not from the
                 module graph. CI installs Go from server/go.mod, which declared
@@ -84,7 +84,12 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 (The 179 in earlier revisions of this block undercounted;
                 227 = 147 CipherCryptoTests + 56 + 24 CipherTests, measured.)
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
-                Ubuntu 24.04, running main. TLS 1.3 only, Let's Encrypt ECDSA,
+                Ubuntu 24.04, running main @ `3f4cf92` (DEPLOYED 2026-07-30;
+                it had been on `9a279a4`, four relay-affecting commits behind,
+                so it was serving without the 5.22 blob-quota check and with
+                5.23's two unmetered endpoints. RELAY_RATELIMIT_PEPPER is now
+                set — AUDIT 5.24, RUNBOOK-VPS.md H.0b, which was itself wrong
+                and is fixed). TLS 1.3 only, Let's Encrypt ECDSA,
                 cert expires 2026-10-27, renewal reuses the key.
                 Secrets exist only on the box. What was done and what was
                 OBSERVED per stage: docs/RUNBOOK-VPS.md. Re-runnable — P9.S01
@@ -112,10 +117,18 @@ FOUND IN S07:   Mechanical half of the review done 2026-07-30; sign-off is the
                      AUDIT 5.17, ACCEPTED: pinning refuses a mis-issued cert
                      regardless of CA, and the host serves no browsers. CAA
                      support is now a registrar criterion for P9.S01.
-                  2. The APEX mgchatman.app also A-records to the VPS. Not
-                     needed (the relay is on the subdomain) and P5.S04 says no
-                     unnecessary records. nginx returns 444 for it, so this is
-                     surface reduction, not an active hole.
+                  2. The APEX mgchatman.app also A-records to the VPS. STILL
+                     OUTSTANDING — reported done 2026-07-30, but all four
+                     authoritative name.com nameservers still answer
+                     `mgchatman.app A 51.83.235.254`, so the deletion did not
+                     take. Not a cache: an authoritative server does not cache
+                     its own zone. LIKELY CAUSE: the apex carries BOTH an `A`
+                     and an `ANAME`, each -> 51.83.235.254, and name.com
+                     flattens ANAME into A answers at serve time — so deleting
+                     the A row alone leaves resolution unchanged. Both apex
+                     rows must go. Not needed (the relay is on the subdomain)
+                     and P5.S04 says no unnecessary records. nginx returns 444
+                     for it, so this is surface reduction, not an active hole.
                   3. ubuntu's password: DONE 2026-07-30. The OVH-emailed
                      value is no longer live at the console.
 FOUND IN S10:   Four things, all CLOSED, all in AUDIT.md:
@@ -142,9 +155,14 @@ NEXT STEP:      P5.S12 — safety numbers / QR from real identity keys
                 to accept. SECURITY-CRITICAL: identity binding and key
                 comparison. Use the strongest available model.
                 Then P5.S13 (two-device test on staging).
-STILL HUMAN:    P5.S07 review — see FOUND IN S07. Exactly ONE item is still
-                outstanding: dropping the apex A record (item 2). Item 1 is
-                accepted as AUDIT 5.17 and item 3 was done 2026-07-30.
+STILL HUMAN:    ONE item. The apex A record (FOUND IN S07 item 2) was
+                reported dropped on 2026-07-30 but is STILL SERVED by all four
+                authoritative name.com nameservers — verify with
+                `dig +short mgchatman.app A`, which must return nothing.
+                Everything else is closed: item 1 is accepted as AUDIT 5.17,
+                item 3 is done, and `verify` is now a REQUIRED status check on
+                `main` (ruleset `main-protection`, requiring verify +
+                relay-integration), closing the last residual in AUDIT 1.6.
 DECIDED:        OVH daily backup — cannot be disabled; carried as AUDIT 4.8.
                 Re-argue at P9.S01, where "can snapshots be declined?" joins
                 jurisdiction as a provider selection criterion.
