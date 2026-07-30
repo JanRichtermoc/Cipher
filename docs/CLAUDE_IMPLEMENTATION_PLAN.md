@@ -52,6 +52,15 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 (P5.S12), prekey rotation (P6.S01), sealed sender (P7.S01),
                 profile fields (P5.S11) — the reasons are in SECURITY_AUDIT.md
                 Appendix C. ***
+                *** CI FIX 2026-07-30 — the `verify` run for PR #49 failed gate 4
+                and the gate was RIGHT: all 21 reachable findings were in the Go
+                STANDARD LIBRARY, which comes from the toolchain, not from the
+                module graph. CI installs Go from server/go.mod, which declared
+                1.25.0. Now 1.25.12 (lowest release fixing all 21). The real
+                finding is AUDIT 1.13: verify-vulns.sh scanned whatever Go was
+                on PATH, so it passed locally under 1.26.5 and failed in CI —
+                green on the one machine where the fix would be written. It now
+                pins GOTOOLCHAIN to the declared version. Negative-tested twice. ***
                 113 integration tests + 179 iOS tests, verify-all.sh 12/12.
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
                 Ubuntu 24.04, running main. TLS 1.3 only, Let's Encrypt ECDSA,
