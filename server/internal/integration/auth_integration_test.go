@@ -96,7 +96,7 @@ func TestTokenIsNotStoredInPlaintext(t *testing.T) {
 	authHandler := api.NewAuthHandler(db, testLimiter(t), logging.New(io.Discard, slog.LevelError))
 
 	aci := uuid.New()
-	if err := db.RedeemInvite(ctx, issue(t, db, time.Hour).Hash(), store.Account{
+	if err := redeem(t, db, issue(t, db, time.Hour), store.Account{
 		ACI: aci, IdentityKey: make([]byte, 33), RegistrationID: 7,
 	}); err != nil {
 		t.Fatalf("create account: %v", err)

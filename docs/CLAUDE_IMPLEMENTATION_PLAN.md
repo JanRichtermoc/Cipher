@@ -20,8 +20,8 @@ authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_N
 ```
 CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
                 P5.S05/S06/S08/S09/S10/S11 done.
-UNMERGED:       P5.S10 receive-atomicity remediation is on
-                `codex/p5-s10-receive-atomicity`; not merged. The user merges
+UNMERGED:       P5.S09 account-lifecycle remediation is on
+                `codex/p5-s09-account-lifecycle`; not merged. The user merges
                 PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 *** P5.S05 COMPLETE — external full-port scan shows
@@ -100,9 +100,26 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 `proto-*` state; both guards were negative-tested by name.
                 AUDIT 4.12 CLOSED; 4.4 narrowed again. The rest of the integrated review is recorded OPEN in
                 AUDIT 1.14, 4.13-4.14, 5.25-5.30 and 6.13-6.15. ***
-                113 integration tests + 233 iOS tests, verify-all.sh 12/12.
-                (The 179 in earlier revisions of this block undercounted;
-                227 = 147 CipherCryptoTests + 56 + 24 CipherTests, measured.)
+                *** P5.S09 ACCOUNT-LIFECYCLE REMEDIATION 2026-07-31 —
+                AUDIT 5.25 CLOSED and 4.13's cross-account portion CLOSED.
+                Invite deletion + account + first token hash now commit in one
+                relay transaction. The versioned Keychain credential binds ACI,
+                issue time, server expiry and persisted lifecycle phase.
+                Registration and profile setup resume after a crash; only an
+                active, unexpired credential reaches main. Rotation is proactive,
+                single-flight and never retried. Every messaging operation checks
+                credential ACI == crypto ACI. Sign-out, expiry, rejection and an
+                unreadable legacy credential enter a persisted destructive gate;
+                another invite remains unreachable until crypto state, sealed
+                history/profile and in-memory conversations are erased. Hostile
+                token/ACI/expiry shapes are refused. A deadline task persists
+                destruction if expiry occurs while foregrounded, and cleanup
+                re-reads a temporarily unavailable `WhenUnlocked` item before
+                erasure. All new guards were
+                negative-tested with their names in the failing output. ***
+                114 integration tests + 248 iOS tests, verify-all.sh 12/12.
+                (248 = 151 CipherCrypto XCTest + 67 Cipher XCTest + 30 Swift
+                Testing cases, measured; earlier revisions undercounted.)
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
                 Ubuntu 24.04, running main @ `3f4cf92` (DEPLOYED 2026-07-30;
                 it had been on `9a279a4`, four relay-affecting commits behind,
@@ -165,16 +182,13 @@ FOUND IN S10:   Four things, all CLOSED, all in AUDIT.md:
                   5.21 Six shipping affordances depicted capabilities that do
                        not exist (calls, attachments, voice recording,
                        delivery/read receipts, linked devices, storage).
-NEXT STEP:      Reopen P5.S09 for registration/credential/account lifecycle
-                remediation (AUDIT 5.25 plus 4.13's account-isolation portion):
-                make invite consumption + account + token creation one server
-                transaction; make client registration recoverable; bind the
-                stored credential to ACI and server expiry; rotate/recover
-                tokens; ensure sign-out/new-account cannot expose the prior
-                account's crypto state or history. SECURITY-CRITICAL: auth,
-                account binding and cross-account privacy. Use the strongest
-                available model. Then continue the recorded P5 audit findings
-                one step at a time before P5.S12 and P5.S13.
+NEXT STEP:      Reopen P5.S11 for the remaining AUDIT 4.13 local-erasure and
+                migration crash/privacy windows. Fix cryptographic-erasure
+                ordering, SQLite secure deletion/WAL residue, ordered profile
+                persistence, and retryable legacy cleanup as one storage step.
+                SECURITY-CRITICAL: local privacy and reliable erasure. Use the
+                strongest available model. Then continue the recorded P5 audit
+                findings one step at a time before P5.S12 and P5.S13.
 STILL HUMAN:    ONE item. The apex A record (FOUND IN S07 item 2) was
                 reported dropped on 2026-07-30 but is STILL SERVED by all four
                 authoritative name.com nameservers — verify with
@@ -468,7 +482,7 @@ and an encrypted local database **from the first real message**.
 | ID | Step | Owner | Closes | Done when | Do not |
 |----|------|-------|--------|-----------|--------|
 | **P5.S08** | iOS network client: HTTPS only, TLS 1.3, **certificate/public-key pinning** matching P5.S06, failing closed. Timeouts, retries with jitter. **DONE 2026-07-30.** `Cipher/Networking/`: `RelayEndpoint` (pins), `CertificatePinner` (+ `PinningSessionDelegate`), `RelayClient` (30 s request / 120 s resource, 3 attempts, full jitter, retries only idempotent requests and never a TLS failure). Chain validation runs **before** the pin, so a pin match can never stand in for validation. No ATS exception exists; TLS 1.3 is set via `tlsMinimumSupportedProtocolVersion`, which tightens rather than relaxes. | AI | 5.1 (part) | Test: a wrong-pin server is refused | Add any ATS exception |
-| **P5.S09** | Wire invite redemption + session token into the Keychain. **DONE 2026-07-30.** `InviteRedemption` exchanges a code at `POST /v1/invite/redeem` and returns a `.serverIssued` credential; `AppSession.signIn(with:)` remains the single owner of the signed-in transition, so the Keychain has one writer. The request is **non-idempotent** — an invite is single-use and a retry spends a second code or strands an account. `AuthFlowView`'s `count >= 4` gate is gone. | AI | **C-01 CLOSED** | Real server-issued token gates access; `UserDefaults` edit cannot authenticate | — |
+| **P5.S09** | Wire invite redemption + session token into the Keychain. **DONE 2026-07-30; lifecycle remediated 2026-07-31.** `InviteRedemption` exchanges a code once; the relay commits invite deletion, account and first token hash together. A versioned credential binds token, ACI, server expiry and persisted phase (`registering → profileSetup → active → destroying`). Registration/profile setup resume after crashes; only active + unexpired reaches main. Rotation begins seven days before expiry, is single-flight and non-retrying. Messaging refuses a credential/crypto ACI mismatch. Sign-out/expiry/rejection/legacy credentials gate on cryptographic erasure of all prior account state before a new invite is reachable. | AI | **C-01, 5.25, 4.13 account isolation** | Real server-issued, account-bound token gates access; interrupted registration and cleanup recover; prior-account history cannot cross sign-in | Retry invite or rotation; expose main before registration/cleanup completes |
 | **P5.S10** | Replace production `MockStore` paths with a repository backed by `CryptoEngine` + network: encrypt before send, decrypt after fetch, persist ciphertext. **DONE 2026-07-30; receive durability remediated 2026-07-31.** `CipherCrypto` gained `MessagePayload`, published-key generation and the sealed app store; `Cipher/` gained the real directory/mailbox/archive/repository/store path. Ordering: durable local outgoing row → encrypt → transmit; **decrypt/ratchet + sealed incoming row in one SQLite transaction** → acknowledge; adopt → publish. A permanent wire/decrypt failure is acknowledged and dropped; any transaction failure rolls the ratchet back and is not acknowledged. The guard retries the exact envelope after a post-decrypt archive failure and must store it; the former first-attempt-only test was false assurance. Repository register/send/receive operations are FIFO-serialised across awaits and cancelled waiters are removed. | AI | **C-02**, 5.3, 4.12 | No production path reads `MockStore`; a failed archive commit leaves the envelope decryptable on retry | Leave a plaintext fallback or split decrypt/archive commits |
 | **P5.S11** | **Encrypted local message database** (SQLite sealed under Keychain-backed keys, sharing the crypto queue and container rules). *Moved from P6.* **DONE 2026-07-30; protocol-record transaction extension 2026-07-31.** `SealedRecordDatabase` uses SDK SQLite; every value is AES-GCM sealed with slot AAD and HKDF subkeys of the existing record key. Peer ids are keyed blind indexes, never columns. Conversations, messages and profile remain queryable rows. `DatabaseRecordStore` now places libsignal session/prekey/witness/trust state on the same connection, which is what lets P5.S10 make receive atomic. Existing sealed files migrate lazily after commit; authenticated tombstones prevent stale deleted files from resurrecting consumed keys. Wrong-key open still fails through the key-check row. | AI | **4.3, 4.7, 4.12** | No plaintext message/protocol record at rest; wrong key refused; legacy rollback/tombstone tests pass | Ship a plaintext DB or drop legacy session state |
 | **P5.S12** | **Safety-number / QR UI** from real identity keys (LibSignalClient Fingerprint APIs): persist verification tied to the fingerprint, invalidate on identity change, wire to the existing receive-OK / send-blocked policy. *Moved from P6.* | AI | 2.5 | Two devices show matching numbers; a substituted identity visibly changes them | Ship "Mark as Verified" that verifies nothing |

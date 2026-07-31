@@ -58,6 +58,15 @@ private final class StubAuthenticator: DeviceAuthenticator, @unchecked Sendable 
 @MainActor
 final class AppLockTests: XCTestCase {
 
+    private func activeCredential(byte: Character = "B") -> SessionCredential {
+        let issuedAt = Date()
+        return SessionCredential(
+            token: Data((String(repeating: byte, count: 42) + "A").utf8), aci: UUID(),
+            issuedAt: issuedAt,
+            expiresAt: issuedAt.addingTimeInterval(30 * 24 * 60 * 60),
+            origin: .serverIssued, phase: .active)
+    }
+
     private func makeSession(
         authenticator: DeviceAuthenticator
     ) -> (session: AppSession, store: SessionStore) {
@@ -71,11 +80,15 @@ final class AppLockTests: XCTestCase {
     private func lockedSession(
         _ authenticator: DeviceAuthenticator
     ) throws -> (session: AppSession, store: SessionStore) {
-        let (session, store) = makeSession(authenticator: authenticator)
-        session.hasCompletedOnboarding = true
-        session.appLockEnabled = true
-        try session.signIn(with: SessionCredential(
-            token: Data(repeating: 0x11, count: 32), issuedAt: Date(), origin: .serverIssued))
+        let store = SessionStore(service: "cz.janrichtermoc.Cipher.session.test.\(UUID())")
+        let defaults = UserDefaults(suiteName: "cipher.tests.\(UUID().uuidString)")!
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        defaults.set(true, forKey: "cipher.appLockEnabled")
+        try store.store(activeCredential())
+        let session = AppSession(
+            sessions: store,
+            defaults: defaults,
+            authenticator: authenticator)
         XCTAssertEqual(session.destination, .locked, "signing in with the lock on starts locked")
         return (session, store)
     }
@@ -168,12 +181,16 @@ final class AppLockTests: XCTestCase {
 
         session.hasCompletedOnboarding = true
         session.appLockEnabled = false
-        try session.signIn(with: SessionCredential(
-            token: Data(repeating: 0x22, count: 32), issuedAt: Date(), origin: .serverIssued))
+        try store.store(activeCredential(byte: "C"))
+        let signedIn = AppSession(
+            sessions: store,
+            defaults: UserDefaults(suiteName: "cipher.tests.\(UUID().uuidString)")!,
+            authenticator: stub)
+        signedIn.hasCompletedOnboarding = true
 
-        XCTAssertEqual(session.destination, .main)
-        session.lockIfNeeded()
-        XCTAssertEqual(session.destination, .main, "a disabled lock must not engage")
+        XCTAssertEqual(signedIn.destination, .main)
+        signedIn.lockIfNeeded()
+        XCTAssertEqual(signedIn.destination, .main, "a disabled lock must not engage")
         XCTAssertEqual(stub.calls, 0)
     }
 
@@ -214,9 +231,15 @@ final class AppLockTests: XCTestCase {
 
         session.hasCompletedOnboarding = true
         session.appLockEnabled = true
-        try session.signIn(with: SessionCredential(
-            token: Data(repeating: 0x33, count: 32), issuedAt: Date(), origin: .serverIssued))
+        try store.store(activeCredential(byte: "D"))
+        let signedIn = AppSession(
+            sessions: store,
+            defaults: UserDefaults(suiteName: "cipher.tests.\(UUID().uuidString)")!,
+            authenticator: StubAuthenticator())
+        signedIn.hasCompletedOnboarding = true
+        signedIn.appLockEnabled = true
+        signedIn.lockIfNeeded()
 
-        XCTAssertTrue(session.isAppLocked)
+        XCTAssertTrue(signedIn.isAppLocked)
     }
 }

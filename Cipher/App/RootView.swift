@@ -22,6 +22,12 @@ struct RootView: View {
                 AppLockView()
             case .authentication:
                 AuthFlowView()
+            case .registration:
+                RegistrationRecoveryView()
+            case .profileSetup:
+                NavigationStack { ProfileSetupView() }
+            case .accountCleanup:
+                AccountCleanupView()
             case .onboarding:
                 OnboardingFlowView()
             }
@@ -50,7 +56,10 @@ struct RootView: View {
         // A failure is not surfaced: `adoptProfileStorage` logs and leaves the placeholder
         // values in place, and a device that cannot open its own container has a larger problem
         // that the messaging path reports for real.
-        .task {
+        .task(id: session.destination) {
+            guard session.destination == .profileSetup ||
+                    session.destination == .main ||
+                    session.destination == .locked else { return }
             guard let engine = try? await store.engine() else { return }
             await session.adoptProfileStorage(engine: engine)
         }
@@ -74,8 +83,19 @@ struct RootView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase != .active {
                 session.lockIfNeeded()
-            } else if session.destination == .main {
-                Task { await store.receive() }
+            } else {
+                try? session.enforceCredentialExpiry()
+                if session.destination == .main {
+                    Task { await synchronize() }
+                }
+            }
+        }
+        .onChange(of: store.failure) { _, failure in
+            // A revoked/expired token is not a transient messaging error. Move
+            // behind the persisted destructive gate so no prior-account history
+            // remains visible while the user is asked to authenticate again.
+            if failure == .sessionRejected {
+                try? session.signOut()
             }
         }
         // The messaging path is started here rather than in `ChatsListView`, because it has to
@@ -85,8 +105,42 @@ struct RootView: View {
         // touches the relay while the app is behind the lock or the invite screen.
         .task(id: session.destination) {
             guard session.destination == .main else { return }
-            await store.start()
+            await synchronize()
         }
+        // `Date()` is not observable. Wake exactly when the current credential
+        // expires so an app left foregrounded cannot keep rendering account data
+        // until some unrelated state change happens to rebuild this view.
+        .task(id: session.credential?.expiresAt) {
+            guard let delay = session.credentialExpiryDelay else { return }
+            if delay > 0 {
+                try? await Task.sleep(for: .seconds(delay))
+            }
+            guard !Task.isCancelled else { return }
+            try? session.enforceCredentialExpiry()
+        }
+    }
+
+    private func synchronize() async {
+        if let current = session.beginCredentialRotationIfNeeded() {
+            defer { session.endCredentialRotation() }
+            do {
+                let replacement = try await SessionLifecycle().rotate(current)
+                try session.adoptRotatedCredential(replacement)
+            } catch SessionLifecycle.Failure.rejected {
+                try? session.signOut()
+                return
+            } catch {
+                // The old token remains valid and stored. Rotation will be
+                // attempted again on the next foreground transition.
+            }
+        } else if session.credentialRotationIsInFlight {
+            // Another root task is consuming the old token. Using it for a
+            // mailbox fetch in parallel could receive a legitimate 401 after
+            // rotation commits and incorrectly trigger account destruction.
+            return
+        }
+        guard session.destination == .main else { return }
+        await store.start()
     }
 }
 

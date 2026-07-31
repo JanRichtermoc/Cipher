@@ -520,10 +520,11 @@ invite code ──redeem──▶ account (aci) ──▶ session token ──�
   - **`DELETE /v1/auth/all`** revokes every session including the caller's, and is deliberately
     *not* rate limited — it only ever destroys the caller's own access, and throttling the panic
     button is the wrong trade.
-  - **Redemption issues the first token**, after the redemption transaction commits rather than
-    inside it. The two are not atomic and this is the correct direction to fail: an account with no
-    session is recoverable with a fresh invite, whereas rolling back a committed redemption to undo
-    a failed token write would re-credit a single-use invite.
+  - **Redemption creates the account and first token in the same transaction.** The token is
+    generated before the transaction, but only its hash enters it; invite deletion, account insert,
+    and session insert commit or roll back together. A failed session insert therefore leaves the
+    invite redeemable and creates no orphan account. Negative-tested by forcing the session hash
+    constraint to fail, then redeeming the same invite successfully.
 - Presented as `Authorization: Bearer`. Compared with a constant-time comparison after hashing.
 - **No password, no recovery flow, no email.** There is nothing to phish and nothing to reset. Losing
   the device means losing the account, which is the honest consequence of §3.4 and must be stated in

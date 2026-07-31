@@ -8,23 +8,10 @@ import SwiftUI
 
 struct AuthFlowView: View {
     @Environment(AppSession.self) private var session
-    @State private var path = NavigationPath()
 
     var body: some View {
-        NavigationStack(path: $path) {
-            InviteCodeView {
-                path.append(AuthRoute.profileSetup)
-            }
-            .navigationDestination(for: AuthRoute.self) { route in
-                switch route {
-                case .profileSetup:
-                    ProfileSetupView {
-                        #if DEBUG
-                        try? session.signInForDevelopment()
-                        #endif
-                    }
-                }
-            }
+        NavigationStack {
+            InviteCodeView()
             .toolbar {
                 #if DEBUG
                 ToolbarItem(placement: .topBarTrailing) {
@@ -38,14 +25,9 @@ struct AuthFlowView: View {
             }
         }
     }
-
-    enum AuthRoute: Hashable {
-        case profileSetup
-    }
 }
 
 struct InviteCodeView: View {
-    var onContinue: () -> Void
     @State private var code = ""
     @State private var isRedeeming = false
     @State private var errorMessage: String?
@@ -143,16 +125,9 @@ struct InviteCodeView: View {
             // coordination between them — the shape of a lost write.
             let engine = try await store.engine()
             let redeemed = try await InviteRedemption().redeem(code: code, using: engine)
-            try session.signIn(with: redeemed.credential)
-
-            // **The ACI was previously dropped on the floor here.** Redemption returned the
-            // address the relay had assigned and nothing recorded it, so the installation had a
-            // valid session and no identity it could send from or be addressed at. Adopting it
-            // and publishing prekeys is what makes the account reachable, and it happens after
-            // `signIn` because publishing needs the token that call just stored.
-            await store.register(aci: redeemed.aci)
-
-            onContinue()
+            // Persist the account-bound pending state before the view changes.
+            // RootView owns the recoverable adoption/publication pass.
+            try session.beginRegistration(with: redeemed.credential)
         } catch let failure as InviteRedemption.Failure {
             // The relay does not distinguish unknown from spent from expired, and neither does
             // this copy — saying "already used" would confirm to a guessing loop that a code
@@ -175,10 +150,10 @@ struct InviteCodeView: View {
 
 struct ProfileSetupView: View {
     @Environment(AppSession.self) private var session
-    var onContinue: () -> Void
 
     @State private var name = ""
     @State private var username = ""
+    @State private var failure: String?
 
     var body: some View {
         Form {
@@ -206,18 +181,18 @@ struct ProfileSetupView: View {
             } footer: {
                 Text("Friends will see this name in chats. No email or phone number needed.")
             }
+            if let failure {
+                Section { Text(failure).foregroundStyle(.red) }
+            }
         }
         .safeAreaInset(edge: .bottom) {
             PrimaryGlassButton(
                 title: "Enter Cipher",
                 systemImage: "checkmark",
-                isEnabled: !name.trimmingCharacters(in: .whitespaces).isEmpty
+                isEnabled: !name.trimmingCharacters(in: .whitespaces).isEmpty &&
+                    session.isProfileStorageReady
             ) {
-                session.displayName = name
-                session.username = username.isEmpty
-                    ? name.lowercased().replacingOccurrences(of: " ", with: "")
-                    : username
-                onContinue()
+                Task { await finish() }
             }
             .padding()
         }
@@ -229,12 +204,115 @@ struct ProfileSetupView: View {
         }
     }
 
+    private func finish() async {
+        let resolvedUsername = username.isEmpty
+            ? name.lowercased().replacingOccurrences(of: " ", with: "")
+            : username
+        do {
+            try await session.completeProfileSetup(displayName: name, username: resolvedUsername)
+            failure = nil
+        } catch {
+            failure = String(localized: "Could not securely save your profile. Try again.")
+        }
+    }
+
     private var initials: String {
         let parts = name.split(separator: " ")
         if parts.count >= 2 {
             return String(parts[0].prefix(1) + parts[1].prefix(1)).uppercased()
         }
         return String(name.prefix(2)).uppercased().nilIfEmpty ?? "YO"
+    }
+}
+
+struct RegistrationRecoveryView: View {
+    @Environment(AppSession.self) private var session
+    @Environment(ConversationStore.self) private var store
+    @State private var failure: String?
+    @State private var isWorking = false
+
+    var body: some View {
+        lifecycleScreen(
+            title: "Finishing secure setup",
+            detail: failure ?? "Binding this device to your new Cipher account.",
+            action: failure == nil ? nil : "Try Again") {
+                Task { await finish() }
+            }
+            .task { await finish() }
+    }
+
+    private func finish() async {
+        guard !isWorking, session.destination == .registration else { return }
+        isWorking = true
+        defer { isWorking = false }
+        do {
+            try await store.register()
+            try session.completeRegistration()
+            failure = nil
+        } catch {
+            failure = String(localized: "Setup could not finish. Check your connection and try again.")
+        }
+    }
+}
+
+struct AccountCleanupView: View {
+    @Environment(AppSession.self) private var session
+    @Environment(ConversationStore.self) private var store
+    @State private var failure: String?
+    @State private var isWorking = false
+
+    var body: some View {
+        lifecycleScreen(
+            title: "Securing this device",
+            detail: failure ?? "Removing the previous account and its encrypted local history.",
+            action: failure == nil ? nil : "Try Again") {
+                Task { await clean() }
+            }
+            .task { await clean() }
+    }
+
+    private func clean() async {
+        guard !isWorking, session.destination == .accountCleanup else { return }
+        isWorking = true
+        defer { isWorking = false }
+
+        // A prewarmed process can observe the `WhenUnlocked` item before its
+        // value is available. Re-read now that the cleanup screen is visible;
+        // never erase a valid account merely because launch happened early.
+        if session.recoverReadableCredentialBeforeCleanup() {
+            failure = nil
+            return
+        }
+
+        await SessionLifecycle().revokeBestEffort(session.credential)
+        do {
+            try await store.destroyAccountState()
+            try session.completeAccountCleanup()
+            failure = nil
+        } catch {
+            failure = String(localized: "Cipher could not finish removing local account data. Try again.")
+        }
+    }
+}
+
+private func lifecycleScreen(
+    title: String, detail: String, action: String?, perform: @escaping () -> Void
+) -> some View {
+    VStack(spacing: CipherTheme.spacingXL) {
+        Spacer()
+        ProgressView()
+            .controlSize(.large)
+        Text(title).font(.title2.bold())
+        Text(detail)
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, CipherTheme.spacingXL)
+        Spacer()
+        if let action {
+            PrimaryGlassButton(
+                title: LocalizedStringKey(action), systemImage: "arrow.clockwise", action: perform)
+                .padding()
+        }
     }
 }
 

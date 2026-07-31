@@ -23,6 +23,25 @@ import XCTest
 @MainActor
 final class SessionCredentialTests: XCTestCase {
 
+    private final class TestClock: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value: Date
+
+        init(_ value: Date) { self.value = value }
+
+        func now() -> Date {
+            lock.lock()
+            defer { lock.unlock() }
+            return value
+        }
+
+        func advance(by interval: TimeInterval) {
+            lock.lock()
+            value = value.addingTimeInterval(interval)
+            lock.unlock()
+        }
+    }
+
     /// A store on a service string unique to this call.
     ///
     /// Per test rather than in `setUp`: XCTest's overrides are nonisolated and this suite is
@@ -95,16 +114,20 @@ final class SessionCredentialTests: XCTestCase {
         let (store, _) = makeStore()
         defer { try? store.clear() }
         let defaults = makeDefaults()
+        try store.store(Self.sample())
         let session = AppSession(sessions: store, defaults: defaults)
         session.hasCompletedOnboarding = true
-        XCTAssertEqual(session.destination, .authentication)
-
-        try session.signIn(with: Self.sample())
         XCTAssertTrue(session.isAuthenticated)
         XCTAssertEqual(session.destination, .main)
 
         try session.signOut()
         XCTAssertFalse(session.isAuthenticated)
+        XCTAssertEqual(session.destination, .accountCleanup,
+                       "history must be erased before another account can authenticate")
+        XCTAssertEqual(store.current()?.phase, .destroying,
+                       "the destructive gate must survive a crash")
+
+        try session.completeAccountCleanup()
         XCTAssertEqual(session.destination, .authentication)
     }
 
@@ -112,8 +135,8 @@ final class SessionCredentialTests: XCTestCase {
         let (store, _) = makeStore()
         defer { try? store.clear() }
         let defaults = makeDefaults()
+        try store.store(Self.sample())
         let first = AppSession(sessions: store, defaults: defaults)
-        try first.signIn(with: Self.sample())
 
         let relaunched = AppSession(sessions: store, defaults: defaults)
         XCTAssertTrue(relaunched.isAuthenticated,
@@ -125,12 +148,98 @@ final class SessionCredentialTests: XCTestCase {
         let (store, _) = makeStore()
         defer { try? store.clear() }
         let defaults = makeDefaults()
+        try store.store(Self.sample())
         let session = AppSession(sessions: store, defaults: defaults)
-        try session.signIn(with: Self.sample())
         try session.signOut()
 
-        XCTAssertNil(store.current(), "the item must be gone, not emptied")
+        XCTAssertNotNil(store.current(), "the gate must remain until local erasure succeeds")
+        try session.completeAccountCleanup()
+        XCTAssertNil(store.current(), "cleanup removes the item rather than blanking it")
         XCTAssertFalse(AppSession(sessions: store, defaults: defaults).isAuthenticated)
+    }
+
+    func testPendingRegistrationSurvivesRelaunchWithoutExposingMain() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+
+        let first = AppSession(sessions: store, defaults: defaults)
+        try first.beginRegistration(with: Self.sample(phase: .registering))
+        XCTAssertEqual(first.destination, .registration)
+        XCTAssertFalse(first.isAuthenticated)
+
+        let relaunched = AppSession(sessions: store, defaults: defaults)
+        XCTAssertEqual(relaunched.destination, .registration)
+        XCTAssertEqual(relaunched.credential?.aci, first.credential?.aci)
+        XCTAssertFalse(relaunched.isAuthenticated)
+
+        try relaunched.completeRegistration()
+        XCTAssertEqual(relaunched.destination, .profileSetup,
+                       "profile setup is a persisted gate, not an unreachable screen")
+    }
+
+    func testExpiredCredentialRequiresErasureBeforeAnotherInvite() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        let issuedAt = Date(timeIntervalSince1970: 1_700_000_000)
+        try store.store(Self.sample(
+            issuedAt: issuedAt,
+            expiresAt: issuedAt.addingTimeInterval(30 * 24 * 60 * 60)))
+
+        let session = AppSession(
+            sessions: store, defaults: defaults,
+            now: { issuedAt.addingTimeInterval(31 * 24 * 60 * 60) })
+        XCTAssertFalse(session.isAuthenticated)
+        XCTAssertEqual(session.destination, .accountCleanup)
+    }
+
+    func testForegroundExpiryPersistsTheDestructiveGate() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        let issuedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let clock = TestClock(issuedAt.addingTimeInterval(30))
+        try store.store(Self.sample(
+            issuedAt: issuedAt, expiresAt: issuedAt.addingTimeInterval(60)))
+        let session = AppSession(
+            sessions: store, defaults: defaults, now: { clock.now() })
+
+        XCTAssertEqual(session.destination, .main, "positive control: token starts live")
+        clock.advance(by: 31)
+        try session.enforceCredentialExpiry()
+
+        XCTAssertEqual(session.destination, .accountCleanup)
+        XCTAssertEqual(store.current()?.phase, .destroying,
+                       "expiry while foregrounded must survive a process restart")
+        XCTAssertEqual(
+            AppSession(sessions: store, defaults: defaults, now: { clock.now() }).destination,
+            .accountCleanup)
+    }
+
+    func testCleanupRechecksATemporarilyUnreadableCredentialBeforeErasing() throws {
+        let (store, service) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+
+        // Models a prewarmed launch: the slot is visible but its protected value
+        // cannot be decoded yet. Once the UI is visible, the same slot reads normally.
+        try Self.writeRaw(Data([0x02, 0x01]), service: service)
+        let session = AppSession(sessions: store, defaults: defaults)
+        XCTAssertEqual(session.destination, .accountCleanup, "positive control")
+
+        let credential = Self.sample()
+        try store.store(credential)
+        XCTAssertTrue(session.recoverReadableCredentialBeforeCleanup())
+        XCTAssertEqual(session.credential?.aci, credential.aci)
+        XCTAssertEqual(session.credential?.token, credential.token)
+        XCTAssertEqual(session.credential?.phase, .active)
+        XCTAssertEqual(session.destination, .main,
+                       "a recovered valid credential must cancel destructive cleanup")
     }
 
     // MARK: - Stored bytes
@@ -141,15 +250,22 @@ final class SessionCredentialTests: XCTestCase {
         let (store, _) = makeStore()
         defer { try? store.clear() }
         let original = SessionCredential(
-            token: Data((0..<64).map { UInt8($0) }),
+            token: Data((String(repeating: "E", count: 42) + "A").utf8),
+            aci: UUID(uuidString: "3f2b1c4d-0000-4000-8000-000000000001")!,
             issuedAt: Date(timeIntervalSince1970: 1_700_000_000),
-            origin: .serverIssued)
+            expiresAt: Date(timeIntervalSince1970: 1_702_000_000),
+            origin: .serverIssued,
+            phase: .profileSetup)
 
         try store.store(original)
         let read = try XCTUnwrap(store.current())
 
         XCTAssertEqual(read.token, original.token)
         XCTAssertEqual(read.origin, .serverIssued)
+        XCTAssertEqual(read.aci, original.aci)
+        XCTAssertEqual(read.phase, .profileSetup)
+        XCTAssertEqual(read.expiresAt.timeIntervalSince1970,
+                       original.expiresAt.timeIntervalSince1970, accuracy: 0.001)
         XCTAssertEqual(read.issuedAt.timeIntervalSince1970,
                        original.issuedAt.timeIntervalSince1970, accuracy: 0.001)
     }
@@ -157,10 +273,11 @@ final class SessionCredentialTests: XCTestCase {
     func testStoringReplacesRatherThanAccumulates() throws {
         let (store, _) = makeStore()
         defer { try? store.clear() }
-        try store.store(Self.sample(token: Data(repeating: 0xAA, count: 32)))
-        try store.store(Self.sample(token: Data(repeating: 0xBB, count: 32)))
+        try store.store(Self.sample(tokenCharacter: "F"))
+        try store.store(Self.sample(tokenCharacter: "G"))
 
-        XCTAssertEqual(store.current()?.token, Data(repeating: 0xBB, count: 32))
+        XCTAssertEqual(store.current()?.token,
+                       Data((String(repeating: "G", count: 42) + "A").utf8))
     }
 
     /// A stored blob this build cannot fully understand must read as signed out, never as a
@@ -172,14 +289,77 @@ final class SessionCredentialTests: XCTestCase {
         XCTAssertNotNil(store.current(), "positive control")
 
         for corruption in [
-            Data([0x02, 0x01, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF]),  // future version
-            Data([0x01, 0x09, 0, 0, 0, 0, 0, 0, 0, 0, 0xFF]),  // unknown origin
-            Data([0x01, 0x01]),  // truncated header
+            Data([0x03, 0x01, 0x03] + Array(repeating: 0, count: 40)),  // future version
+            Data([0x02, 0x09, 0x03] + Array(repeating: 0, count: 40)),  // unknown origin
+            Data([0x02, 0x01, 0x09] + Array(repeating: 0, count: 40)),  // unknown phase
+            Data([0x02, 0x01]),  // truncated header
             Data(),  // empty
         ] {
             try Self.writeRaw(corruption, service: service)
             XCTAssertNil(store.current(), "malformed item must read as signed out")
         }
+    }
+
+    func testUnreadableLegacyCredentialForcesCleanupRatherThanNewRegistration() throws {
+        let (store, service) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+
+        // Version 1 is the pre-account-bound credential layout.
+        try Self.writeRaw(Data([0x01, 0x01] + Array(repeating: 0, count: 40)), service: service)
+        XCTAssertNil(store.current(), "the old credential must not be partially believed")
+
+        let session = AppSession(sessions: store, defaults: defaults)
+        XCTAssertEqual(session.destination, .accountCleanup,
+                       "a new invite must not meet crypto/history from the old account")
+    }
+
+    func testMalformedServerTokenCannotBeStored() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let issuedAt = Date()
+        let malformed = SessionCredential(
+            token: Data("not-a-server-token".utf8), aci: UUID(), issuedAt: issuedAt,
+            expiresAt: issuedAt.addingTimeInterval(60),
+            origin: .serverIssued, phase: .active)
+        XCTAssertThrowsError(try store.store(malformed)) { error in
+            XCTAssertEqual(error as? SessionStoreError, .malformedCredential)
+        }
+    }
+
+    func testRotationIsSingleFlightAndCannotChangeAccounts() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        let now = Date(timeIntervalSince1970: 1_800_000_000)
+        let aci = UUID()
+        let current = Self.sample(
+            tokenCharacter: "K", aci: aci,
+            issuedAt: now.addingTimeInterval(-24 * 60 * 60),
+            expiresAt: now.addingTimeInterval(6 * 24 * 60 * 60))
+        try store.store(current)
+        let session = AppSession(sessions: store, defaults: defaults, now: { now })
+
+        XCTAssertEqual(session.beginCredentialRotationIfNeeded(), current)
+        XCTAssertNil(session.beginCredentialRotationIfNeeded(),
+                     "two foreground tasks must not rotate one token concurrently")
+        XCTAssertTrue(session.credentialRotationIsInFlight,
+                      "a second sync must wait instead of using the consumed old token")
+        session.endCredentialRotation()
+        XCTAssertFalse(session.credentialRotationIsInFlight)
+        XCTAssertEqual(session.beginCredentialRotationIfNeeded(), current)
+        session.endCredentialRotation()
+
+        let wrongAccount = SessionCredential(
+            token: Data((String(repeating: "L", count: 42) + "A").utf8), aci: UUID(),
+            issuedAt: now,
+            expiresAt: now.addingTimeInterval(30 * 24 * 60 * 60),
+            origin: .serverIssued, phase: .active)
+        XCTAssertThrowsError(try session.adoptRotatedCredential(wrongAccount))
+        XCTAssertEqual(store.current(), current,
+                       "a hostile rotation response must not rewrite the account binding")
     }
 
     // MARK: - Development credentials
@@ -209,8 +389,18 @@ final class SessionCredentialTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private static func sample(token: Data = Data(repeating: 0x5A, count: 32)) -> SessionCredential {
-        SessionCredential(token: token, issuedAt: Date(), origin: .serverIssued)
+    private static func sample(
+        tokenCharacter: Character = "H",
+        aci: UUID = UUID(),
+        phase: SessionCredential.Phase = .active,
+        issuedAt: Date = Date(),
+        expiresAt: Date? = nil
+    ) -> SessionCredential {
+        SessionCredential(
+            token: Data((String(repeating: tokenCharacter, count: 42) + "A").utf8),
+            aci: aci, issuedAt: issuedAt,
+            expiresAt: expiresAt ?? issuedAt.addingTimeInterval(30 * 24 * 60 * 60),
+            origin: .serverIssued, phase: phase)
     }
 
     /// Plants raw bytes in the slot, bypassing the encoder — the only way to test what the

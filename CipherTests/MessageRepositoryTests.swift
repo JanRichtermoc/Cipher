@@ -28,7 +28,7 @@ final class MessageRepositoryTests: XCTestCase {
     override func setUp() async throws {
         try await super.setUp()
         fixture = try await MessagingFixture()
-        try TestSession.signIn()
+        try TestSession.signIn(aci: fixture.localAci)
     }
 
     override func tearDown() async throws {
@@ -166,6 +166,24 @@ final class MessageRepositoryTests: XCTestCase {
             XCTAssertEqual(failure, .notAuthenticated)
         }
         XCTAssertEqual(RoutedStubRelay.received.count, 0)
+    }
+
+    func testCredentialForAnotherAccountCannotUsePriorCryptoState() async throws {
+        // Vary only the credential ACI. The engine remains bound to the fixture
+        // account and the token remains otherwise valid, so this fails only if
+        // the account-binding guard actually runs.
+        try TestSession.signIn(aci: UUID())
+        RoutedStubRelay.reset(try await defaultRoutes())
+        let repository = makeRepository()
+
+        do {
+            _ = try await repository.send(text: "must stay local", to: fixture.peerAci)
+            XCTFail("a credential from another account used the prior account's ratchets")
+        } catch let failure as MessageRepository.Failure {
+            XCTAssertEqual(failure, .accountMismatch)
+        }
+        XCTAssertEqual(RoutedStubRelay.count("GET /v1/keys/"), 0)
+        XCTAssertEqual(RoutedStubRelay.count("POST /v1/messages"), 0)
     }
 
     func testAPeerWithNoPublishedKeysIsReportedAsUnavailable() async throws {
@@ -452,11 +470,12 @@ final class MessageRepositoryTests: XCTestCase {
     // MARK: - Registration
 
     func testRegistrationAdoptsTheAddressAndPublishesExactlyOnce() async throws {
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
         RoutedStubRelay.reset(try await defaultRoutes())
         let repository = makeRepository()
 
-        try await repository.register(aci: fixture.localAci)
-        try await repository.register(aci: fixture.localAci)
+        try await repository.register()
+        try await repository.register()
         try await repository.resumeRegistration()
 
         // Publication is 6 per day per account (`BACKEND.md` §5) and generating the pool is a
@@ -467,6 +486,7 @@ final class MessageRepositoryTests: XCTestCase {
     }
 
     func testAFailedPublicationIsRetriedOnTheNextLaunch() async throws {
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
         var routes = try await defaultRoutes()
         // A relay that keeps failing. A single 500 followed by a 200 would not test anything:
         // publication is idempotent, so `RelayClient` retries it and the *first* call would
@@ -479,7 +499,7 @@ final class MessageRepositoryTests: XCTestCase {
         // keys never published is one no peer can start a session with, and nothing else would
         // ever notice.
         do {
-            try await repository.register(aci: fixture.localAci)
+            try await repository.register()
             XCTFail("a relay that never accepts the publication must surface")
         } catch let failure as MessageRepository.Failure {
             XCTAssertEqual(failure, .relayUnavailable)
@@ -498,12 +518,12 @@ final class MessageRepositoryTests: XCTestCase {
     }
 
     func testAMismatchedAccountIsRefusedRatherThanReadopted() async throws {
+        try TestSession.signIn(aci: UUID(), phase: .registering)
         RoutedStubRelay.reset(try await defaultRoutes())
         let repository = makeRepository()
-        try await repository.register(aci: fixture.localAci)
 
         do {
-            try await repository.register(aci: UUID())
+            try await repository.register()
             XCTFail("a second address must not be adopted")
         } catch let failure as MessageRepository.Failure {
             // Adopting it would orphan every existing session, and the failure would look like a
@@ -513,9 +533,10 @@ final class MessageRepositoryTests: XCTestCase {
     }
 
     func testThePublishedBodyCarriesTheKyberMaterialTheRelayRequires() async throws {
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
         RoutedStubRelay.reset(try await defaultRoutes())
         let repository = makeRepository()
-        try await repository.register(aci: fixture.localAci)
+        try await repository.register()
 
         let body = try XCTUnwrap(RoutedStubRelay.requests("PUT /v1/keys").first)
         let json = try XCTUnwrap(
@@ -527,5 +548,37 @@ final class MessageRepositoryTests: XCTestCase {
         let expected = await CryptoEngine.defaultOneTimePreKeyCount
         XCTAssertEqual((json["kyber_prekeys"] as? [Any])?.count, expected)
         XCTAssertEqual((json["one_time_prekeys"] as? [Any])?.count, expected)
+    }
+
+    @MainActor
+    func testAccountCleanupErasesHistoryAndDropsInMemoryConversations() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("account-cleanup-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = ConversationStore(openEngine: {
+            try await CryptoEngine.open(container: root)
+        })
+        let engine = try await store.engine()
+        let aci = UUID()
+        try await engine.adoptLocalAddress(PeerAddress(aci: aci))
+        let repository = MessageRepository(engine: engine, sessions: TestSession.store())
+        _ = try await repository.startConversation(with: UUID(), nickname: "old account")
+
+        await store.refresh()
+        XCTAssertEqual(store.chats.count, 1, "positive control: old history was loaded")
+
+        try await store.destroyAccountState()
+        XCTAssertTrue(store.chats.isEmpty)
+        XCTAssertTrue(store.contacts.isEmpty)
+        XCTAssertNil(store.localAci)
+
+        let reopened = try await store.engine()
+        let reopenedAddress = try? await reopened.localAddress
+        XCTAssertNil(reopenedAddress, "the replacement engine inherited the prior account")
+        let freshRepository = MessageRepository(engine: reopened, sessions: TestSession.store())
+        let freshConversations = try await freshRepository.conversations()
+        XCTAssertTrue(freshConversations.isEmpty, "sealed history survived account cleanup")
+        try await reopened.destroyAllState()
     }
 }

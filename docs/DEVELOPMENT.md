@@ -12,7 +12,7 @@ defend against).
 ./Scripts/verify-all.sh --fast   # skips the Release device build and the two audits that need it
 ```
 
-Ten gates, in dependency order, stopping at the first failure. CI runs this exact script —
+Twelve gates, in dependency order, stopping at the first failure. CI runs this exact script —
 one gate, one definition. Never parallelise it: the crypto tests are app-hosted (AUDIT 6.6)
 and two `xcodebuild test` runs against one simulator fail preflight with `RequestDenied …
 Busy`.
@@ -22,16 +22,18 @@ Busy`.
 | 1 | Supply chain — tag still resolves to the pinned commit, checksum matches | `verify-supply-chain.sh` |
 | 2 | App-target file manifest | `verify-app-target-manifest.sh` |
 | 3 | No `print`/`NSLog` in `CipherCrypto` | inline |
-| 4 | UI honesty and localization drift | `verify-localization.py` |
-| 5 | No LibSignalClient type in the public API | `verify-api-boundary.sh` |
-| 6 | 105 crypto tests (app-hosted, serial) | inline |
-| 7 | App builds (simulator) | inline |
-| 8 | Release arm64 device build | inline |
-| 9 | No debug affordance anywhere in the Release **bundle** | inline |
-| 10 | Required-reason APIs declared | `verify-privacy-manifest.sh` |
+| 4 | Reachable relay dependency vulnerabilities | `verify-vulns.sh` |
+| 5 | Relay build, vet, unit tests, and Compose invariants | `verify-relay.sh` |
+| 6 | UI honesty and localization drift | `verify-localization.py` |
+| 7 | No LibSignalClient type in the public API | `verify-api-boundary.sh` |
+| 8 | 248 iOS tests (app-hosted, serial) | inline |
+| 9 | App builds (simulator) | inline |
+| 10 | Release arm64 device build | inline |
+| 11 | No debug affordance anywhere in the Release **bundle** | inline |
+| 12 | Required-reason APIs declared | `verify-privacy-manifest.sh` |
 
-Gates 4, 5, 9 and 10 were each **negative-tested** by reintroducing the defect they catch;
-gate 4 carries that negative test as `--self-test` and runs it before its own verdict is
+The security gates were **negative-tested** by reintroducing the defects they catch;
+the localization gate carries that negative test as `--self-test` and runs it before its own verdict is
 believed. Do not "fix" a gate by making it pass — a gate that stops running looks exactly
 like a gate that passes, which has already happened here once.
 

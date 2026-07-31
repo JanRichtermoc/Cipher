@@ -16,6 +16,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"cipher.relay/internal/auth"
 	"cipher.relay/internal/httpx"
 	"cipher.relay/internal/invite"
 	"cipher.relay/internal/ratelimit"
@@ -220,11 +221,20 @@ func (h *InviteHandler) redeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	token, err := auth.Generate()
+	if err != nil {
+		h.log.ErrorContext(ctx, "could not generate an initial session",
+			slog.String("reason", err.Error()))
+		httpx.WriteError(w, http.StatusInternalServerError)
+		return
+	}
+	expiresAt := time.Now().Add(SessionTTL)
+
 	err = h.db.RedeemInvite(ctx, code.Hash(), store.Account{
 		ACI:            aci,
 		IdentityKey:    identityKey,
 		RegistrationID: req.RegistrationID,
-	})
+	}, store.InitialSession{TokenHash: token.Hash(), ExpiresAt: expiresAt})
 	switch {
 	case errors.Is(err, store.ErrInviteNotRedeemable):
 		// No detail, and no log of the presented code or its hash: the hash of a
@@ -239,23 +249,6 @@ func (h *InviteHandler) redeem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The account now exists and the invite is gone, so this is the only moment
-	// at which a session can be established for it.
-	//
-	// Issued *after* the redemption transaction commits rather than inside it.
-	// The two are not atomic, and that is the correct direction to fail: an
-	// account with no session can redeem nothing further but can be recovered
-	// with a fresh invite, whereas rolling back a committed redemption to undo a
-	// failed token write would mean re-crediting a single-use invite — turning a
-	// transient error into a way to redeem a code twice.
-	token, err := h.auth.Issue(ctx, aci)
-	if err != nil {
-		h.log.ErrorContext(ctx, "account created but session issuance failed",
-			slog.String("reason", err.Error()))
-		httpx.WriteError(w, http.StatusInternalServerError)
-		return
-	}
-
 	// Nothing identifying is logged here either. That an account was created is
 	// the interesting operational fact; which account it was is a record linking
 	// a time to an identifier, and the retention policy exists to not have those.
@@ -264,7 +257,7 @@ func (h *InviteHandler) redeem(w http.ResponseWriter, r *http.Request) {
 	httpx.WriteJSON(w, http.StatusCreated, redeemResponse{
 		ACI:            aci.String(),
 		Token:          token.String(),
-		TokenExpiresAt: time.Now().Add(SessionTTL),
+		TokenExpiresAt: expiresAt,
 	})
 }
 

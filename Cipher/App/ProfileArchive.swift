@@ -17,8 +17,8 @@ import Foundation
 /// unencrypted, readable by anything with container access and by anyone holding an unlocked
 /// device. They are not secrets, and they were never presented as protected, but they identify
 /// the person using the device, which is exactly what a seized or stolen phone should not
-/// volunteer. `signOut()` already cleared them so a signed-out device did not still say who had
-/// used it; that bounded the exposure without removing it.
+/// volunteer. Account cleanup now removes the whole sealed store before a new account can enter,
+/// so a signed-out device does not retain this row or the social graph beside it.
 ///
 /// P5.S10 had already moved the *harder* half — the names the user gives peers, and the list of
 /// who they talk to, which is the social graph — into sealed conversation records. This is the
