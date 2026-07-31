@@ -84,9 +84,7 @@ final class ProfileStorageTests: XCTestCase {
         session.username = "jan"
         session.about = "Reading"
 
-        // The write is persisted from a detached task, so let it land before reopening. The
-        // alternative — asserting immediately — is a test that passes on a fast machine.
-        try await Task.sleep(for: .milliseconds(200))
+        await session.flushProfilePersistence()
 
         let reopened = makeSession()
         XCTAssertEqual(reopened.displayName, "You", "a fresh session starts with placeholders")
@@ -95,6 +93,33 @@ final class ProfileStorageTests: XCTestCase {
         XCTAssertEqual(reopened.displayName, "Jan")
         XCTAssertEqual(reopened.username, "jan")
         XCTAssertEqual(reopened.about, "Reading")
+    }
+
+    /// The first save is held across an `await`, letting a second call overtake it if AppSession
+    /// launches one task per didSet. The durable value must still be the newest snapshot.
+    @MainActor
+    func testRapidProfileEditsCannotLetAnOlderSaveOverwriteTheNewestSnapshot() async throws {
+        let archive = BlockingProfileStore()
+        let session = makeSession()
+        await session.adoptProfileStorage(archive)
+
+        session.displayName = "Older"
+        await archive.waitUntilFirstSaveStarts()
+        session.displayName = "Newest"
+        // Let any independently launched didSet task reach the re-entrant archive actor before
+        // releasing the first save. The ordered implementation launches no second task.
+        for _ in 0..<100 {
+            if await archive.saveCallCount() >= 2 { break }
+            await Task.yield()
+        }
+        await archive.releaseFirstSave()
+        await session.flushProfilePersistence()
+
+        let persisted = await archive.storedProfile()
+        let stored = try XCTUnwrap(persisted)
+        XCTAssertEqual(stored.displayName, "Newest")
+        XCTAssertEqual(stored.username, "you")
+        XCTAssertEqual(stored.about, "Available")
     }
 
     // MARK: - Migrating a device that already has the plist values
@@ -155,7 +180,7 @@ final class ProfileStorageTests: XCTestCase {
 
         let name = "Zdenek-Vzacny-QX7"
         session.displayName = name
-        try await Task.sleep(for: .milliseconds(200))
+        await session.flushProfilePersistence()
 
         var bytes = Data()
         let files = FileManager.default.enumerator(at: container, includingPropertiesForKeys: nil)
@@ -186,7 +211,7 @@ final class ProfileStorageTests: XCTestCase {
         let session = makeSession()
         await session.adoptProfileStorage(engine: engine)
         session.displayName = "Jan"
-        try await Task.sleep(for: .milliseconds(200))
+        await session.flushProfilePersistence()
 
         try session.signOut()
         XCTAssertEqual(session.destination, .accountCleanup)
@@ -201,4 +226,39 @@ final class ProfileStorageTests: XCTestCase {
         XCTAssertEqual(reopened.displayName, "You")
         try await freshEngine.destroyAllState()
     }
+}
+
+private actor BlockingProfileStore: ProfileStoring {
+    private var stored: ProfileArchive.StoredProfile?
+    private var savesStarted = 0
+    private var firstSaveHasStarted = false
+    private var firstSaveRelease: CheckedContinuation<Void, Never>?
+    private var startWaiters: [CheckedContinuation<Void, Never>] = []
+
+    func load() async throws -> ProfileArchive.StoredProfile? { stored }
+
+    func save(_ profile: ProfileArchive.StoredProfile) async throws {
+        savesStarted += 1
+        if !firstSaveHasStarted {
+            firstSaveHasStarted = true
+            let waiters = startWaiters
+            startWaiters.removeAll()
+            for waiter in waiters { waiter.resume() }
+            await withCheckedContinuation { firstSaveRelease = $0 }
+        }
+        stored = profile
+    }
+
+    func waitUntilFirstSaveStarts() async {
+        if firstSaveHasStarted { return }
+        await withCheckedContinuation { startWaiters.append($0) }
+    }
+
+    func releaseFirstSave() {
+        firstSaveRelease?.resume()
+        firstSaveRelease = nil
+    }
+
+    func saveCallCount() -> Int { savesStarted }
+    func storedProfile() -> ProfileArchive.StoredProfile? { stored }
 }

@@ -653,4 +653,42 @@ final class CryptoEngineTests: XCTestCase {
                               "a destroyed installation must come back as a new one")
         }.value
     }
+
+    /// Crash point: the Keychain erase returned, then the process died before unlinking the
+    /// container. Opening must refuse without minting a key, and the persisted cleanup path must
+    /// finish without ever decrypting the surviving bytes.
+    func testInterruptedCryptographicEraseIsFinishedWithoutOpeningCiphertext() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let secrets = InMemorySecretStorage()
+
+        try await Task { @CryptoActor in
+            var engine: CryptoEngine? = try CryptoEngine(root: root, secrets: secrets)
+            let oldIdentity = try XCTUnwrap(engine).localIdentityKey
+            try XCTUnwrap(engine).storeSealedRow(
+                namespace: "msg", group: "old-account", ordinal: 0,
+                value: Data("old account body".utf8))
+            engine = nil
+
+            // First irreversible step of destroyAllState succeeded; physical cleanup did not.
+            try secrets.removeAll()
+            XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
+
+            XCTAssertThrowsError(try CryptoEngine(root: root, secrets: secrets)) { error in
+                XCTAssertEqual(error as? RecordStoreError, .missingEncryptionKey)
+            }
+            XCTAssertNil(
+                try secrets.load(EncryptedFileRecordStore.encryptionKeyAccount),
+                "the failed open minted a replacement key over stale ciphertext")
+
+            try CryptoEngine.destroyPersistedState(root: root, secrets: secrets)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+
+            let replacement = try CryptoEngine(root: root, secrets: secrets)
+            XCTAssertNotEqual(try replacement.localIdentityKey, oldIdentity)
+            XCTAssertNil(
+                try replacement.loadSealedRow(
+                    namespace: "msg", group: "old-account", ordinal: 0))
+        }.value
+    }
 }

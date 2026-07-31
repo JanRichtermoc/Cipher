@@ -131,16 +131,12 @@ final class StoreEdgeTests: XCTestCase {
 
     // MARK: - Destruction ordering
 
-    /// `destroyAllState` removes records **before** the Keychain secrets.
-    ///
-    /// The ordering is the guarantee: interrupted after the records are gone, nothing
-    /// readable is left; interrupted after the secrets are gone, whatever survives on disk is
-    /// ciphertext under a key that no longer exists. The reverse order would leave a window
-    /// where plaintext-recoverable records outlive the intent to destroy them.
-    func testDestroyLeavesNothingReadableEvenIfTheKeychainSurvives() async throws {
+    /// If the first, Keychain-backed cryptographic erase fails, no recoverable file may already
+    /// have been deleted. This pins the ordering rather than only the successful end state.
+    func testKeychainFailureCannotDeleteFilesBeforeCryptographicErase() async throws {
         let root = TestContainer.make()
         defer { TestContainer.remove(root) }
-        let secrets = InMemorySecretStorage()
+        let secrets = InMemorySecretStorage(removeAllFailures: 1)
 
         try await Task { @CryptoActor in
             let local = try LocalFixture(root: root, secrets: secrets)
@@ -148,20 +144,25 @@ final class StoreEdgeTests: XCTestCase {
             try Local.establishSession(local, with: peer.address, bundle: try peer.makeBundle())
             XCTAssertNotNil(try local.store.loadSession(for: peer.address, context: NullContext()))
 
-            try local.store.destroyAllState()
+            XCTAssertThrowsError(try local.store.destroyAllState()) { error in
+                XCTAssertTrue(error is TestSecretStorageError)
+            }
+            XCTAssertNotNil(
+                try local.store.loadSession(for: peer.address, context: NullContext()),
+                "a failed Keychain erase must happen before any recoverable file is removed")
+            XCTAssertNotNil(try secrets.load(DeviceIdentity.account))
+            XCTAssertNotNil(try secrets.load(EncryptedFileRecordStore.encryptionKeyAccount))
 
-            // A fresh store over the same directory: a new identity, a new record key, and
-            // no trace of the session that was there.
-            let reopened = try LocalFixture(root: root, secrets: secrets)
-            XCTAssertNil(try reopened.store.loadSession(for: peer.address, context: NullContext()))
-            XCTAssertNil(try reopened.store.peerIdentity(for: peer.address))
-            XCTAssertEqual(try reopened.store.reservePreKeyIds(count: 1), 1...1,
-                           "the prekey counter must have gone with everything else")
+            // The same operation is retryable. The second Keychain call succeeds, after which
+            // the whole private container is removed.
+            try local.store.destroyAllState()
+            XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
         }.value
     }
 
-    /// A record sealed under a destroyed key is unreadable rather than merely absent.
-    func testRecordsSealedUnderADestroyedKeyCannotBeOpened() async throws {
+    /// An absent key beside ciphertext is an interrupted erase. Opening refuses before creating
+    /// a replacement key, preserving the exact condition the cleanup path must finish.
+    func testCiphertextBesideADestroyedKeyDoesNotMintAReplacement() async throws {
         let root = TestContainer.make()
         defer { TestContainer.remove(root) }
         let secrets = InMemorySecretStorage()
@@ -179,12 +180,36 @@ final class StoreEdgeTests: XCTestCase {
             // Destroy only the key, leaving the file — the state an interrupted destroy or a
             // partially restored backup would produce.
             try secrets.remove(EncryptedFileRecordStore.encryptionKeyAccount)
-            let rekeyed = try EncryptedFileRecordStore(root: root, secrets: secrets)
-
-            XCTAssertThrowsError(try rekeyed.load(.metadata, "survivor")) { error in
-                XCTAssertEqual(error as? RecordStoreError, .corruptRecord(kind: .metadata),
-                               "an unopenable record must never be reported as 'not found'")
+            XCTAssertThrowsError(
+                try EncryptedFileRecordStore(root: root, secrets: secrets)
+            ) { error in
+                XCTAssertEqual(error as? RecordStoreError, .missingEncryptionKey)
             }
+            XCTAssertNil(
+                try secrets.load(EncryptedFileRecordStore.encryptionKeyAccount),
+                "opening an interrupted erase minted a replacement record key")
+        }.value
+    }
+
+    /// A downgraded build must not recognize only its own filenames and mint a replacement key
+    /// beside ciphertext introduced by a newer store format.
+    func testUnknownCryptoArtifactWithoutAKeyDoesNotMintAReplacement() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("future sealed state".utf8).write(
+            to: root.appendingPathComponent("future-records.v2"))
+        let secrets = InMemorySecretStorage()
+
+        try await Task { @CryptoActor in
+            XCTAssertThrowsError(
+                try EncryptedFileRecordStore(root: root, secrets: secrets)
+            ) { error in
+                XCTAssertEqual(error as? RecordStoreError, .missingEncryptionKey)
+            }
+            XCTAssertNil(
+                try secrets.load(EncryptedFileRecordStore.encryptionKeyAccount),
+                "opening unknown persisted state minted a replacement record key")
         }.value
     }
 

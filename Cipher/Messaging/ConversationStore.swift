@@ -69,16 +69,23 @@ final class ConversationStore {
     private var engineTask: Task<CryptoEngine, Error>?
     private var repositoryTask: Task<MessageRepository, Error>?
     private let openEngine: @Sendable () async throws -> CryptoEngine
+    private let destroyPersistedState: @Sendable () async throws -> Void
 
     /// DEBUG previews build a store with fixtures and no engine at all. In a Release build this
     /// is always false, and there is no code path that populates state without the archive.
     private let isPreviewOnly: Bool
 
-    init(openEngine: @escaping @Sendable () async throws -> CryptoEngine = {
-        try CryptoEngine.open()
-    }) {
+    init(
+        openEngine: @escaping @Sendable () async throws -> CryptoEngine = {
+            try CryptoEngine.open()
+        },
+        destroyPersistedState: @escaping @Sendable () async throws -> Void = {
+            try CryptoEngine.destroyPersistedState()
+        }
+    ) {
         isPreviewOnly = false
         self.openEngine = openEngine
+        self.destroyPersistedState = destroyPersistedState
     }
 
     #if DEBUG
@@ -87,6 +94,7 @@ final class ConversationStore {
     init(previewChats: [Chat], previewMessages: [UUID: [Message]], previewContacts: [Contact]) {
         isPreviewOnly = true
         openEngine = { throw MessageRepository.Failure.storageUnavailable }
+        destroyPersistedState = {}
         chats = previewChats
         messagesByChat = previewMessages
         contacts = previewContacts
@@ -200,22 +208,49 @@ final class ConversationStore {
     /// The session gate is cleared separately and only after this succeeds.
     func destroyAccountState() async throws {
         guard !isPreviewOnly else { return }
+
+        // The persisted session gate already hides the old account. Drop plaintext view models
+        // before touching storage as well, so a Keychain or filesystem failure cannot leave the
+        // previous account resident in UI-owned memory while cleanup waits for a retry.
+        dropAccountModels()
+        repositoryTask = nil
+
         let engine: CryptoEngine
         do {
             engine = try await self.engine()
+        } catch {
+            // The expected crash-recovery case is ciphertext beside an already deleted record
+            // key. Opening must refuse that state and, critically, must not mint a replacement
+            // key. The persisted `.destroying` gate authorises direct key-first cleanup here.
+            do {
+                try await destroyPersistedState()
+                engineTask = nil
+                failure = nil
+                return
+            } catch {
+                record(.storageUnavailable)
+                throw MessageRepository.Failure.storageUnavailable
+            }
+        }
+
+        do {
             try await engine.destroyAllState()
         } catch {
+            // Keep the erasing engine task so the next tap retries physical cleanup without
+            // reopening or regaining access to its in-memory keys.
             record(.storageUnavailable)
             throw MessageRepository.Failure.storageUnavailable
         }
 
         engineTask = nil
-        repositoryTask = nil
+        failure = nil
+    }
+
+    private func dropAccountModels() {
         chats = []
         contacts = []
         blockedContactIDs = []
         localAci = nil
-        failure = nil
         isSyncing = false
         messagesByChat = [:]
         ordinals = [:]

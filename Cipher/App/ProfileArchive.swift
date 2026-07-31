@@ -76,3 +76,13 @@ actor ProfileArchive {
             namespace: Namespace.profile, group: Self.localGroup, ordinal: Self.singleton)
     }
 }
+
+/// The narrow persistence dependency `AppSession` needs. Keeping the queue above this boundary
+/// makes ordering a property of the session's mutations, not an accident of how concurrent tasks
+/// happen to arrive at the archive actor or at `CryptoActor`.
+protocol ProfileStoring: Sendable {
+    func load() async throws -> ProfileArchive.StoredProfile?
+    func save(_ profile: ProfileArchive.StoredProfile) async throws
+}
+
+extension ProfileArchive: ProfileStoring {}

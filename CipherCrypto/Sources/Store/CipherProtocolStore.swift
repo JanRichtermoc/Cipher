@@ -87,18 +87,17 @@ internal final class CipherProtocolStore {
 
     /// Destroys every session, prekey, trust decision and the identity itself.
     ///
-    /// Records are removed first so that a crash part-way through leaves nothing readable:
-    /// once the Keychain secrets go, anything still on disk is ciphertext under a key that
-    /// no longer exists. That property is why the record store is encrypted at all.
+    /// The Keychain service is removed first, in one platform operation. That is the
+    /// cryptographic erase: after it succeeds, every surviving database page, WAL frame and
+    /// legacy record is ciphertext under a key that no longer exists. File cleanup follows and
+    /// is retryable. Reversing those two steps leaves a crash window in which the files that
+    /// survived are still fully recoverable with the untouched Keychain key.
     internal func destroyAllState() throws {
         CryptoActor.assertIsolated()
-        // `records` now stores its current rows in `database`; clear its namespaces while the
-        // connection is live, then close and unlink the database itself. Legacy file copies are
-        // removed by the same call.
-        try records.removeAll()
+        try secrets.removeAll()
+        // The database owns the exact private crypto root. Removing the root also removes every
+        // legacy kind directory, including a copy whose post-migration unlink was interrupted.
         try database.destroy()
-        try DeviceIdentity.destroy(secrets: secrets)
-        try secrets.remove(EncryptedFileRecordStore.encryptionKeyAccount)
         CipherLog.store.warning("all local protocol state destroyed")
     }
 

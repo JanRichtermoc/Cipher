@@ -26,7 +26,7 @@ Busy`.
 | 5 | Relay build, vet, unit tests, and Compose invariants | `verify-relay.sh` |
 | 6 | UI honesty and localization drift | `verify-localization.py` |
 | 7 | No LibSignalClient type in the public API | `verify-api-boundary.sh` |
-| 8 | 248 iOS tests (app-hosted, serial) | inline |
+| 8 | 257 iOS tests (158 CipherCrypto XCTest + 69 Cipher XCTest + 30 Swift Testing, app-hosted and serial) | inline |
 | 9 | App builds (simulator) | inline |
 | 10 | Release arm64 device build | inline |
 | 11 | No debug affordance anywhere in the Release **bundle** | inline |
