@@ -68,13 +68,17 @@ final class ConversationStore {
     /// files, no coordination — which is the shape of a lost write.
     private var engineTask: Task<CryptoEngine, Error>?
     private var repositoryTask: Task<MessageRepository, Error>?
+    private let openEngine: @Sendable () async throws -> CryptoEngine
 
     /// DEBUG previews build a store with fixtures and no engine at all. In a Release build this
     /// is always false, and there is no code path that populates state without the archive.
     private let isPreviewOnly: Bool
 
-    init() {
+    init(openEngine: @escaping @Sendable () async throws -> CryptoEngine = {
+        try CryptoEngine.open()
+    }) {
         isPreviewOnly = false
+        self.openEngine = openEngine
     }
 
     #if DEBUG
@@ -82,6 +86,7 @@ final class ConversationStore {
     /// container, or the network.
     init(previewChats: [Chat], previewMessages: [UUID: [Message]], previewContacts: [Contact]) {
         isPreviewOnly = true
+        openEngine = { throw MessageRepository.Failure.storageUnavailable }
         chats = previewChats
         messagesByChat = previewMessages
         contacts = previewContacts
@@ -97,7 +102,7 @@ final class ConversationStore {
     /// permanently unable to message with nothing but a stale error to show for it.
     func engine() async throws -> CryptoEngine {
         if let engineTask { return try await engineTask.value }
-        let task = Task { try await CryptoEngine.open() }
+        let task = Task { try await openEngine() }
         engineTask = task
         do {
             return try await task.value
@@ -123,24 +128,10 @@ final class ConversationStore {
 
     /// Called when the app reaches the main UI, and on every return to the foreground.
     ///
-    /// Order matters: finish any outstanding registration first — an installation whose keys
-    /// never published cannot receive a first message from anyone — then load what is on disk so
-    /// the UI is populated before the network is touched, then collect what is waiting.
+    /// Registration has its own root gate. Once main is reachable, load what is
+    /// on disk before collecting what is waiting on the relay.
     func start() async {
         guard !isPreviewOnly else { return }
-
-        if let repository = try? await repository() {
-            do {
-                try await repository.resumeRegistration()
-            } catch MessageRepository.Failure.notRegistered {
-                // Signed in but never registered: only reachable if redemption stored a
-                // credential and then failed before adopting the address. Nothing to do here —
-                // the ACI is not recoverable from the credential, and re-redeeming is the fix.
-                record(.notRegistered)
-            } catch {
-                record(error)
-            }
-        }
 
         await refresh()
         await receive()
@@ -191,15 +182,43 @@ final class ConversationStore {
     }
 
     /// Adopts the address the relay assigned at redemption and publishes this device's keys.
-    func register(aci: UUID) async {
+    func register() async throws {
         guard !isPreviewOnly else { return }
         do {
-            try await repository().register(aci: aci)
-            localAci = aci
+            let repository = try await repository()
+            try await repository.register()
+            localAci = await repository.localAci()
             failure = nil
         } catch {
             record(error)
+            throw error
         }
+    }
+
+    /// Cryptographically erases every account-bound value, then discards every
+    /// in-memory handle and view model that could still expose the old account.
+    /// The session gate is cleared separately and only after this succeeds.
+    func destroyAccountState() async throws {
+        guard !isPreviewOnly else { return }
+        let engine: CryptoEngine
+        do {
+            engine = try await self.engine()
+            try await engine.destroyAllState()
+        } catch {
+            record(.storageUnavailable)
+            throw MessageRepository.Failure.storageUnavailable
+        }
+
+        engineTask = nil
+        repositoryTask = nil
+        chats = []
+        contacts = []
+        blockedContactIDs = []
+        localAci = nil
+        failure = nil
+        isSyncing = false
+        messagesByChat = [:]
+        ordinals = [:]
     }
 
     // MARK: - Reading

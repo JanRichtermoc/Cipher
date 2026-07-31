@@ -37,9 +37,11 @@ import Foundation
 nonisolated struct InviteRedemption: Sendable {
 
     private let client: RelayClient
+    private let now: @Sendable () -> Date
 
-    init(client: RelayClient = RelayClient()) {
+    init(client: RelayClient = RelayClient(), now: @escaping @Sendable () -> Date = { Date() }) {
         self.client = client
+        self.now = now
     }
 
     enum Failure: Error, Equatable {
@@ -57,10 +59,9 @@ nonisolated struct InviteRedemption: Sendable {
 
     /// What redemption produced.
     ///
-    /// The credential is **returned rather than stored here**. `AppSession.signIn(with:)` is
-    /// the single owner of the signed-in transition — it writes the Keychain *and* updates the
-    /// observable state — so storing from this type would leave the UI showing a signed-out
-    /// app until the next launch, and would give the Keychain two writers.
+    /// The credential is **returned rather than stored here**. `AppSession.beginRegistration`
+    /// owns the transition: it writes the Keychain and observable state together, leaving one
+    /// credential writer and a persisted recovery point before crypto registration starts.
     // Not Equatable: SessionCredential's conformance is MainActor-isolated by the
     // project-wide default, and widening a credential type's isolation to satisfy a
     // convenience conformance is not a trade worth making.
@@ -145,16 +146,26 @@ nonisolated struct InviteRedemption: Sendable {
             throw Failure.malformedResponse
         }
 
-        guard let token = decoded.token.data(using: .utf8), !token.isEmpty,
-              let aci = UUID(uuidString: decoded.aci) else {
+        let issuedAt = now()
+        let zeroACI = UUID(uuidString: "00000000-0000-0000-0000-000000000000")!
+        guard SessionCredential.isValidServerToken(decoded.token),
+              let token = decoded.token.data(using: .utf8),
+              let aci = UUID(uuidString: decoded.aci),
+              aci != zeroACI,
+              decoded.tokenExpiresAt > issuedAt,
+              decoded.tokenExpiresAt.timeIntervalSince(issuedAt) <=
+                SessionCredential.maximumLifetime else {
             throw Failure.malformedResponse
         }
 
         return Redeemed(aci: aci,
                         expiresAt: decoded.tokenExpiresAt,
                         credential: SessionCredential(token: token,
-                                                      issuedAt: Date(),
-                                                      origin: .serverIssued))
+                                                      aci: aci,
+                                                      issuedAt: issuedAt,
+                                                      expiresAt: decoded.tokenExpiresAt,
+                                                      origin: .serverIssued,
+                                                      phase: .registering))
     }
 
     // MARK: - Wire shapes
@@ -192,17 +203,125 @@ nonisolated struct InviteRedemption: Sendable {
             // those, so the format is parsed explicitly rather than left to a default that
             // happens to work until the server's precision changes.
             let raw = try container.decode(String.self, forKey: .tokenExpiresAt)
-            let withFraction = ISO8601DateFormatter()
-            withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            let plain = ISO8601DateFormatter()
-            plain.formatOptions = [.withInternetDateTime]
-
-            guard let date = withFraction.date(from: raw) ?? plain.date(from: raw) else {
+            guard let date = RelayTimestamp.parse(raw) else {
                 throw DecodingError.dataCorruptedError(
                     forKey: .tokenExpiresAt, in: container,
                     debugDescription: "not an RFC 3339 timestamp: \(raw)")
             }
             tokenExpiresAt = date
         }
+    }
+}
+
+/// Rotation and revocation for an already-issued relay credential.
+///
+/// Rotation is deliberately non-idempotent: the server consumes the old token
+/// atomically. Retrying after a lost response would only turn an uncertain result
+/// into a guaranteed 401, so the app keeps the old credential unless one complete
+/// response supplied its replacement.
+nonisolated struct SessionLifecycle: Sendable {
+    private let client: RelayClient
+    private let now: @Sendable () -> Date
+
+    init(client: RelayClient = RelayClient(), now: @escaping @Sendable () -> Date = { Date() }) {
+        self.client = client
+        self.now = now
+    }
+
+    enum Failure: Error, Equatable {
+        case rejected
+        case rateLimited
+        case unreachable
+        case serverUnavailable
+        case malformedResponse
+    }
+
+    func rotate(_ current: SessionCredential) async throws -> SessionCredential {
+        guard current.origin == .serverIssued,
+              current.phase == .active,
+              !current.isExpired(at: now()),
+              let token = current.bearerToken else {
+            throw Failure.rejected
+        }
+
+        let response: RelayClient.Response
+        do {
+            response = try await client.send(RelayRequest(
+                method: "POST", path: "/v1/auth/rotate", bearerToken: token,
+                isIdempotent: false))
+        } catch {
+            throw Failure.unreachable
+        }
+
+        switch response.status {
+        case 200: break
+        case 401: throw Failure.rejected
+        case 429: throw Failure.rateLimited
+        case 500...599: throw Failure.serverUnavailable
+        default: throw Failure.malformedResponse
+        }
+
+        let decoded: RotateResponse
+        do {
+            decoded = try JSONDecoder().decode(RotateResponse.self, from: response.body)
+        } catch {
+            throw Failure.malformedResponse
+        }
+
+        let issuedAt = now()
+        guard SessionCredential.isValidServerToken(decoded.token),
+              let bytes = decoded.token.data(using: .utf8),
+              decoded.expiresAt > current.expiresAt,
+              decoded.expiresAt > issuedAt,
+              decoded.expiresAt.timeIntervalSince(issuedAt) <=
+                SessionCredential.maximumLifetime else {
+            throw Failure.malformedResponse
+        }
+
+        return SessionCredential(token: bytes, aci: current.aci,
+                                 issuedAt: issuedAt, expiresAt: decoded.expiresAt,
+                                 origin: .serverIssued, phase: .active)
+    }
+
+    /// Best-effort server revocation before local cryptographic erasure. Local
+    /// cleanup must continue even if the relay is offline; the token still has a
+    /// hard expiry and the wiped device no longer holds message keys.
+    func revokeBestEffort(_ credential: SessionCredential?) async {
+        guard let token = credential?.bearerToken else { return }
+        _ = try? await client.send(RelayRequest(
+            method: "DELETE", path: "/v1/auth", bearerToken: token,
+            isIdempotent: true))
+    }
+
+    private struct RotateResponse: Decodable {
+        let token: String
+        let expiresAt: Date
+
+        enum CodingKeys: String, CodingKey {
+            case token
+            case expiresAt = "expires_at"
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            token = try container.decode(String.self, forKey: .token)
+            let raw = try container.decode(String.self, forKey: .expiresAt)
+            guard let parsed = RelayTimestamp.parse(raw) else {
+                throw DecodingError.dataCorruptedError(
+                    forKey: .expiresAt, in: container,
+                    debugDescription: "not an RFC 3339 timestamp")
+            }
+            expiresAt = parsed
+        }
+    }
+}
+
+private nonisolated enum RelayTimestamp {
+    static func parse(_ raw: String) -> Date? {
+        let withFraction = ISO8601DateFormatter()
+        withFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let plain = ISO8601DateFormatter()
+        plain.formatOptions = [.withInternetDateTime]
+        return withFraction.date(from: raw) ?? plain.date(from: raw)
     }
 }

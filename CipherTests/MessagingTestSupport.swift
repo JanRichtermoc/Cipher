@@ -174,9 +174,16 @@ enum TestSession {
     static func store() -> SessionStore { SessionStore(service: service) }
 
     /// Stores a credential whose token is the given bearer string.
-    static func signIn(token: String = "test-bearer-token") throws {
+    static func signIn(
+        token: String = String(repeating: "A", count: 43),
+        aci: UUID,
+        phase: SessionCredential.Phase = .active
+    ) throws {
+        let issuedAt = Date()
         try store().store(
-            SessionCredential(token: Data(token.utf8), issuedAt: Date(), origin: .serverIssued))
+            SessionCredential(token: Data(token.utf8), aci: aci, issuedAt: issuedAt,
+                              expiresAt: issuedAt.addingTimeInterval(30 * 24 * 60 * 60),
+                              origin: .serverIssued, phase: phase))
     }
 
     static func signOut() {

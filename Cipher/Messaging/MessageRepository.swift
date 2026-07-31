@@ -113,28 +113,30 @@ actor MessageRepository {
 
     // MARK: - Registration
 
-    /// Binds this installation to `aci` and publishes its prekeys, once.
+    /// Binds this installation to the pending credential's ACI and publishes its prekeys, once.
     ///
     /// Idempotent and cheap after the first success: `adoptLocalAddress` is a no-op for the same
     /// address, and the publication flag means the hundred-keypair generation happens once per
     /// installation rather than once per launch. It is also *retried* on every launch until it
     /// succeeds, because an account whose keys never published is an account no peer can start a
     /// session with — and nothing else would ever notice.
-    func register(aci: UUID) async throws {
+    func register() async throws {
         try await operationGate.withExclusiveAccess {
-            try await registerExclusively(aci: aci)
+            try await registerExclusively()
         }
     }
 
-    private func registerExclusively(aci: UUID) async throws {
+    private func registerExclusively() async throws {
+        let credential = try registrationCredential()
         do {
-            try await engine.adoptLocalAddress(PeerAddress(aci: aci))
+            try await engine.adoptLocalAddress(PeerAddress(aci: credential.aci))
         } catch MessagingError.localAddressAlreadySet {
             throw Failure.accountMismatch
         } catch {
             throw Failure.storageUnavailable
         }
-        try await publishKeysIfNeeded()
+        guard await localAci() == credential.aci else { throw Failure.accountMismatch }
+        try await publishKeysIfNeeded(token: credential.token)
     }
 
     /// The launch-time half of registration: this installation already has an address, so all
@@ -145,19 +147,17 @@ actor MessageRepository {
     /// symptom is other people's session setup returning 404.
     func resumeRegistration() async throws {
         try await operationGate.withExclusiveAccess {
-            guard await localAci() != nil else { throw Failure.notRegistered }
-            try await publishKeysIfNeeded()
+            try await registerExclusively()
         }
     }
 
-    private func publishKeysIfNeeded() async throws {
+    private func publishKeysIfNeeded(token: String) async throws {
         do {
             if try await archive.flag(ConversationArchive.keysPublishedFlag) { return }
         } catch {
             throw Failure.storageUnavailable
         }
 
-        let token = try token()
         let keys: PublishedKeys
         do {
             keys = try await engine.generatePublishedKeys()
@@ -311,8 +311,9 @@ actor MessageRepository {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw Failure.relayRefused }
 
-        let token = try token()
-        guard await localAci() != nil else { throw Failure.notRegistered }
+        let credential = try activeCredential()
+        let token = credential.token
+        guard await localAci() == credential.aci else { throw Failure.accountMismatch }
 
         let conversation = try await startConversation(with: peer, nickname: nil)
         guard !conversation.isBlocked else { throw Failure.blocked }
@@ -390,8 +391,9 @@ actor MessageRepository {
     }
 
     private func receiveExclusively() async throws -> Int {
-        let token = try token()
-        guard await localAci() != nil else { throw Failure.notRegistered }
+        let credential = try activeCredential()
+        let token = credential.token
+        guard await localAci() == credential.aci else { throw Failure.accountMismatch }
 
         var storedCount = 0
 
@@ -491,14 +493,20 @@ actor MessageRepository {
     /// Not cached. A cached token would outlive a sign-out for the lifetime of this actor, and
     /// "the app forgot it was signed out" is the failure mode the whole credential design exists
     /// to prevent (AUDIT 5.2).
-    private func token() throws -> String {
+    private func activeCredential() throws -> (token: String, aci: UUID) {
         guard let credential = sessions.current(),
-              let token = String(data: credential.token, encoding: .utf8),
-              !token.isEmpty
-        else {
-            throw Failure.notAuthenticated
-        }
-        return token
+              credential.phase == .active,
+              !credential.isExpired(at: now()),
+              let token = credential.bearerToken else { throw Failure.notAuthenticated }
+        return (token, credential.aci)
+    }
+
+    private func registrationCredential() throws -> (token: String, aci: UUID) {
+        guard let credential = sessions.current(),
+              credential.phase == .registering,
+              !credential.isExpired(at: now()),
+              let token = credential.bearerToken else { throw Failure.notAuthenticated }
+        return (token, credential.aci)
     }
 
     private static func milliseconds(_ date: Date) -> UInt64 {

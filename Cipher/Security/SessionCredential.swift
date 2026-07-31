@@ -11,23 +11,21 @@ import Security
 
 /// Proof that this installation has an authenticated session.
 ///
-/// ## Presence *is* the authentication state
+/// ## The stored phase and expiry are the authentication state
 ///
-/// There is no `isAuthenticated` boolean anywhere. Being signed in means "a credential is in
-/// the Keychain"; being signed out means it is not. That is the whole point of this type:
+/// There is no persisted `isAuthenticated` boolean anywhere. Being signed in means an active,
+/// unexpired, structurally valid credential is in the Keychain. That is the point of this type:
 /// the previous design kept `isAuthenticated` in `UserDefaults`, which is a plist in the
 /// app container that any jailbroken device — or anyone with a file-write primitive — can
 /// edit. Flipping one boolean there used to grant a signed-in app. It cannot now, because
 /// nothing reads a boolean; `SessionStore.current` reads the Keychain, and the Keychain is
 /// not a file the app's own sandbox lets you rewrite.
 ///
-/// ## There is no way to mint a production credential yet, deliberately
+/// ## Production credentials only come from the relay
 ///
-/// A real credential is issued by the relay when an invite code is redeemed, which lands in
-/// P5.S09. Until then `.serverIssued` is unreachable and a Release build genuinely cannot
-/// authenticate. That is the honest state of an app with no server (AUDIT 5.1) — the
-/// alternative is a locally minted token that looks like authentication and proves nothing,
-/// which the plan forbids in as many words.
+/// Invite redemption is the only production constructor path. A Release build never mints a
+/// `.serverIssued` credential locally; the DEBUG-only development origin remains separately
+/// encoded and is refused by Release.
 ///
 /// ## Deliberately outside the main actor
 ///
@@ -49,10 +47,79 @@ nonisolated struct SessionCredential: Equatable, Sendable {
         case development = 2
     }
 
-    /// Opaque bytes. Treated as a bearer secret even though nothing verifies it yet.
+    /// Registration and destruction are persisted states, not transient UI
+    /// booleans. A crash therefore resumes behind the same gate instead of
+    /// exposing history from an account whose setup or erasure was incomplete.
+    enum Phase: UInt8, Sendable {
+        case registering = 1
+        case profileSetup = 2
+        case active = 3
+        case destroying = 4
+    }
+
+    /// Opaque bearer bytes. Server-issued values are 32 random bytes encoded as
+    /// 43 unpadded base64url characters.
     let token: Data
+    /// The account this token authenticates. It is also the only local address
+    /// the credential may be used with.
+    let aci: UUID
     let issuedAt: Date
+    let expiresAt: Date
     let origin: Origin
+    let phase: Phase
+
+    static let maximumLifetime: TimeInterval = 31 * 24 * 60 * 60
+    private static let zeroACI = UUID(
+        uuidString: "00000000-0000-0000-0000-000000000000")!
+
+    func replacing(phase: Phase) -> SessionCredential {
+        SessionCredential(token: token, aci: aci, issuedAt: issuedAt,
+                          expiresAt: expiresAt, origin: origin, phase: phase)
+    }
+
+    func isExpired(at date: Date) -> Bool { expiresAt <= date }
+
+    var bearerToken: String? {
+        guard origin == .serverIssued,
+              let raw = String(data: token, encoding: .utf8),
+              Self.isValidServerToken(raw) else { return nil }
+        return raw
+    }
+
+    var isStructurallyValid: Bool {
+        guard aci != Self.zeroACI,
+              issuedAt.timeIntervalSince1970.isFinite,
+              expiresAt.timeIntervalSince1970.isFinite,
+              issuedAt.timeIntervalSince1970 >= 0,
+              expiresAt > issuedAt,
+              expiresAt.timeIntervalSince(issuedAt) <= Self.maximumLifetime
+        else { return false }
+
+        switch origin {
+        case .serverIssued:
+            return bearerToken != nil
+        case .development:
+            return token.count == 32
+        }
+    }
+
+    static func isValidServerToken(_ raw: String) -> Bool {
+        guard raw.utf8.count == 43,
+              raw.utf8.allSatisfy({
+                  (48...57).contains(Int($0)) || (65...90).contains(Int($0)) ||
+                      (97...122).contains(Int($0)) || $0 == 45 || $0 == 95
+              })
+        else { return false }
+
+        let base64 = raw.replacingOccurrences(of: "-", with: "+")
+            .replacingOccurrences(of: "_", with: "/") + "="
+        guard let decoded = Data(base64Encoded: base64), decoded.count == 32 else { return false }
+        let canonical = decoded.base64EncodedString()
+            .replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "=", with: "")
+        return canonical == raw
+    }
 }
 
 // MARK: - Storage
@@ -84,13 +151,16 @@ nonisolated struct SessionStore: Sendable {
 
     /// ```text
     ///  offset  size  field
-    ///       0     1  version    always 0x01
+    ///       0     1  version    always 0x02
     ///       1     1  origin     1 = server-issued, 2 = development
-    ///       2     8  issuedAt   UInt64, milliseconds since the Unix epoch, big-endian
-    ///      10     N  token
+    ///       2     1  phase      registering/profile/active/destroying
+    ///       3     8  issuedAt   UInt64 milliseconds, big-endian
+    ///      11     8  expiresAt  UInt64 milliseconds, big-endian
+    ///      19    16  aci        UUID bytes
+    ///      35     N  token
     /// ```
-    private static let version: UInt8 = 1
-    private static let headerSize = 10
+    private static let version: UInt8 = 2
+    private static let headerSize = 35
 
     private let service: String
 
@@ -112,12 +182,12 @@ nonisolated struct SessionStore: Sendable {
 
     // MARK: Reading
 
-    /// The stored credential, or `nil` when signed out.
+    /// The stored credential, or `nil` when absent or not safely decodable.
     ///
-    /// Returns `nil` rather than throwing on a malformed or unreadable item. Signed-out is
-    /// the safe interpretation of "cannot establish that a session exists", and it is the
-    /// one state the app can always recover from — the user signs in again. Throwing would
-    /// leave the UI with no defined destination.
+    /// AppSession separately checks whether the slot exists: an unreadable value enters the
+    /// cleanup gate rather than exposing a new invite to prior-account state. The visible
+    /// cleanup screen re-reads once before erasure because a prewarmed process may have queried
+    /// a valid `WhenUnlocked` value before first unlock.
     func current() -> SessionCredential? {
         var query = baseQuery()
         query[kSecReturnData] = true
@@ -139,13 +209,23 @@ nonisolated struct SessionStore: Sendable {
         return credential
     }
 
+    /// Whether the Keychain slot exists even if this build refuses its bytes.
+    /// Used only to force account cleanup before another invite can be redeemed;
+    /// treating an old/future credential as simply absent could mix a new account
+    /// with protocol state and history belonging to the prior one.
+    func hasStoredItem() -> Bool {
+        // Only the definitive "not found" result opens registration. A locked
+        // or otherwise unavailable Keychain must fail closed; the cleanup view
+        // re-reads the protected value once the app is visible before erasing.
+        SecItemCopyMatching(baseQuery() as CFDictionary, nil) != errSecItemNotFound
+    }
+
     // MARK: Writing
 
     /// Stores `credential`, replacing any existing one.
     ///
-    /// Delete-then-add rather than `SecItemUpdate`: the accessibility attribute is set on
-    /// add, and an update to an item created under a different class would silently keep the
-    /// old one.
+    /// Uses an atomic update when the item exists, avoiding a delete/add gap in
+    /// which a crash could turn token rotation into sign-out.
     func store(_ credential: SessionCredential) throws {
         #if !DEBUG
             guard credential.origin != .development else {
@@ -153,15 +233,25 @@ nonisolated struct SessionStore: Sendable {
             }
         #endif
 
-        try clear()
+        guard credential.isStructurallyValid else {
+            throw SessionStoreError.malformedCredential
+        }
+
+        let values: [CFString: Any] = [
+            kSecValueData: Self.encode(credential),
+            kSecAttrAccessible: kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        ]
+        let update = SecItemUpdate(baseQuery() as CFDictionary, values as CFDictionary)
+        if update == errSecSuccess { return }
+        guard update == errSecItemNotFound else {
+            throw SessionStoreError.keychainFailure(operation: "update", status: update)
+        }
 
         var query = baseQuery()
-        query[kSecValueData] = Self.encode(credential)
-        query[kSecAttrAccessible] = kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-
-        let status = SecItemAdd(query as CFDictionary, nil)
-        guard status == errSecSuccess else {
-            throw SessionStoreError.keychainFailure(operation: "store", status: status)
+        values.forEach { query[$0.key] = $0.value }
+        let add = SecItemAdd(query as CFDictionary, nil)
+        guard add == errSecSuccess else {
+            throw SessionStoreError.keychainFailure(operation: "store", status: add)
         }
     }
 
@@ -179,8 +269,13 @@ nonisolated struct SessionStore: Sendable {
         var out = Data(capacity: headerSize + credential.token.count)
         out.append(version)
         out.append(credential.origin.rawValue)
-        let millis = UInt64(credential.issuedAt.timeIntervalSince1970 * 1000)
-        withUnsafeBytes(of: millis.bigEndian) { out.append(contentsOf: $0) }
+        out.append(credential.phase.rawValue)
+        for date in [credential.issuedAt, credential.expiresAt] {
+            let millis = UInt64(date.timeIntervalSince1970 * 1000)
+            withUnsafeBytes(of: millis.bigEndian) { out.append(contentsOf: $0) }
+        }
+        var uuid = credential.aci.uuid
+        withUnsafeBytes(of: &uuid) { out.append(contentsOf: $0) }
         out.append(credential.token)
         return out
     }
@@ -194,16 +289,30 @@ nonisolated struct SessionStore: Sendable {
         let base = bytes.startIndex
 
         guard bytes[base] == version,
-            let origin = SessionCredential.Origin(rawValue: bytes[base + 1])
+            let origin = SessionCredential.Origin(rawValue: bytes[base + 1]),
+            let phase = SessionCredential.Phase(rawValue: bytes[base + 2])
         else { return nil }
 
-        var millis: UInt64 = 0
-        for offset in 0..<8 { millis = (millis << 8) | UInt64(bytes[base + 2 + offset]) }
+        func milliseconds(at start: Int) -> UInt64 {
+            var value: UInt64 = 0
+            for offset in 0..<8 { value = (value << 8) | UInt64(bytes[base + start + offset]) }
+            return value
+        }
 
-        return SessionCredential(
+        let uuidBytes = Array(bytes[(base + 19)..<(base + 35)])
+        let aci = uuidBytes.withUnsafeBufferPointer { buffer in
+            UUID(uuidString: NSUUID(uuidBytes: buffer.baseAddress!).uuidString)
+        }
+        guard let aci else { return nil }
+
+        let credential = SessionCredential(
             token: Data(bytes[(base + headerSize)...]),
-            issuedAt: Date(timeIntervalSince1970: TimeInterval(millis) / 1000),
-            origin: origin)
+            aci: aci,
+            issuedAt: Date(timeIntervalSince1970: TimeInterval(milliseconds(at: 3)) / 1000),
+            expiresAt: Date(timeIntervalSince1970: TimeInterval(milliseconds(at: 11)) / 1000),
+            origin: origin,
+            phase: phase)
+        return credential.isStructurallyValid ? credential : nil
     }
 }
 
@@ -212,6 +321,7 @@ nonisolated enum SessionStoreError: Error, Equatable {
     /// A development credential was offered to a Release build. Refused rather than stored:
     /// the point of the origin field is that it cannot be laundered.
     case developmentCredentialInReleaseBuild
+    case malformedCredential
 }
 
 #if DEBUG
@@ -228,7 +338,10 @@ nonisolated enum SessionStoreError: Error, Equatable {
                 guard let base = buffer.baseAddress else { return }
                 _ = SecRandomCopyBytes(kSecRandomDefault, buffer.count, base)
             }
-            return SessionCredential(token: token, issuedAt: Date(), origin: .development)
+            let issuedAt = Date()
+            return SessionCredential(token: token, aci: UUID(), issuedAt: issuedAt,
+                                     expiresAt: issuedAt.addingTimeInterval(maximumLifetime),
+                                     origin: .development, phase: .active)
         }
     }
 #endif

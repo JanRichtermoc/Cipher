@@ -13,7 +13,7 @@ final class AppSession {
     var hasCompletedOnboarding: Bool {
         didSet { defaults.set(hasCompletedOnboarding, forKey: Keys.onboarding) }
     }
-    /// Signed in **iff** a credential is in the Keychain.
+    /// The account-bound credential loaded from the Keychain.
     ///
     /// Not stored here and not settable. This used to be a `UserDefaults` bool, which meant
     /// the authentication gate was a plist entry in the app container — editable on a
@@ -22,7 +22,10 @@ final class AppSession {
     /// longer produce a signed-in app.
     private(set) var credential: SessionCredential?
 
-    var isAuthenticated: Bool { credential != nil }
+    var isAuthenticated: Bool {
+        guard let credential else { return false }
+        return credential.phase == .active && !credential.isExpired(at: now())
+    }
     /// `private(set)`: the lock is cleared by `unlock(reason:)` after a successful
     /// device-owner check, and by nothing else in a shipping build. It used to be a plain
     /// `var`, so four call sites set it directly — the lock's only real authority was that
@@ -96,15 +99,21 @@ final class AppSession {
     /// so tests that shared it leaked onboarding state into each other and passed or failed
     /// on run order — which is how a suite starts being re-run until it goes green.
     private let defaults: UserDefaults
+    private let now: @Sendable () -> Date
+    /// True when the Keychain contains bytes this build cannot safely bind to
+    /// an account. Another invite stays unreachable until local state is erased.
+    private var requiresAccountCleanup: Bool
 
     init(
         sessions: SessionStore = SessionStore(),
         defaults: UserDefaults = .standard,
-        authenticator: DeviceAuthenticator = SystemDeviceAuthenticator()
+        authenticator: DeviceAuthenticator = SystemDeviceAuthenticator(),
+        now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.sessions = sessions
         self.authenticator = authenticator
         self.defaults = defaults
+        self.now = now
 
         // A build that predates this carries `cipher.isAuthenticated` in UserDefaults. It is
         // no longer read, but leaving it would be a stale flag that looks meaningful to the
@@ -133,7 +142,10 @@ final class AppSession {
         self.username = ProfileDefault.username
         self.about = ProfileDefault.about
         self.isAppLocked = lockEnabled
-        self.credential = sessions.current()
+        let storedCredential = sessions.current()
+        self.credential = storedCredential
+        self.requiresAccountCleanup =
+            storedCredential == nil && sessions.hasStoredItem()
     }
 
     /// Which gate the app is currently behind.
@@ -145,16 +157,31 @@ final class AppSession {
     enum Destination: Equatable {
         case onboarding
         case authentication
+        case registration
+        case profileSetup
+        case accountCleanup
         case locked
         case main
     }
 
     var destination: Destination {
+        if requiresAccountCleanup { return .accountCleanup }
+        if let credential {
+            if credential.isExpired(at: now()) || credential.phase == .destroying {
+                return .accountCleanup
+            }
+            switch credential.phase {
+            case .registering: return .registration
+            case .profileSetup: return .profileSetup
+            case .active: break
+            case .destroying: return .accountCleanup
+            }
+        }
         #if DEBUG
         if debugSkipToMain { return .main }
         #endif
         guard hasCompletedOnboarding else { return .onboarding }
-        guard isAuthenticated else { return .authentication }
+        guard credential != nil else { return .authentication }
         return isAppLocked ? .locked : .main
     }
 
@@ -164,15 +191,102 @@ final class AppSession {
         hasCompletedOnboarding = true
     }
 
-    /// Adopts a credential and, if the app lock is on, starts locked.
-    ///
-    /// Throwing on a Keychain failure is deliberate: silently continuing would leave the app
-    /// showing a signed-in UI that the next launch would not reproduce, and "signed in until
-    /// you close it" is the kind of state that gets mistaken for a bug in the crypto.
-    func signIn(with credential: SessionCredential) throws {
+    /// Persists the relay result before address adoption or publication begins.
+    /// The UI remains behind `.registration`; a crash resumes there with the ACI
+    /// and expiry needed to finish instead of discarding a single-use invite.
+    func beginRegistration(with credential: SessionCredential) throws {
+        guard !requiresAccountCleanup,
+              self.credential == nil,
+              credential.origin == .serverIssued,
+              credential.phase == .registering,
+              !credential.isExpired(at: now())
+        else { throw SessionLifecycleError.invalidTransition }
         try sessions.store(credential)
         self.credential = credential
+        isAppLocked = true
+    }
+
+    /// Records that address adoption and key publication both succeeded. Profile
+    /// setup remains a real gate and is recoverable after a relaunch.
+    func completeRegistration() throws {
+        try transition(from: .registering, to: .profileSetup)
+    }
+
+    /// The only transition to an authenticated main UI.
+    func completeProfileSetup(displayName: String, username: String) async throws {
+        guard let profiles else { throw SessionLifecycleError.profileStorageUnavailable }
+        let snapshot = ProfileArchive.StoredProfile(
+            displayName: displayName, username: username, about: about)
+        try await profiles.save(snapshot)
+        isLoadingProfile = true
+        self.displayName = snapshot.displayName
+        self.username = snapshot.username
+        isLoadingProfile = false
+        try transition(from: .profileSetup, to: .active)
         isAppLocked = appLockEnabled
+    }
+
+    /// Replaces an active token after the server atomically rotated it.
+    func adoptRotatedCredential(_ replacement: SessionCredential) throws {
+        guard let current = credential,
+              current.phase == .active,
+              !current.isExpired(at: now()),
+              replacement.origin == .serverIssued,
+              replacement.phase == .active,
+              replacement.aci == current.aci,
+              replacement.expiresAt > current.expiresAt,
+              !replacement.isExpired(at: now())
+        else { throw SessionLifecycleError.invalidTransition }
+        try sessions.store(replacement)
+        credential = replacement
+    }
+
+    /// Rotate before the hard server expiry, while failure can still leave the
+    /// existing credential usable. Rotation itself is never retried.
+    private var isCredentialRotationInFlight = false
+    var credentialRotationIsInFlight: Bool { isCredentialRotationInFlight }
+
+    func beginCredentialRotationIfNeeded() -> SessionCredential? {
+        guard !isCredentialRotationInFlight else { return nil }
+        guard let credential,
+              credential.phase == .active,
+              !credential.isExpired(at: now()),
+              credential.expiresAt.timeIntervalSince(now()) <= 7 * 24 * 60 * 60
+        else { return nil }
+        isCredentialRotationInFlight = true
+        return credential
+    }
+
+    func endCredentialRotation() {
+        isCredentialRotationInFlight = false
+    }
+
+    /// The delay used by RootView's expiry task. Reading the injected clock here
+    /// keeps the timer and the authentication decision on the same time source.
+    var credentialExpiryDelay: TimeInterval? {
+        guard let credential, credential.phase != .destroying else { return nil }
+        return max(0, credential.expiresAt.timeIntervalSince(now()))
+    }
+
+    /// Persists the destructive gate when a credential crosses its local
+    /// expiry while the process remains foregrounded. Merely computing
+    /// `destination` from `Date()` would not cause SwiftUI to re-evaluate it.
+    func enforceCredentialExpiry() throws {
+        guard let credential,
+              credential.phase != .destroying,
+              credential.isExpired(at: now()) else { return }
+        try signOut()
+    }
+
+    private func transition(from expected: SessionCredential.Phase,
+                            to next: SessionCredential.Phase) throws {
+        guard let credential,
+              credential.phase == expected,
+              !credential.isExpired(at: now())
+        else { throw SessionLifecycleError.invalidTransition }
+        let replacement = credential.replacing(phase: next)
+        try sessions.store(replacement)
+        self.credential = replacement
     }
 
     #if DEBUG
@@ -180,11 +294,14 @@ final class AppSession {
     ///
     /// DEBUG only, and the credential it mints is marked `.development` in its stored bytes,
     /// so a Release build refuses it on read. There is deliberately no Release counterpart:
-    /// a real credential comes from redeeming an invite code against the relay (P5.S09), and
-    /// until that exists a shipping build genuinely cannot authenticate. Minting something
-    /// locally that *looked* like a session would be exactly the fake token the plan forbids.
+    /// a real credential comes only from redeeming an invite code against the relay (P5.S09).
+    /// Minting something locally that *looked* like a production session would be exactly the
+    /// fake token the plan forbids.
     func signInForDevelopment() throws {
-        try signIn(with: .development())
+        let credential = SessionCredential.development()
+        try sessions.store(credential)
+        self.credential = credential
+        isAppLocked = appLockEnabled
     }
     #endif
 
@@ -200,40 +317,59 @@ final class AppSession {
     }
     #endif
 
-    /// Signs out and destroys the credential.
+    /// Starts sign-out by persisting the destructive gate before anything is
+    /// erased. RootView then destroys protocol state, history and profile data;
+    /// only after that succeeds is the credential removed.
     func signOut() throws {
+        guard let credential else {
+            if requiresAccountCleanup { return }
+            return
+        }
+        guard credential.phase != .destroying else { return }
+        // Hide the old account before touching the Keychain. If that write
+        // fails, this process still remains behind the destructive gate.
+        requiresAccountCleanup = true
+        let replacement = credential.replacing(phase: .destroying)
+        try sessions.store(replacement)
+        self.credential = replacement
+        isAppLocked = true
+    }
+
+    /// A `WhenUnlocked` Keychain value can be temporarily unreadable if iOS
+    /// prewarms the process before first unlock. Before treating undecodable
+    /// bytes as legacy account state and erasing them, try once more from the
+    /// visible cleanup screen. A genuinely malformed value remains unreadable
+    /// and proceeds to cleanup.
+    func recoverReadableCredentialBeforeCleanup() -> Bool {
+        guard requiresAccountCleanup, credential == nil,
+              let recovered = sessions.current() else { return false }
+        credential = recovered
+        requiresAccountCleanup = false
+        return destination != .accountCleanup
+    }
+
+    /// Finishes erasure after ConversationStore has destroyed all account-bound
+    /// state. Clearing first would make a new invite reachable while old history
+    /// and ratchets were still present.
+    func completeAccountCleanup() throws {
         try sessions.clear()
         credential = nil
+        requiresAccountCleanup = false
         isAppLocked = false
-
-        // Profile fields go too: leaving a display name and an "about" behind after sign-out
-        // means the device still says who used it. Sealed since P5.S11 (AUDIT 4.7), so this
-        // deletes the sealed row rather than blanking a plist entry.
-        //
-        // The in-memory values are reset first and the row is deleted after, without waiting:
-        // `signOut` is synchronous because it must not be able to fail half way and leave a
-        // signed-out app holding a credential. The row's deletion is not load-bearing for that
-        // — the record is sealed under a key this device still holds either way, and a
-        // subsequent sign-in overwrites it — so making it a `Task` is a latency decision, not a
-        // security one.
+        isCredentialRotationInFlight = false
+        profiles = nil
+        isLoadingProfile = true
         displayName = ProfileDefault.displayName
         username = ProfileDefault.username
         about = ProfileDefault.about
-        if let profiles {
-            Task {
-                do {
-                    try await profiles.clear()
-                } catch {
-                    AppLog.session.error("clearing the stored profile on sign-out failed")
-                }
-            }
-        }
+        isLoadingProfile = false
     }
 
     // MARK: - Profile storage
 
     /// The sealed store for the three profile fields. `nil` until the engine is open.
     private var profiles: ProfileArchive?
+    var isProfileStorageReady: Bool { profiles != nil }
 
     /// Suppresses the `didSet` writes while `adoptProfileStorage` populates the fields, so
     /// loading a profile does not immediately write it back.
@@ -352,8 +488,14 @@ final class AppSession {
         hasCompletedOnboarding = false
         try? sessions.clear()
         credential = nil
+        requiresAccountCleanup = false
         isAppLocked = false
         debugSkipToMain = false
     }
     #endif
+}
+
+enum SessionLifecycleError: Error, Equatable {
+    case invalidTransition
+    case profileStorageUnavailable
 }

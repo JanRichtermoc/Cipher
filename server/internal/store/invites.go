@@ -36,6 +36,16 @@ type Account struct {
 	RegistrationID uint32
 }
 
+// InitialSession is the first credential created with an account.
+//
+// It is part of invite redemption rather than a later CreateSession call so a
+// successful commit can never leave an account whose only invite is gone and
+// whose only session was never written.
+type InitialSession struct {
+	TokenHash []byte
+	ExpiresAt time.Time
+}
+
 // CreateInvite stores a hashed invite.
 //
 // It takes the hash, never the code. The code exists only in memory on the path
@@ -51,8 +61,8 @@ func (db *DB) CreateInvite(ctx context.Context, codeHash []byte, expiresAt time.
 	return nil
 }
 
-// RedeemInvite consumes an invite and creates the account it authorises, in one
-// transaction.
+// RedeemInvite consumes an invite and creates both the account and its first
+// session, in one transaction.
 //
 // # Why this is a single statement rather than SELECT-then-DELETE
 //
@@ -74,6 +84,7 @@ func (db *DB) RedeemInvite(
 	ctx context.Context,
 	codeHash []byte,
 	account Account,
+	session InitialSession,
 ) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
@@ -107,6 +118,12 @@ func (db *DB) RedeemInvite(
 			return ErrAccountExists
 		}
 		return fmt.Errorf("redeem: create account: %w", err)
+	}
+
+	if _, err := tx.Exec(ctx,
+		`INSERT INTO session_tokens (token_hash, aci, expires_at) VALUES ($1, $2, $3)`,
+		session.TokenHash, account.ACI, session.ExpiresAt); err != nil {
+		return fmt.Errorf("redeem: create initial session: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {

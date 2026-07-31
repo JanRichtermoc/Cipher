@@ -36,6 +36,7 @@ import (
 	"github.com/google/uuid"
 
 	"cipher.relay/internal/api"
+	"cipher.relay/internal/auth"
 	"cipher.relay/internal/cache"
 	"cipher.relay/internal/httpx"
 	"cipher.relay/internal/invite"
@@ -100,6 +101,17 @@ func issue(t *testing.T, db *store.DB, ttl time.Duration) invite.Code {
 	return code
 }
 
+func redeem(t *testing.T, db *store.DB, code invite.Code, account store.Account) error {
+	t.Helper()
+	token, err := auth.Generate()
+	if err != nil {
+		t.Fatalf("generate initial session: %v", err)
+	}
+	return db.RedeemInvite(context.Background(), code.Hash(), account, store.InitialSession{
+		TokenHash: token.Hash(), ExpiresAt: time.Now().Add(api.SessionTTL),
+	})
+}
+
 // --- Single use ------------------------------------------------------------
 
 func TestRedeemConsumesTheInvite(t *testing.T) {
@@ -108,7 +120,7 @@ func TestRedeemConsumesTheInvite(t *testing.T) {
 	code := issue(t, db, time.Hour)
 
 	account := newAccount()
-	if err := db.RedeemInvite(ctx, code.Hash(), account); err != nil {
+	if err := redeem(t, db, code, account); err != nil {
 		t.Fatalf("first redemption failed: %v", err)
 	}
 
@@ -121,17 +133,52 @@ func TestRedeemConsumesTheInvite(t *testing.T) {
 	}
 }
 
+func TestSessionInsertFailureRollsBackAccountAndInvite(t *testing.T) {
+	// The account, first session, and invite consumption are one operation. A
+	// one-byte hash deliberately violates session_tokens' 32-byte CHECK after
+	// the account insert has run. The same invite must then still redeem: merely
+	// checking that the first call errored would pass against the orphaning bug.
+	ctx := context.Background()
+	db := testDB(t)
+	code := issue(t, db, time.Hour)
+	account := newAccount()
+
+	err := db.RedeemInvite(ctx, code.Hash(), account, store.InitialSession{
+		TokenHash: []byte{0x01}, ExpiresAt: time.Now().Add(api.SessionTTL),
+	})
+	if err == nil {
+		t.Fatal("an invalid session hash unexpectedly committed")
+	}
+
+	exists, lookupErr := db.AccountExists(ctx, account.ACI)
+	if lookupErr != nil {
+		t.Fatalf("account exists: %v", lookupErr)
+	}
+	if exists {
+		t.Fatal("the account survived a failed initial-session insert")
+	}
+
+	if err := redeem(t, db, code, account); err != nil {
+		t.Fatalf("the failed transaction still spent its invite: %v", err)
+	}
+	if sessions, err := db.CountSessionsForAccount(ctx, account.ACI); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	} else if sessions != 1 {
+		t.Fatalf("successful redemption created %d sessions, want exactly 1", sessions)
+	}
+}
+
 func TestReuseIsRejected(t *testing.T) {
 	ctx := context.Background()
 	db := testDB(t)
 	code := issue(t, db, time.Hour)
 
-	if err := db.RedeemInvite(ctx, code.Hash(), newAccount()); err != nil {
+	if err := redeem(t, db, code, newAccount()); err != nil {
 		t.Fatalf("first redemption failed: %v", err)
 	}
 
 	second := newAccount()
-	err := db.RedeemInvite(ctx, code.Hash(), second)
+	err := redeem(t, db, code, second)
 	if err != store.ErrInviteNotRedeemable {
 		t.Fatalf("second redemption returned %v, want ErrInviteNotRedeemable", err)
 	}
@@ -168,7 +215,7 @@ func TestRedeemedInviteIsDeletedNotFlagged(t *testing.T) {
 		t.Fatalf("issuing added %d rows, want 1", during-before)
 	}
 
-	if err := db.RedeemInvite(ctx, code.Hash(), newAccount()); err != nil {
+	if err := redeem(t, db, code, newAccount()); err != nil {
 		t.Fatalf("redeem: %v", err)
 	}
 
@@ -188,7 +235,6 @@ func TestConcurrentRedemptionYieldsExactlyOneAccount(t *testing.T) {
 	// passes the existence check before any of them deletes, and a single-use
 	// code creates N accounts. The window is narrow and trivially reachable by
 	// sending the same request twice at once.
-	ctx := context.Background()
 	db := testDB(t)
 	code := issue(t, db, time.Hour)
 
@@ -206,7 +252,7 @@ func TestConcurrentRedemptionYieldsExactlyOneAccount(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start // release them together, to actually contend
-			err := db.RedeemInvite(ctx, code.Hash(), newAccount())
+			err := redeem(t, db, code, newAccount())
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -235,14 +281,13 @@ func TestConcurrentRedemptionYieldsExactlyOneAccount(t *testing.T) {
 // --- Expiry ----------------------------------------------------------------
 
 func TestExpiredInviteIsRejected(t *testing.T) {
-	ctx := context.Background()
 	db := testDB(t)
 
 	// Issued already expired. The predicate lives in the SQL and is evaluated
 	// against now() — the database's clock, not this process's.
 	code := issue(t, db, -time.Minute)
 
-	err := db.RedeemInvite(ctx, code.Hash(), newAccount())
+	err := redeem(t, db, code, newAccount())
 	if err != store.ErrInviteNotRedeemable {
 		t.Fatalf("expired invite returned %v, want ErrInviteNotRedeemable", err)
 	}
@@ -251,7 +296,6 @@ func TestExpiredInviteIsRejected(t *testing.T) {
 func TestExpiryIsIndistinguishableFromUnknown(t *testing.T) {
 	// An attacker who could tell "this code expired" from "this code never
 	// existed" would learn that a guess had once been real.
-	ctx := context.Background()
 	db := testDB(t)
 
 	expired := issue(t, db, -time.Minute)
@@ -260,8 +304,8 @@ func TestExpiryIsIndistinguishableFromUnknown(t *testing.T) {
 		t.Fatalf("generate: %v", err)
 	}
 
-	errExpired := db.RedeemInvite(ctx, expired.Hash(), newAccount())
-	errUnknown := db.RedeemInvite(ctx, unknown.Hash(), newAccount())
+	errExpired := redeem(t, db, expired, newAccount())
+	errUnknown := redeem(t, db, unknown, newAccount())
 
 	if errExpired != errUnknown {
 		t.Fatalf("expired gave %v, unknown gave %v — these must be identical",
@@ -282,7 +326,7 @@ func TestSweepRemovesExpiredInvites(t *testing.T) {
 
 	// The live one must survive: a sweep that deletes everything passes a naive
 	// "the expired one is gone" assertion while breaking the feature.
-	if err := db.RedeemInvite(ctx, live.Hash(), newAccount()); err != nil {
+	if err := redeem(t, db, live, newAccount()); err != nil {
 		t.Fatalf("the sweep removed a live invite: %v", err)
 	}
 }

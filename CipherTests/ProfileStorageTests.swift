@@ -57,6 +57,9 @@ final class ProfileStorageTests: XCTestCase {
     func testEditingTheProfileWritesNothingToUserDefaults() async throws {
         let engine = try await CryptoEngine.open(container: container)
         let session = makeSession()
+        #if DEBUG
+        try session.signInForDevelopment()
+        #endif
         await session.adoptProfileStorage(engine: engine)
 
         session.displayName = "Jan"
@@ -186,12 +189,16 @@ final class ProfileStorageTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(200))
 
         try session.signOut()
+        XCTAssertEqual(session.destination, .accountCleanup)
+        try await engine.destroyAllState()
+        try session.completeAccountCleanup()
         XCTAssertEqual(session.displayName, "You")
-        try await Task.sleep(for: .milliseconds(200))
 
         // A device that has been signed out must not still say who used it.
+        let freshEngine = try await CryptoEngine.open(container: container)
         let reopened = makeSession()
-        await reopened.adoptProfileStorage(engine: engine)
+        await reopened.adoptProfileStorage(engine: freshEngine)
         XCTAssertEqual(reopened.displayName, "You")
+        try await freshEngine.destroyAllState()
     }
 }

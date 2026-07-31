@@ -78,6 +78,13 @@ struct InviteRedemptionTests {
         return RelayClient(session: session, jitter: { _ in 0 })
     }
 
+    private static let redemptionNow = Date(timeIntervalSince1970: 1_785_499_200)
+
+    private func redemption() -> InviteRedemption {
+        let now = Self.redemptionNow
+        return InviteRedemption(client: stubbedClient(), now: { now })
+    }
+
     private func engine() async throws -> CryptoEngine {
         let container = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("redeem-\(UUID().uuidString)", isDirectory: true)
@@ -86,7 +93,7 @@ struct InviteRedemptionTests {
 
     private static let goodBody = """
     {"aci":"3f2b1c4d-0000-4000-8000-000000000001",\
-    "token":"opaque-server-issued-token",\
+    "token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\
     "token_expires_at":"2026-08-30T12:00:00.000Z"}
     """
 
@@ -96,14 +103,17 @@ struct InviteRedemptionTests {
     func successProducesServerIssuedCredential() async throws {
         StubRelay.reset([.init(status: 201, json: Self.goodBody)])
 
-        let redeemed = try await InviteRedemption(client: stubbedClient())
+        let redeemed = try await redemption()
             .redeem(code: "GOOD-CODE", using: try await engine())
 
         // `.serverIssued` is the only origin a Release build reads back, so this is the
         // assertion that separates a real session from the DEBUG development credential.
         #expect(redeemed.credential.origin == .serverIssued)
+        #expect(redeemed.credential.phase == .registering)
         #expect(!redeemed.credential.token.isEmpty)
         #expect(redeemed.aci == UUID(uuidString: "3f2b1c4d-0000-4000-8000-000000000001"))
+        #expect(redeemed.credential.aci == redeemed.aci)
+        #expect(redeemed.credential.expiresAt == redeemed.expiresAt)
     }
 
     @Test("the request carries the real identity key and registration id, in the relay's shape")
@@ -113,7 +123,7 @@ struct InviteRedemptionTests {
         let expectedKey = try await engine.localIdentityKey
         let expectedRegistration = try await engine.localRegistrationId
 
-        _ = try await InviteRedemption(client: stubbedClient()).redeem(code: "GOOD", using: engine)
+        _ = try await redemption().redeem(code: "GOOD", using: engine)
 
         let request = try #require(StubRelay.received.first)
         #expect(request.httpMethod == "POST")
@@ -146,7 +156,7 @@ struct InviteRedemptionTests {
         StubRelay.reset([.init(status: 401, json: #"{"error":"unauthorized"}"#)])
 
         await #expect(throws: InviteRedemption.Failure.refused) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "WRONG", using: try await engine())
         }
     }
@@ -156,7 +166,7 @@ struct InviteRedemptionTests {
         StubRelay.reset([.init(status: 429, json: "{}", headers: ["Retry-After": "3600"])])
 
         await #expect(throws: InviteRedemption.Failure.rateLimited) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "ANY", using: try await engine())
         }
     }
@@ -166,7 +176,7 @@ struct InviteRedemptionTests {
         StubRelay.reset([.init(status: 201, json: Self.goodBody)])
 
         await #expect(throws: InviteRedemption.Failure.refused) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "   ", using: try await engine())
         }
         #expect(StubRelay.received.isEmpty, "an empty code must not spend a rate-limit token")
@@ -187,20 +197,35 @@ struct InviteRedemptionTests {
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "GOOD", using: try await engine())
+        }
+    }
+
+    @Test("a non-canonical server token is refused")
+    func nonCanonicalTokenIsNotASession() async throws {
+        // 43 base64url characters that decode to 32 bytes, but whose unused
+        // low bits make it a second spelling of another token.
+        let token = String(repeating: "A", count: 42) + "B"
+        StubRelay.reset([.init(status: 200, json: """
+        {"aci":"3f2b1c4d-0000-4000-8000-000000000001","token":"\(token)",\
+        "token_expires_at":"2026-08-30T12:00:00.000Z"}
+        """)])
+
+        await #expect(throws: InviteRedemption.Failure.malformedResponse) {
+            try await redemption().redeem(code: "GOOD", using: try await engine())
         }
     }
 
     @Test("a 200 with an empty aci does not authenticate")
     func emptyACIIsNotASession() async throws {
         StubRelay.reset([.init(status: 200, json: """
-        {"aci":"","token":"opaque-server-issued-token",\
+        {"aci":"","token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\
         "token_expires_at":"2026-08-30T12:00:00.000Z"}
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "GOOD", using: try await engine())
         }
     }
@@ -212,13 +237,26 @@ struct InviteRedemptionTests {
         // alternative is an account that holds a valid token and can never send, which looks
         // like a messaging bug rather than a registration failure. Varies only this field.
         StubRelay.reset([.init(status: 200, json: """
-        {"aci":"not-a-uuid","token":"opaque-server-issued-token",\
+        {"aci":"not-a-uuid","token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\
         "token_expires_at":"2026-08-30T12:00:00.000Z"}
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "GOOD", using: try await engine())
+        }
+    }
+
+    @Test("a 200 with the nil UUID does not create an account binding")
+    func zeroACIIsNotASession() async throws {
+        StubRelay.reset([.init(status: 200, json: """
+        {"aci":"00000000-0000-0000-0000-000000000000",\
+        "token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\
+        "token_expires_at":"2026-08-30T12:00:00.000Z"}
+        """)])
+
+        await #expect(throws: InviteRedemption.Failure.malformedResponse) {
+            try await redemption().redeem(code: "GOOD", using: try await engine())
         }
     }
 
@@ -227,12 +265,38 @@ struct InviteRedemptionTests {
         // Separated from the tests above so each one fails for its own reason.
         StubRelay.reset([.init(status: 200, json: """
         {"aci":"3f2b1c4d-0000-4000-8000-000000000001",\
-        "token":"opaque-server-issued-token","token_expires_at":"whenever"}
+        "token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","token_expires_at":"whenever"}
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "GOOD", using: try await engine())
+        }
+    }
+
+    @Test("an already-expired token does not authenticate locally")
+    func expiredTimestampIsNotASession() async throws {
+        StubRelay.reset([.init(status: 200, json: """
+        {"aci":"3f2b1c4d-0000-4000-8000-000000000001",\
+        "token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\
+        "token_expires_at":"2026-07-30T12:00:00.000Z"}
+        """)])
+
+        await #expect(throws: InviteRedemption.Failure.malformedResponse) {
+            try await redemption().redeem(code: "GOOD", using: try await engine())
+        }
+    }
+
+    @Test("a relay cannot extend local authentication beyond the session policy")
+    func overlongTimestampIsNotASession() async throws {
+        StubRelay.reset([.init(status: 200, json: """
+        {"aci":"3f2b1c4d-0000-4000-8000-000000000001",\
+        "token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",\
+        "token_expires_at":"2026-09-15T12:00:00.000Z"}
+        """)])
+
+        await #expect(throws: InviteRedemption.Failure.malformedResponse) {
+            try await redemption().redeem(code: "GOOD", using: try await engine())
         }
     }
 
@@ -246,7 +310,7 @@ struct InviteRedemptionTests {
         StubRelay.reset([.init(status: 503, json: "{}")])
 
         await #expect(throws: InviteRedemption.Failure.self) {
-            try await InviteRedemption(client: stubbedClient())
+            try await redemption()
                 .redeem(code: "GOOD", using: try await engine())
         }
 
@@ -266,5 +330,45 @@ struct InviteRedemptionTests {
 
         #expect(StubRelay.received.count == RelayClient.maxAttempts,
                 "expected \(RelayClient.maxAttempts) attempts, saw \(StubRelay.received.count)")
+    }
+
+    // MARK: Session rotation
+
+    @Test("rotation is sent exactly once because it consumes the old token")
+    func rotationIsNeverRetried() async throws {
+        StubRelay.reset([.init(status: 503, json: "{}")])
+        let current = activeCredential(expiresInDays: 6)
+
+        await #expect(throws: SessionLifecycle.Failure.serverUnavailable) {
+            try await SessionLifecycle(client: stubbedClient()).rotate(current)
+        }
+        #expect(StubRelay.received.count == 1,
+                "a consuming rotation was sent \(StubRelay.received.count) times")
+    }
+
+    @Test("rotation preserves the account binding and extends server expiry")
+    func rotationProducesAnAccountBoundReplacement() async throws {
+        let freshToken = String(repeating: "J", count: 42) + "A"
+        let expiry = ISO8601DateFormatter().string(
+            from: Date().addingTimeInterval(30 * 24 * 60 * 60))
+        StubRelay.reset([.init(status: 200, json: """
+        {"token":"\(freshToken)","expires_at":"\(expiry)"}
+        """)])
+        let current = activeCredential(expiresInDays: 6)
+
+        let replacement = try await SessionLifecycle(client: stubbedClient()).rotate(current)
+        #expect(replacement.aci == current.aci)
+        #expect(replacement.phase == .active)
+        #expect(replacement.bearerToken == freshToken)
+        #expect(replacement.expiresAt > current.expiresAt)
+    }
+
+    private func activeCredential(expiresInDays days: Double) -> SessionCredential {
+        let issuedAt = Date().addingTimeInterval(-24 * 60 * 60)
+        return SessionCredential(
+            token: Data((String(repeating: "I", count: 42) + "A").utf8), aci: UUID(),
+            issuedAt: issuedAt,
+            expiresAt: Date().addingTimeInterval(days * 24 * 60 * 60),
+            origin: .serverIssued, phase: .active)
     }
 }
