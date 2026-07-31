@@ -163,6 +163,16 @@ actor ConversationArchive {
         var establishedSession: Bool = false
     }
 
+    /// The durable result of one inbound envelope. Unsupported payloads and blocked peers are
+    /// intentionally distinct from storage failure: both still commit the ratchet and may be
+    /// acknowledged, while a thrown error rolls everything back and must not be acknowledged.
+    nonisolated enum IncomingDisposition: Sendable, Equatable {
+        case stored
+        case unsupportedPayload
+        case blocked
+        case undecryptable
+    }
+
     // MARK: - Conversations
 
     /// Every peer with a conversation record.
@@ -259,38 +269,113 @@ actor ConversationArchive {
             // layout could not do this and compensated by *ordering* the two writes so that a
             // crash between them left an orphan rather than a counter pointing at nothing.
             try await engine.withSealedTransaction { transaction in
-                var conversation = try transaction.load(
-                    namespace: Namespace.conversation, group: group, ordinal: Self.singleton)
-                    .map { try Self.decode(StoredConversation.self, from: $0) }
-                    ?? StoredConversation(peer: peer, lastActivityMs: timestampMs)
-
-                let message = StoredMessage(
-                    id: UUID(),
-                    ordinal: conversation.nextOrdinal,
-                    direction: direction,
-                    text: text,
-                    timestampMs: timestampMs,
-                    state: state,
+                try Self.append(
+                    to: peer, group: group, direction: direction, text: text,
+                    timestampMs: timestampMs, state: state,
                     senderIdentityKey: senderIdentityKey,
-                    establishedSession: establishedSession)
-
-                try transaction.store(
-                    namespace: Namespace.message, group: group, ordinal: message.ordinal,
-                    value: try Self.encode(message))
-
-                conversation.nextOrdinal += 1
-                conversation.lastActivityMs = max(conversation.lastActivityMs, timestampMs)
-                if direction == .outgoing {
-                    // Nothing you sent is unread.
-                    conversation.lastReadOrdinal = conversation.nextOrdinal
-                }
-                try transaction.store(
-                    namespace: Namespace.conversation, group: group, ordinal: Self.singleton,
-                    value: try Self.encode(conversation))
-
-                return message
+                    establishedSession: establishedSession, transaction: transaction)
             }
         }
+    }
+
+    /// Decrypts one envelope and files it with the ratchet advance in the same commit.
+    ///
+    /// A failure while decoding an existing archive record or writing the new one throws out of
+    /// `withDecryptedMessageTransaction`, which rolls back the libsignal callbacks as well. The
+    /// relay may then safely offer the exact envelope again.
+    func storeIncoming(envelope: Data, timestampMs: UInt64) async throws -> IncomingDisposition {
+        try await ensureMigrated()
+        do {
+            return try await gate.withExclusiveAccess {
+                try await engine.withDecryptedMessageTransaction(envelope) {
+                    decrypted, transaction in
+                    let payload: MessagePayload
+                    do {
+                        payload = try MessagePayload.decode(decrypted.plaintext)
+                    } catch {
+                        return .unsupportedPayload
+                    }
+
+                    // Attribution comes from the session which authenticated the ciphertext,
+                    // never from the relay-controlled sender field in the envelope.
+                    let peer = decrypted.sender.serviceId.uuid
+                    let group = Self.group(peer)
+                    if try transaction.load(
+                        namespace: Namespace.conversation, group: group, ordinal: Self.singleton)
+                        .map({ try Self.decode(StoredConversation.self, from: $0) })?
+                        .isBlocked == true
+                    {
+                        return .blocked
+                    }
+
+                    let text: String
+                    switch payload.content {
+                    case .text(let value): text = value
+                    }
+
+                    _ = try Self.append(
+                        to: peer, group: group, direction: .incoming, text: text,
+                        timestampMs: timestampMs, state: .received,
+                        senderIdentityKey: decrypted.senderIdentityKey,
+                        establishedSession: decrypted.establishedSession,
+                        transaction: transaction)
+                    return .stored
+                }
+            }
+        } catch let error as ArchiveError {
+            throw error
+        } catch is SealedStoreError {
+            throw ArchiveError.storageUnavailable
+        } catch MessagingError.storeUnavailable {
+            throw ArchiveError.storageUnavailable
+        } catch {
+            // The same intentionally undifferentiated class as CryptoEngine.decrypt exposes:
+            // replay, corrupt ciphertext and a rewritten routing hint all reveal nothing about
+            // which one occurred. All database/archive failures were separated above.
+            return .undecryptable
+        }
+    }
+
+    @CryptoActor
+    private static func append(
+        to peer: UUID,
+        group: String,
+        direction: StoredMessage.Direction,
+        text: String,
+        timestampMs: UInt64,
+        state: StoredMessage.State,
+        senderIdentityKey: Data?,
+        establishedSession: Bool,
+        transaction: SealedRowTransaction
+    ) throws -> StoredMessage {
+        var conversation = try transaction.load(
+            namespace: Namespace.conversation, group: group, ordinal: Self.singleton)
+            .map { try Self.decode(StoredConversation.self, from: $0) }
+            ?? StoredConversation(peer: peer, lastActivityMs: timestampMs)
+
+        let message = StoredMessage(
+            id: UUID(),
+            ordinal: conversation.nextOrdinal,
+            direction: direction,
+            text: text,
+            timestampMs: timestampMs,
+            state: state,
+            senderIdentityKey: senderIdentityKey,
+            establishedSession: establishedSession)
+
+        try transaction.store(
+            namespace: Namespace.message, group: group, ordinal: message.ordinal,
+            value: try Self.encode(message))
+
+        conversation.nextOrdinal += 1
+        conversation.lastActivityMs = max(conversation.lastActivityMs, timestampMs)
+        if direction == .outgoing {
+            conversation.lastReadOrdinal = conversation.nextOrdinal
+        }
+        try transaction.store(
+            namespace: Namespace.conversation, group: group, ordinal: Self.singleton,
+            value: try Self.encode(conversation))
+        return message
     }
 
     /// Every message in the conversation, oldest first.
@@ -584,4 +669,6 @@ nonisolated enum ArchiveError: Error, Equatable {
     case malformedRecord
     /// Written by a build with a newer format. Refused rather than partially believed.
     case unsupportedSchema(Int)
+    /// The sealed container refused an operation during an atomic inbound receive.
+    case storageUnavailable
 }

@@ -65,12 +65,13 @@ public final class CryptoEngine {
         CryptoActor.assertIsolated()
         self.now = now
 
-        let records = try EncryptedFileRecordStore(root: root, secrets: secrets)
+        let legacyRecords = try EncryptedFileRecordStore(root: root, secrets: secrets)
         // Built from `records` rather than from `secrets`: its keys are derived from the record
         // encryption key, so there is still exactly one Keychain item whose deletion is a
         // cryptographic erase of every session, prekey, trust decision, conversation and
         // message body at once. See `EncryptedFileRecordStore.deriveSubkey`.
-        let database = try SealedRecordDatabase(root: root, keys: records)
+        let database = try SealedRecordDatabase(root: root, keys: legacyRecords)
+        let records = DatabaseRecordStore(database: database, legacy: legacyRecords)
         let identity = try DeviceIdentity.loadOrCreate(secrets: secrets)
 
         self.store = CipherProtocolStore(

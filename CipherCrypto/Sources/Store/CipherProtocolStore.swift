@@ -28,7 +28,7 @@ import LibSignalClient
 /// is a **separate process** over the same container: it decrypts a message, steps the
 /// ratchet, and writes a new session record while the app is suspended. Any in-memory cache
 /// here would be stale on resume and would overwrite the extension's work with an older
-/// ratchet state, silently breaking the session. The cost is a small file read per
+/// ratchet state, silently breaking the session. The cost is a small database read per
 /// callback, which is not the bottleneck in an operation that also runs PQXDH.
 ///
 /// ## `SenderKeyStore` is deliberately not implemented
@@ -50,9 +50,8 @@ internal final class CipherProtocolStore {
     /// type is how a reviewer misreads which one a line touches.
     private let deviceIdentity: DeviceIdentity
     private let records: RecordStore
-    /// The app's queryable sealed store (P5.S11). Separate from `records` because the two have
-    /// different shapes, not different trust: both are sealed under keys that die with the
-    /// same Keychain item.
+    /// The app's queryable sealed store (P5.S11). `records` uses this same connection through a
+    /// narrow key-value adapter, so a receive can commit protocol and archive state together.
     private let database: SealedRecordDatabase
     private let secrets: SecretStorage
     private let now: () -> UInt64
@@ -76,8 +75,8 @@ internal final class CipherProtocolStore {
 
     // MARK: - Record keys
 
-    /// A peer's slot. Only ever hashed into a filename and authenticated by the AEAD, never
-    /// used as a path component — see `EncryptedFileRecordStore`.
+    /// A peer's slot. It is blinded into a database tag and authenticated inside the sealed
+    /// value; legacy builds hashed it into a filename. It never becomes a path component.
     private func addressKey(_ address: ProtocolAddress) -> String {
         "\(address.name).\(address.deviceId)"
     }
@@ -93,12 +92,11 @@ internal final class CipherProtocolStore {
     /// no longer exists. That property is why the record store is encrypted at all.
     internal func destroyAllState() throws {
         CryptoActor.assertIsolated()
-        // The database goes with the records and before the secrets, for the reason above: it
-        // holds conversations and message bodies, so leaving it while the key disappears would
-        // leave unopenable ciphertext rather than nothing, and leaving it *after* the key is
-        // gone is the same thing. It closes its connection before unlinking.
-        try database.destroy()
+        // `records` now stores its current rows in `database`; clear its namespaces while the
+        // connection is live, then close and unlink the database itself. Legacy file copies are
+        // removed by the same call.
         try records.removeAll()
+        try database.destroy()
         try DeviceIdentity.destroy(secrets: secrets)
         try secrets.remove(EncryptedFileRecordStore.encryptionKeyAccount)
         CipherLog.store.warning("all local protocol state destroyed")

@@ -137,6 +137,36 @@ final class MessagingTests: XCTestCase {
         }.value
     }
 
+    /// Unreadable local protocol state is not evidence that the relay envelope is corrupt.
+    /// The app must keep that envelope pending instead of acknowledging away the only copy.
+    func testCorruptProtocolStateSurfacesAsStorageUnavailable() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+            _ = try pair.deliverToPeer(
+                try pair.engine.encrypt(Data("establish".utf8), to: pair.remote))
+            let envelope = try pair.envelopeFromPeer("must remain pending")
+
+            let address = try pair.remote.makeProtocolAddress()
+            let recordKey = "\(address.name).\(address.deviceId)"
+            var tagInput = Data(RecordKind.session.rawValue.utf8)
+            tagInput.append(0)
+            tagInput.append(contentsOf: recordKey.utf8)
+            let database = pair.engine.store.appDatabase
+            try database.put(
+                namespace: "proto-session", groupTag: database.groupTag(tagInput), ordinal: 0,
+                value: Data([0xFF]))
+
+            XCTAssertThrowsError(try pair.engine.decrypt(envelope)) { error in
+                XCTAssertEqual(error as? MessagingError, .storeUnavailable)
+                XCTAssertFalse(error is RecordStoreError)
+            }
+        }.value
+    }
+
     // MARK: - P2.S03 — attribution follows the session, never the envelope
 
     /// Locked decision §0.2.3, demonstrated rather than asserted.

@@ -14,13 +14,12 @@ import SQLite3
 ///
 /// ## Why a database, and what was wrong with files
 ///
-/// `EncryptedFileRecordStore` gives one sealed file per record, which is the right shape for
-/// libsignal's records: they are addressed one at a time, by a key the caller already holds.
-/// It is the wrong shape for a conversation. Reading one meant loading it record by record,
-/// the only index was the conversation's own ordinal counter, and deleting a conversation was
-/// a loop of unlinks. `AUDIT.md` 4.3 was explicit that the residual was **query shape, not
-/// confidentiality** — so this type exists to add the query shape, and is required to give up
-/// none of the confidentiality.
+/// `EncryptedFileRecordStore` originally gave one sealed file per protocol record. That was
+/// wrong for conversations and, more seriously, could not commit a ratchet advance together
+/// with the plaintext archive. This database now backs both shapes: queryable archive rows and
+/// protocol key-value rows through `DatabaseRecordStore`. `AUDIT.md` 4.3 was explicit that the
+/// original archive residual was **query shape, not confidentiality**; the shared transaction
+/// closes the separate receive-durability defect without giving up either property.
 ///
 /// ## What is in plaintext on disk, exactly
 ///
@@ -75,6 +74,8 @@ internal final class SealedRecordDatabase {
     private let sealingKey: SymmetricKey
     private let indexKey: SymmetricKey
     private var handle: OpaquePointer?
+    private var transactionIsActive = false
+    private var afterCommitActions: [() -> Void] = []
 
     /// Base name of the database. Its `-wal` and `-shm` siblings are part of the store and are
     /// protected alongside it; see `applyFileProtection`.
@@ -473,6 +474,18 @@ internal final class SealedRecordDatabase {
         }
     }
 
+    internal func removeNamespace(_ namespace: String) throws {
+        CryptoActor.assertIsolated()
+
+        let sql = "DELETE FROM sealed_record WHERE namespace = ?"
+        try withStatement(sql) { statement in
+            try bind(statement, 1, text: namespace)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw SealedDatabaseError.ioFailure("deleting a namespace failed")
+            }
+        }
+    }
+
     // MARK: - Transactions
 
     /// Runs `body` inside one transaction, rolling back if it throws.
@@ -489,17 +502,50 @@ internal final class SealedRecordDatabase {
     /// inner `BEGIN`.
     internal func withTransaction<T>(_ body: () throws -> T) throws -> T {
         CryptoActor.assertIsolated()
+        guard !transactionIsActive else { throw SealedDatabaseError.nestedTransaction }
 
         try execute("BEGIN IMMEDIATE")
+        transactionIsActive = true
+        afterCommitActions.removeAll(keepingCapacity: true)
         do {
             let value = try body()
             try execute("COMMIT")
+            let actions = afterCommitActions
+            afterCommitActions.removeAll(keepingCapacity: true)
+            transactionIsActive = false
+            // These actions remove legacy copies which the committed rows now shadow. They
+            // deliberately run after COMMIT: running one before it would make rollback delete
+            // the only surviving copy of a protocol record.
+            for action in actions { action() }
             return value
         } catch {
             // Best effort: if the rollback itself fails there is nothing further to try, and
             // the original error is the one worth propagating.
             try? execute("ROLLBACK")
+            afterCommitActions.removeAll(keepingCapacity: true)
+            transactionIsActive = false
             throw error
+        }
+    }
+
+    /// Joins an existing transaction or creates one when the caller is otherwise outside one.
+    /// A record replacement is two statements (write value, clear tombstone); this keeps that
+    /// pair indivisible without nesting when libsignal is already inside an inbound transaction.
+    internal func atomically<T>(_ body: () throws -> T) throws -> T {
+        CryptoActor.assertIsolated()
+        if transactionIsActive { return try body() }
+        return try withTransaction(body)
+    }
+
+    /// Runs `action` once the surrounding transaction commits, or immediately when no explicit
+    /// transaction is active. Used only for cleanup of a legacy copy after its database
+    /// replacement is durable; the action must never be required for correctness.
+    internal func afterCommit(_ action: @escaping () -> Void) {
+        CryptoActor.assertIsolated()
+        if transactionIsActive {
+            afterCommitActions.append(action)
+        } else {
+            action()
         }
     }
 
@@ -646,5 +692,8 @@ internal enum SealedDatabaseError: Error, Equatable {
     case rowTooLarge(bytes: Int)
     /// The connection is closed — the state was destroyed. Every operation refuses afterwards.
     case closed
+    /// A nested transaction is a caller bug. Refused explicitly rather than delegated to an
+    /// SQLite error whose behaviour could change with the transaction mode.
+    case nestedTransaction
     case ioFailure(String)
 }

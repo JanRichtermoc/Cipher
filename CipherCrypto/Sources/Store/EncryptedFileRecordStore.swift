@@ -10,8 +10,11 @@ import CryptoKit
 import Foundation
 import Security
 
-/// Protocol records on disk: one file per record, each independently sealed with AES-GCM
-/// under a key that lives in the Keychain.
+/// The legacy protocol-record layout and the sole holder of the Keychain-backed master key.
+///
+/// Current records live in `DatabaseRecordStore`, which lazily imports these independently
+/// sealed files. This type remains the migration reader and key-derivation root; removing it
+/// would make existing sessions unreadable after an upgrade.
 ///
 /// ## Why encrypt at all when iOS already protects the file
 ///
@@ -174,6 +177,14 @@ internal final class EncryptedFileRecordStore: RecordStore, RecordKeyDeriving {
         directory(for: kind).appendingPathComponent(filename(kind, recordKey), isDirectory: false)
     }
 
+    /// Whether a legacy slot still exists, without reading or authenticating its contents.
+    /// Used only to avoid double-counting a row already migrated into SQLite. A normal load
+    /// still authenticates the record before any caller can use it.
+    internal func contains(_ kind: RecordKind, _ recordKey: String) -> Bool {
+        CryptoActor.assertIsolated()
+        return fileManager.fileExists(atPath: url(kind, recordKey).path)
+    }
+
     /// AAD binding a sealed record to the exact slot it belongs in.
     private func authenticatedData(_ kind: RecordKind, _ recordKey: String) -> Data {
         var aad = Data([Self.recordVersion])
@@ -309,11 +320,15 @@ internal final class EncryptedFileRecordStore: RecordStore, RecordKeyDeriving {
     internal func removeAll() throws {
         CryptoActor.assertIsolated()
 
-        if fileManager.fileExists(atPath: root.path) {
+        // Remove only this store's kind directories. The root is shared with the sealed SQLite
+        // database; unlinking it would invalidate that database's live WAL/SHM descriptors.
+        for kind in RecordKind.allCases {
+            let path = directory(for: kind)
+            guard fileManager.fileExists(atPath: path.path) else { continue }
             do {
-                try fileManager.removeItem(at: root)
+                try fileManager.removeItem(at: path)
             } catch {
-                throw RecordStoreError.ioFailure("removing the record root failed")
+                throw RecordStoreError.ioFailure("removing \(kind.rawValue) records failed")
             }
         }
         try createRootIfNeeded()

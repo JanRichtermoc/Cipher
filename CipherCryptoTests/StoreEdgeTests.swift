@@ -72,12 +72,16 @@ final class StoreEdgeTests: XCTestCase {
                     baseKey: PrivateKey.generate().publicKey, context: NullContext())
             }
 
-            let path = try XCTUnwrap(
-                Self.recordURL(root: root, kind: .baseKeyWitness, key: "1.2"))
-            let size = try XCTUnwrap(
-                try path.resourceValues(forKeys: [.fileSizeKey]).fileSize)
+            var tagInput = Data(RecordKind.baseKeyWitness.rawValue.utf8)
+            tagInput.append(0)
+            tagInput.append(contentsOf: "1.2".utf8)
+            let database = local.store.appDatabase
+            let encoded = try XCTUnwrap(
+                try database.get(
+                    namespace: "proto-base-key-witness",
+                    groupTag: database.groupTag(tagInput), ordinal: 0))
 
-            XCTAssertLessThan(size * 8, EncryptedFileRecordStore.maxRecordBytes,
+            XCTAssertLessThan(encoded.count * 8, SealedRecordDatabase.maxSealedBytes,
                               "the ceiling must leave real records an order of magnitude of room")
         }.value
     }

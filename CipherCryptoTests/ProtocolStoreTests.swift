@@ -468,7 +468,7 @@ final class ProtocolStoreTests: XCTestCase {
 
     // MARK: - Destruction
 
-    func testDestroyAllStateClearsRecordsAndIdentity() async throws {
+    func testDestroyAllStateClearsRecordsAndIdentityAndClosesTheStore() async throws {
         let root = TestContainer.make()
         defer { TestContainer.remove(root) }
         let secrets = InMemorySecretStorage()
@@ -483,8 +483,11 @@ final class ProtocolStoreTests: XCTestCase {
 
             try local.store.destroyAllState()
 
-            XCTAssertNil(try local.store.loadSession(for: peer.address, context: NullContext()))
-            XCTAssertNil(try local.store.peerIdentity(for: peer.address))
+            // The protocol store owns the database connection. Once destroyed, the same
+            // instance must refuse every read rather than pretending its closed store is empty.
+            XCTAssertThrowsError(
+                try local.store.loadSession(for: peer.address, context: NullContext()))
+            XCTAssertThrowsError(try local.store.peerIdentity(for: peer.address))
             XCTAssertNil(try secrets.load(DeviceIdentity.account))
             XCTAssertNil(try secrets.load(EncryptedFileRecordStore.encryptionKeyAccount))
         }.value
