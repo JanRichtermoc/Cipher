@@ -150,12 +150,12 @@ internal struct LocalFixture {
 
     internal init(root: URL, secrets: InMemorySecretStorage = InMemorySecretStorage()) throws {
         let files = try EncryptedFileRecordStore(root: root, secrets: secrets)
-        let spy = RecordStoreSpy(files)
         let identity = try DeviceIdentity.loadOrCreate(secrets: secrets)
         // Keyed from `files`, not from `spy`: the spy counts record-store traffic, and the
         // database derives its subkeys from the real store's Keychain-backed master key. Same
         // wiring as `CryptoEngine.init`, which is the point of a fixture.
         let database = try SealedRecordDatabase(root: root, keys: files)
+        let spy = RecordStoreSpy(DatabaseRecordStore(database: database, legacy: files))
 
         self.secrets = secrets
         self.spy = spy

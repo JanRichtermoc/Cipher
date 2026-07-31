@@ -33,7 +33,7 @@ final class MessageRepositoryTests: XCTestCase {
 
     override func tearDown() async throws {
         TestSession.signOut()
-        fixture.tearDown()
+        await fixture.tearDown()
         fixture = nil
         try await super.tearDown()
     }
@@ -277,54 +277,28 @@ final class MessageRepositoryTests: XCTestCase {
         XCTAssertFalse(RoutedStubRelay.requests("POST /v1/messages/ack").isEmpty)
     }
 
-    func testAMessageThatCannotBeStoredIsNotAcknowledged() async throws {
+    func testAReceiveTransactionFailureRollsBackTheRatchetSoRetryStoresAndAcknowledges()
+        async throws {
         // The single most important branch in the receive path. Acknowledging deletes the relay's
         // copy and an envelope decrypts exactly once, so acknowledging something this device
         // failed to store loses the message permanently — there is nothing to ask for again.
         //
-        // The failure is injected from outside rather than through a hook in the shipping code:
-        // the sealed database is made unwritable, so the session and prekey writes that
-        // `decrypt` performs still succeed (they are files in sibling directories) and only the
-        // archive write fails. That is exactly the shape of a full disk.
-        //
-        // It used to take write permission from the `app-data` directory, which was where
-        // message records lived until P5.S11 moved them into `records.sqlite3`. The test kept
-        // passing for a while afterwards for the wrong reason and then failed outright, which
-        // is the better of the two outcomes: an injection that no longer injects anything is a
-        // test that proves nothing while still reporting success.
-        let envelope = try await fixture.envelopeFromPeer("must not be acknowledged")
+        // Planting a malformed conversation drives the failure *after* a genuine prekey message
+        // decrypts and libsignal has mutated the session/prekey stores. It therefore proves the
+        // rollback, unlike a database permission failure that can reject BEGIN before decryption.
+        let envelope = try await fixture.envelopeFromPeer("survives the retry")
+        let id = UUID()
         var routes = try await defaultRoutes()
         routes["GET /v1/messages"] = [
-            .init(status: 200, json: MessagingFixture.fetchBody([(UUID(), envelope)])),
+            .init(status: 200, json: MessagingFixture.fetchBody([(id, envelope)])),
         ]
         RoutedStubRelay.reset(routes)
         let repository = makeRepository()
 
-        // Force the database into existence, then take write permission away from it and from
-        // the directory it would create its siblings in.
-        try await repository.startConversation(with: UUID(), nickname: nil)
-
-        let container = fixture.localContainer
-        let databaseFiles = ["records.sqlite3", "records.sqlite3-wal", "records.sqlite3-shm"]
-            .map { container.appendingPathComponent($0) }
-        XCTAssertTrue(
-            FileManager.default.fileExists(atPath: databaseFiles[0].path),
-            "the sealed database should exist by now — otherwise this test proves nothing")
-
-        for url in databaseFiles where FileManager.default.fileExists(atPath: url.path) {
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o400], ofItemAtPath: url.path)
-        }
-        try FileManager.default.setAttributes(
-            [.posixPermissions: 0o500], ofItemAtPath: container.path)
-        defer {
-            try? FileManager.default.setAttributes(
-                [.posixPermissions: 0o700], ofItemAtPath: container.path)
-            for url in databaseFiles where FileManager.default.fileExists(atPath: url.path) {
-                try? FileManager.default.setAttributes(
-                    [.posixPermissions: 0o600], ofItemAtPath: url.path)
-            }
-        }
+        try await repository.startConversation(with: fixture.peerAci, nickname: nil)
+        let group = fixture.peerAci.uuidString.lowercased()
+        try await fixture.engine.storeSealedRow(
+            namespace: "conv", group: group, ordinal: 0, value: Data("not json".utf8))
 
         do {
             _ = try await repository.receive()
@@ -338,6 +312,81 @@ final class MessageRepositoryTests: XCTestCase {
         XCTAssertEqual(
             RoutedStubRelay.count("POST /v1/messages/ack"), 0,
             "a message that failed to store must never be acknowledged")
+
+        // Repair only the injected archive damage. The exact same envelope must still decrypt:
+        // if the first attempt committed libsignal's mutations separately, this retry is a
+        // duplicate to the ratchet and is dropped/acknowledged with no stored plaintext.
+        try await fixture.engine.removeSealedRow(namespace: "conv", group: group, ordinal: 0)
+        RoutedStubRelay.setRoute("GET /v1/messages", [
+            .init(status: 200, json: MessagingFixture.fetchBody([(id, envelope)])),
+            .init(status: 200, json: #"{"messages":[],"more":false}"#),
+        ])
+
+        let retriedCount = try await repository.receive()
+        XCTAssertEqual(retriedCount, 1)
+        let retriedMessages = try await repository.messages(with: fixture.peerAci).map(\.text)
+        XCTAssertEqual(retriedMessages, ["survives the retry"])
+        let ack = try XCTUnwrap(RoutedStubRelay.requests("POST /v1/messages/ack").first)
+        XCTAssertTrue(String(decoding: ack, as: UTF8.self).contains(id.uuidString.lowercased()))
+    }
+
+    func testConcurrentReceivesAreSerializedBeforeEitherFetches() async throws {
+        let envelope = try await fixture.envelopeFromPeer("once")
+        var routes = try await defaultRoutes()
+        routes["GET /v1/messages"] = [
+            .init(status: 200, json: MessagingFixture.fetchBody([(UUID(), envelope)])),
+            .init(status: 200, json: #"{"messages":[],"more":false}"#),
+        ]
+        RoutedStubRelay.reset(routes)
+        RoutedStubRelay.blockNextRequest("GET /v1/messages")
+        let repository = makeRepository()
+
+        let first = Task { try await repository.receive() }
+        let firstDidBlock = await Task.detached {
+            RoutedStubRelay.waitForBlockedRequest()
+        }.value
+        XCTAssertTrue(
+            firstDidBlock,
+            "the first receive never reached the deliberate suspension point")
+        let second = Task { try await repository.receive() }
+        try await Task.sleep(for: .milliseconds(100))
+
+        XCTAssertEqual(
+            RoutedStubRelay.count("GET /v1/messages"), 1,
+            "a second receive reached the relay while the first was suspended")
+        RoutedStubRelay.releaseBlockedRequest()
+
+        let results = try await [first.value, second.value].sorted()
+        XCTAssertEqual(results, [0, 1])
+        let messages = try await repository.messages(with: fixture.peerAci).map(\.text)
+        XCTAssertEqual(messages, ["once"])
+    }
+
+    func testACancelledRepositoryWaiterNeverRunsAfterTheGateOpens() async throws {
+        RoutedStubRelay.reset(try await defaultRoutes())
+        RoutedStubRelay.blockNextRequest("GET /v1/messages")
+        let repository = makeRepository()
+
+        let holder = Task { try await repository.receive() }
+        let holderDidBlock = await Task.detached {
+            RoutedStubRelay.waitForBlockedRequest()
+        }.value
+        XCTAssertTrue(holderDidBlock)
+        let waiter = Task { try await repository.receive() }
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(RoutedStubRelay.count("GET /v1/messages"), 1)
+        waiter.cancel()
+        RoutedStubRelay.releaseBlockedRequest()
+
+        let holderResult = try await holder.value
+        XCTAssertEqual(holderResult, 0)
+        do {
+            _ = try await waiter.value
+            XCTFail("a cancelled waiter must not execute after acquiring the gate")
+        } catch is CancellationError {
+            // Expected.
+        }
+        XCTAssertEqual(RoutedStubRelay.count("GET /v1/messages"), 1)
     }
 
     func testAFailedAcknowledgementIsReportedRatherThanIgnored() async throws {

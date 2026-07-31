@@ -326,6 +326,70 @@ final class EncryptedFileRecordStoreTests: XCTestCase {
     }
 }
 
+// MARK: - Transactional protocol-record migration
+
+final class DatabaseRecordStoreTests: XCTestCase {
+
+    func testLegacyMigrationCleanupRunsAfterCommitAndNeverAfterRollback() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let files = try EncryptedFileRecordStore(
+                root: root, secrets: InMemorySecretStorage())
+            try files.store(.session, "old.1", Data("old-state".utf8))
+            let database = try SealedRecordDatabase(root: root, keys: files)
+            let records = DatabaseRecordStore(database: database, legacy: files)
+            struct Abort: Error {}
+
+            XCTAssertThrowsError(
+                try database.withTransaction {
+                    XCTAssertEqual(
+                        try records.load(.session, "old.1"), Data("old-state".utf8))
+                    try records.store(.session, "new.1", Data("new-state".utf8))
+                    throw Abort()
+                })
+
+            XCTAssertTrue(
+                files.contains(.session, "old.1"),
+                "rollback ran post-commit cleanup and deleted the only surviving copy")
+            XCTAssertNil(try records.load(.session, "new.1"), "a rolled-back row survived")
+
+            // A successful lazy migration commits its database copy before removing the file.
+            XCTAssertEqual(try records.load(.session, "old.1"), Data("old-state".utf8))
+            XCTAssertFalse(files.contains(.session, "old.1"))
+
+            // A crash/restore can leave the old file beside the committed database row. It is
+            // still one record for replenishment purposes and the database copy wins.
+            try files.store(.session, "old.1", Data("stale-state".utf8))
+            XCTAssertEqual(try records.count(.session), 1)
+            XCTAssertEqual(try records.load(.session, "old.1"), Data("old-state".utf8))
+            XCTAssertFalse(files.contains(.session, "old.1"))
+        }.value
+    }
+
+    func testACommittedTombstoneCannotResurrectALegacyRecord() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let files = try EncryptedFileRecordStore(
+                root: root, secrets: InMemorySecretStorage())
+            try files.store(.preKey, "7", Data("private-prekey".utf8))
+            let database = try SealedRecordDatabase(root: root, keys: files)
+            let records = DatabaseRecordStore(database: database, legacy: files)
+
+            try database.withTransaction { try records.remove(.preKey, "7") }
+            // Recreate the stale file to model interruption before post-commit cleanup, or a
+            // restored old container. The authenticated tombstone must continue to shadow it.
+            try files.store(.preKey, "7", Data("stale-private-prekey".utf8))
+            XCTAssertNil(try records.load(.preKey, "7"))
+            XCTAssertEqual(try records.count(.preKey), 0)
+            XCTAssertFalse(files.contains(.preKey, "7"))
+        }.value
+    }
+}
+
 // MARK: - Device identity
 
 final class DeviceIdentityTests: XCTestCase {

@@ -34,14 +34,15 @@ import Foundation
 /// ## What this surface deliberately is not
 ///
 /// It is bytes in, bytes out. The crypto module does not learn what a conversation is, and the
-/// app does not learn how sealing works — which is why the format of what is stored can be
-/// replaced by the real database (P5.S11) without touching this file.
+/// app does not learn how sealing works. P5.S11 replaced the original file implementation with
+/// the database adapter without changing this API, so legacy archive migration can still read
+/// the same logical keys while current protocol and archive state share one connection.
 ///
 /// It is also **not a home for key material**. Everything secret this module holds has a typed
 /// record kind and a validated codec; a caller reaching for this to stash a key would be
-/// choosing an unvalidated blob over one of those. There is no enumeration either: filenames
-/// are hashes, so the caller keeps its own index, exactly as `reservePreKeyIds` does rather
-/// than asking the disk what exists.
+/// choosing an unvalidated blob over one of those. There is no enumeration either: record keys
+/// stay inside sealed database values, so the caller keeps its own index, exactly as
+/// `reservePreKeyIds` does rather than asking storage what exists.
 extension CryptoEngine {
 
     /// Ceiling on one sealed value.

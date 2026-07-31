@@ -29,6 +29,22 @@ final class SealedRowStoreTests: XCTestCase {
         try CryptoEngine(root: root, secrets: secrets)
     }
 
+    func testProtocolNamespacesAreReservedFromTheAppSurface() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root)
+            XCTAssertThrowsError(
+                try engine.storeSealedRow(
+                    namespace: "proto-session", group: "crafted", ordinal: 0,
+                    value: Data("overwrite".utf8))
+            ) { error in
+                XCTAssertEqual(error as? SealedStoreError, .invalidNamespace)
+            }
+        }.value
+    }
+
     // MARK: - Reading the container as an attacker would
 
     /// Every byte of every file in the container, concatenated.

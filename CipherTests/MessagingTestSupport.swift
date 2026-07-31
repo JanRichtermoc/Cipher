@@ -44,23 +44,48 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
     /// of a test harness that reports the wrong culprit.
     nonisolated(unsafe) private static var routes: [String: [Reply]] = [:]
     nonisolated(unsafe) private(set) static var received: [(route: String, body: Data)] = []
+    nonisolated(unsafe) private static var blockedRoute: String?
+    nonisolated(unsafe) private static var blocksRemaining = 0
+    private static let routeStarted = DispatchSemaphore(value: 0)
+    private static let routeRelease = DispatchSemaphore(value: 0)
+    private static let stateLock = NSLock()
 
     static func reset(_ routes: [String: [Reply]]) {
-        self.routes = routes
-        self.received = []
+        stateLock.withLock {
+            self.routes = routes
+            self.received = []
+            self.blockedRoute = nil
+            self.blocksRemaining = 0
+        }
     }
 
     /// Replaces one route without clearing what has been recorded, so a test can change the
     /// relay's behaviour mid-run and still count everything that happened.
     static func setRoute(_ route: String, _ replies: [Reply]) {
-        routes[route] = replies
+        stateLock.withLock { routes[route] = replies }
     }
 
     static func requests(_ route: String) -> [Data] {
-        received.filter { matches($0.route, route) }.map(\.body)
+        stateLock.withLock { received.filter { matches($0.route, route) }.map(\.body) }
     }
 
     static func count(_ route: String) -> Int { requests(route).count }
+
+    /// Blocks the next matching request after recording and choosing its reply. This makes an
+    /// actor-reentrancy race deterministic: another repository call either reaches the relay
+    /// while the first is suspended, or its operation gate keeps it out.
+    static func blockNextRequest(_ route: String) {
+        stateLock.withLock {
+            blockedRoute = route
+            blocksRemaining = 1
+        }
+    }
+
+    static func waitForBlockedRequest(timeout: TimeInterval = 2) -> Bool {
+        routeStarted.wait(timeout: .now() + timeout) == .success
+    }
+
+    static func releaseBlockedRequest() { routeRelease.signal() }
 
     private static func matches(_ route: String, _ pattern: String) -> Bool {
         pattern.hasSuffix("/") ? route.hasPrefix(pattern) : route == pattern
@@ -77,21 +102,41 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
         // `httpBody` is nil for a body set on an upload task; these requests all set it
         // directly, and `bodyStreamData` covers the case where URLSession converted it.
         let body = request.httpBody ?? Self.bodyStreamData(request) ?? Data()
-        Self.received.append((route, body))
+        let (reply, shouldBlock): (Reply, Bool) = Self.stateLock.withLock {
+            Self.received.append((route, body))
+            let match = Self.routes
+                .filter { Self.matches(route, $0.key) }
+                .max { $0.key.count < $1.key.count }
+            var replies = match?.value ?? [Reply(status: 404)]
+            let reply = replies.count > 1
+                ? replies.removeFirst() : (replies.first ?? Reply(status: 404))
+            if let key = match?.key { Self.routes[key] = replies }
 
-        let match = Self.routes
-            .filter { Self.matches(route, $0.key) }
-            .max { $0.key.count < $1.key.count }
-        var replies = match?.value ?? [Reply(status: 404)]
-        let reply = replies.count > 1 ? replies.removeFirst() : (replies.first ?? Reply(status: 404))
-        if let key = match?.key { Self.routes[key] = replies }
-
-        let response = HTTPURLResponse(
-            url: request.url!, statusCode: reply.status, httpVersion: "HTTP/1.1",
-            headerFields: [:])!
-        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
-        client?.urlProtocol(self, didLoad: reply.body)
-        client?.urlProtocolDidFinishLoading(self)
+            let shouldBlock = Self.blockedRoute == route && Self.blocksRemaining > 0
+            if shouldBlock { Self.blocksRemaining -= 1 }
+            return (reply, shouldBlock)
+        }
+        let responseURL = request.url!
+        let deliver: @Sendable () -> Void = { [self] in
+            let response = HTTPURLResponse(
+                url: responseURL, statusCode: reply.status, httpVersion: "HTTP/1.1",
+                headerFields: [:])!
+            client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+            client?.urlProtocol(self, didLoad: reply.body)
+            client?.urlProtocolDidFinishLoading(self)
+        }
+        if shouldBlock {
+            Self.routeStarted.signal()
+            // Do not block URLSession's protocol scheduling thread: doing so serialises every
+            // request in the session and makes the concurrency test green without the app's
+            // gate. Only response delivery waits; another request can start meanwhile.
+            DispatchQueue.global().async {
+                _ = Self.routeRelease.wait(timeout: .now() + 5)
+                deliver()
+            }
+        } else {
+            deliver()
+        }
     }
 
     override func stopLoading() {}
@@ -151,15 +196,11 @@ struct MessagingFixture {
     let peerAci = UUID()
     let engine: CryptoEngine
     let peerEngine: CryptoEngine
-    /// Exposed so a test can inject a filesystem fault into the record container — see
-    /// `testAMessageThatCannotBeStoredIsNotAcknowledged`.
-    let localContainer: URL
     private let containers: [URL]
 
     init() async throws {
         let localRoot = Self.container()
         let peerRoot = Self.container()
-        localContainer = localRoot
         containers = [localRoot, peerRoot]
 
         engine = try await CryptoEngine.open(container: localRoot)
@@ -169,7 +210,11 @@ struct MessagingFixture {
         try await peerEngine.adoptLocalAddress(PeerAddress(aci: peerAci))
     }
 
-    func tearDown() {
+    func tearDown() async {
+        // Close SQLite before removing its container. Unlinking a live WAL/SHM vnode is an API
+        // violation and can make a following test exercise an invalidated descriptor.
+        try? await engine.destroyAllState()
+        try? await peerEngine.destroyAllState()
         for url in containers { try? FileManager.default.removeItem(at: url) }
     }
 

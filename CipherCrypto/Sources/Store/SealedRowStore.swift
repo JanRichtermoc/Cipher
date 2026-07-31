@@ -141,7 +141,9 @@ extension CryptoEngine {
 /// the mechanism.
 internal enum SealedRowSlot {
 
-    /// `[a-z0-9-]`, bounded, non-empty — for both halves.
+    /// `[a-z0-9-]`, bounded, non-empty — for both halves. `proto-*` namespaces are reserved
+    /// for `DatabaseRecordStore`; an app row must not be able to overwrite ratchet or prekey
+    /// state even if a future caller accidentally reproduces its blind-index input.
     ///
     /// The namespace rule is inherited from `SealedAppStore`, where a `/` would have been a
     /// slot collision. Here it earns its place differently: the namespace goes into the AEAD's
@@ -151,7 +153,8 @@ internal enum SealedRowSlot {
     /// disk and never becomes part of a path or a delimited field.
     internal static func validate(namespace: String, group: String) throws {
         guard !namespace.isEmpty, namespace.count <= 32,
-              namespace.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") })
+              namespace.allSatisfy({ $0.isASCII && ($0.isLowercase || $0.isNumber || $0 == "-") }),
+              !namespace.hasPrefix("proto-")
         else {
             throw SealedStoreError.invalidNamespace
         }

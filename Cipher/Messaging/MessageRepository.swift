@@ -25,9 +25,9 @@ import OSLog
 ///    silently never existed. Encryption steps the ratchet, so a failed transmission is retried
 ///    by re-encrypting — the old envelope is not resent, because a duplicate is undecryptable at
 ///    the far end and would look like success to the sender.
-/// 2. **Receive: decrypt, then store, then acknowledge.** Acknowledgement deletes the relay's
-///    copy (`THREAT_MODEL.md` §3.1) and an envelope decrypts exactly once, so acknowledging
-///    before the plaintext is durable would lose the message with no way to ask for it again.
+/// 2. **Receive: decrypt and store in one transaction, then acknowledge.** Acknowledgement
+///    deletes the relay's copy (`THREAT_MODEL.md` §3.1) and an envelope decrypts exactly once,
+///    so the ratchet advance and sealed plaintext must commit or roll back together.
 /// 3. **Registration: adopt the address, then publish.** Publishing keys for an installation
 ///    that has not adopted its own address would advertise a bundle whose private halves this
 ///    device could not associate with anything.
@@ -47,6 +47,9 @@ actor MessageRepository {
     private let mailbox: RelayMailbox
     private let sessions: SessionStore
     private let now: @Sendable () -> Date
+    /// Serialises operations which span the relay, crypto actor and archive. Actor isolation
+    /// alone permits another call to interleave at each `await`.
+    private let operationGate = SerialGate()
 
     /// Ceiling on how many pages one `receive()` will drain.
     ///
@@ -118,6 +121,12 @@ actor MessageRepository {
     /// succeeds, because an account whose keys never published is an account no peer can start a
     /// session with — and nothing else would ever notice.
     func register(aci: UUID) async throws {
+        try await operationGate.withExclusiveAccess {
+            try await registerExclusively(aci: aci)
+        }
+    }
+
+    private func registerExclusively(aci: UUID) async throws {
         do {
             try await engine.adoptLocalAddress(PeerAddress(aci: aci))
         } catch MessagingError.localAddressAlreadySet {
@@ -135,8 +144,10 @@ actor MessageRepository {
     /// failed the first time leaves an account no peer can start a session with, and the only
     /// symptom is other people's session setup returning 404.
     func resumeRegistration() async throws {
-        guard await localAci() != nil else { throw Failure.notRegistered }
-        try await publishKeysIfNeeded()
+        try await operationGate.withExclusiveAccess {
+            guard await localAci() != nil else { throw Failure.notRegistered }
+            try await publishKeysIfNeeded()
+        }
     }
 
     private func publishKeysIfNeeded() async throws {
@@ -290,6 +301,13 @@ actor MessageRepository {
     /// - Returns: the stored message, whose state says what actually happened.
     @discardableResult
     func send(text: String, to peer: UUID) async throws -> ConversationArchive.StoredMessage {
+        try await operationGate.withExclusiveAccess {
+            try await sendExclusively(text: text, to: peer)
+        }
+    }
+
+    private func sendExclusively(text: String, to peer: UUID) async throws
+        -> ConversationArchive.StoredMessage {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw Failure.relayRefused }
 
@@ -366,6 +384,12 @@ actor MessageRepository {
     ///   unrecognised payload, or from a blocked peer — are acknowledged but not counted.
     @discardableResult
     func receive() async throws -> Int {
+        try await operationGate.withExclusiveAccess {
+            try await receiveExclusively()
+        }
+    }
+
+    private func receiveExclusively() async throws -> Int {
         let token = try token()
         guard await localAci() != nil else { throw Failure.notRegistered }
 
@@ -419,59 +443,27 @@ actor MessageRepository {
     /// outcome, and collapsing "cannot decrypt" into an error would lose the distinction that
     /// decides whether the relay's copy is acknowledged.
     private func store(_ pending: RelayMailbox.Pending) async -> StoreOutcome {
-        let decrypted: DecryptedMessage
         do {
-            decrypted = try await engine.decrypt(pending.envelope)
-        } catch MessagingError.storeUnavailable {
-            AppLog.store.error("the record container refused a decrypt; not acknowledging")
-            return .storageFailed
-        } catch {
-            // Deliberately unqualified. A replay, a duplicate, a rewritten envelope, a refused
-            // payload type and a genuinely corrupt message are all "this will never decrypt",
-            // and reporting which would tell a hostile relay whether a given message had
-            // already been seen — see `CryptoEngine.decrypt` on why the cases are not
-            // distinguished there either.
-            AppLog.session.error("an envelope could not be decrypted; dropping it")
-            return .dropped
-        }
-
-        let payload: MessagePayload
-        do {
-            payload = try MessagePayload.decode(decrypted.plaintext)
-        } catch {
-            // A well-formed message this build does not implement, from a newer peer or a peer
-            // probing. Dropped, never rendered as text.
-            AppLog.session.error("a decrypted payload was not one this build understands")
-            return .dropped
-        }
-
-        // Attribution is the session that authenticated the ciphertext, never the envelope's
-        // sender field. `DecryptedMessage.sender` is that session's address; `claimedSender` is
-        // the attacker-controlled hint and is used for nothing here.
-        let peer = decrypted.sender.serviceId.uuid
-
-        do {
-            if try await archive.conversation(peer)?.isBlocked == true {
-                // Decrypted (the ratchet had to advance) and then discarded. See setBlocked.
+            // The receive time, not the relay-controlled envelope timestamp. Decryption and
+            // archive persistence share one SQLite commit inside this call.
+            switch try await archive.storeIncoming(
+                envelope: pending.envelope, timestampMs: Self.milliseconds(now()))
+            {
+            case .stored:
+                return .stored
+            case .unsupportedPayload:
+                AppLog.session.error("a decrypted payload was not one this build understands")
+                return .dropped
+            case .blocked:
+                return .dropped
+            case .undecryptable:
+                // Deliberately unqualified. Revealing replay versus corruption would let a
+                // hostile relay probe which messages this device has already seen.
+                AppLog.session.error("an envelope could not be decrypted; dropping it")
                 return .dropped
             }
-
-            let text: String
-            switch payload.content {
-            case .text(let value): text = value
-            }
-
-            // The receive time, not `decrypted.envelopeTimestampMs`. That field is chosen by
-            // whoever relayed the message, so displaying it as the time would let a hostile
-            // relay pin a message to the top of a conversation or bury it — a small lie, but
-            // one with no upside, since ordering within the conversation comes from the ordinal.
-            _ = try await archive.append(
-                to: peer, direction: .incoming, text: text,
-                timestampMs: Self.milliseconds(now()), state: .received,
-                senderIdentityKey: decrypted.senderIdentityKey,
-                establishedSession: decrypted.establishedSession)
-            return .stored
         } catch {
+            AppLog.store.error("the receive transaction failed; not acknowledging")
             return .storageFailed
         }
     }

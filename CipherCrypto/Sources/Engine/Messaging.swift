@@ -183,18 +183,18 @@ extension CryptoEngine {
         }
     }
 
-    /// Maps the two library-level failures the app has to be able to name, and only those.
+    /// Maps the two failure classes the app has to be able to name, and only those.
     ///
     /// Returns `nil` for anything else, which the caller then handles as it sees fit. Every
     /// remaining libsignal error still escapes as an opaque `Error` — that is deliberate and
     /// bounded: no caller pattern-matches one, the receive path treats any unmapped failure as
     /// permanent for that envelope, and adding a case here means adding a *behaviour* that
-    /// depends on it.
+    /// depends on it. Every record-store error is different: corrupt, oversized or newer state
+    /// is a local storage failure, not evidence that the relay envelope is bad. The receive path
+    /// must roll back and retain the relay copy rather than acknowledging it away.
     private static func boundaryError(_ error: Error) -> MessagingError? {
         if case SignalError.untrustedIdentity = error { return .identityNotAccepted }
-        if let store = error as? RecordStoreError, case .ioFailure = store {
-            return .storeUnavailable
-        }
+        if error is RecordStoreError { return .storeUnavailable }
         return nil
     }
 
@@ -267,6 +267,32 @@ extension CryptoEngine {
     /// Neither is reported as a distinct error. A caller that could tell "replayed" from
     /// "corrupt" could be used to probe which messages a device has already seen.
     public func decrypt(_ envelopeBytes: Data) throws -> DecryptedMessage {
+        try decryptMessage(envelopeBytes)
+    }
+
+    /// Decrypts and lets the caller persist the result in the same database transaction as
+    /// every ratchet, prekey and trust-record mutation made by libsignal.
+    ///
+    /// The closure is synchronous and crypto-actor isolated so neither this connection nor the
+    /// protocol store can be suspended half way through the transaction. Throwing from the
+    /// closure rolls the ratchet back together with the archive write; returning commits both.
+    public func withDecryptedMessageTransaction<T: Sendable>(
+        _ envelopeBytes: Data,
+        _ body: @CryptoActor (DecryptedMessage, SealedRowTransaction) throws -> T
+    ) throws -> T {
+        try requireLive()
+        let database = store.appDatabase
+        do {
+            return try database.withTransaction {
+                let decrypted = try decryptMessage(envelopeBytes)
+                return try body(decrypted, SealedRowTransaction(database: database))
+            }
+        } catch is SealedDatabaseError {
+            throw MessagingError.storeUnavailable
+        }
+    }
+
+    private func decryptMessage(_ envelopeBytes: Data) throws -> DecryptedMessage {
         try requireLive()
         let localAddress = try requireLocalAddress()
 
@@ -295,9 +321,9 @@ extension CryptoEngine {
                     sessionStore: store, identityStore: store, context: context)
             }
         } catch {
-            // Only the container failure is remapped, because it is the only one the caller
-            // must treat differently — a message that failed to decrypt can never decrypt, and
-            // a message that failed to *store* is still waiting on the relay.
+            // Every local-store failure is remapped, because it is the class the caller must
+            // treat differently: an envelope that failed cryptographic verification can never
+            // decrypt, while one blocked by unreadable local state must stay on the relay.
             throw Self.boundaryError(error) ?? error
         }
 

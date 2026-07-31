@@ -44,19 +44,21 @@ nonisolated final class SerialGate: Sendable {
         /// FIFO. A stack would let a busy send loop starve the receive path, and "eventually" is
         /// not a property worth relying on for the code that decides whether a received message
         /// is durable before it is acknowledged.
-        var waiting: [CheckedContinuation<Void, Never>] = []
+        var waiting: [(id: UUID, continuation: CheckedContinuation<Void, any Error>)] = []
     }
 
     private let state = Mutex(State())
 
     /// Runs `body` with exclusive access, releasing the gate even if it throws.
-    func withExclusiveAccess<T>(_ body: () async throws -> T) async rethrows -> T {
-        await acquire()
+    func withExclusiveAccess<T>(_ body: () async throws -> T) async throws -> T {
+        try await acquire()
         defer { release() }
+        try Task.checkCancellation()
         return try await body()
     }
 
-    private func acquire() async {
+    private func acquire() async throws {
+        try Task.checkCancellation()
         let mustWait = state.withLock { state -> Bool in
             if state.isHeld { return true }
             state.isHeld = true
@@ -64,18 +66,44 @@ nonisolated final class SerialGate: Sendable {
         }
         guard mustWait else { return }
 
-        await withCheckedContinuation { continuation in
-            // Re-check under the lock: the holder may have released between the two, and a
-            // continuation appended after that would never be resumed.
-            let resumeNow = state.withLock { state -> Bool in
-                if state.isHeld {
-                    state.waiting.append(continuation)
-                    return false
+        let id = UUID()
+        try await withTaskCancellationHandler {
+            try await withCheckedThrowingContinuation { continuation in
+                // Re-check under the lock: the holder may have released between the two, and a
+                // continuation appended after that would never be resumed. Check cancellation
+                // under the same lock so a cancellation racing this append cannot be missed.
+                enum Action {
+                    case wait
+                    case acquire
+                    case cancel
                 }
-                state.isHeld = true
-                return true
+                let action = state.withLock { state -> Action in
+                    if Task.isCancelled { return .cancel }
+                    if state.isHeld {
+                        state.waiting.append((id, continuation))
+                        return .wait
+                    }
+                    state.isHeld = true
+                    return .acquire
+                }
+                switch action {
+                case .wait:
+                    break
+                case .acquire:
+                    continuation.resume()
+                case .cancel:
+                    continuation.resume(throwing: CancellationError())
+                }
             }
-            if resumeNow { continuation.resume() }
+        } onCancel: {
+            let continuation = state.withLock { state
+                -> CheckedContinuation<Void, any Error>? in
+                guard let index = state.waiting.firstIndex(where: { $0.id == id }) else {
+                    return nil
+                }
+                return state.waiting.remove(at: index).continuation
+            }
+            continuation?.resume(throwing: CancellationError())
         }
     }
 
@@ -85,12 +113,12 @@ nonisolated final class SerialGate: Sendable {
     /// to prevent: a caller arriving between the clear and the resume would find the gate free
     /// and proceed alongside the waiter that was just resumed.
     private func release() {
-        let next = state.withLock { state -> CheckedContinuation<Void, Never>? in
+        let next = state.withLock { state -> CheckedContinuation<Void, any Error>? in
             if state.waiting.isEmpty {
                 state.isHeld = false
                 return nil
             }
-            return state.waiting.removeFirst()
+            return state.waiting.removeFirst().continuation
         }
         next?.resume()
     }

@@ -12,6 +12,7 @@
 
 import CryptoKit
 import Foundation
+import SQLite3
 import XCTest
 
 @testable import CipherCrypto
@@ -92,25 +93,38 @@ final class SealedAppStoreTests: XCTestCase {
     func testATamperedRecordIsRefusedRatherThanReadAsAbsent() async throws {
         let root = TestContainer.make()
         defer { TestContainer.remove(root) }
+        let secrets = InMemorySecretStorage()
 
         try await Task { @CryptoActor in
-            let engine = try Self.makeEngine(root)
+            let engine = try Self.makeEngine(root, secrets)
             try engine.storeSealed(namespace: "msg", key: "k", value: Data("body".utf8))
+        }.value
 
-            // Flip a byte in the sealed record. Treating this as "not found" would let anyone
-            // with container write access erase a message by corrupting it.
-            let directory = root.appendingPathComponent("app-data", isDirectory: true)
-            let file = try XCTUnwrap(
-                try FileManager.default.contentsOfDirectory(atPath: directory.path).first)
-            let url = directory.appendingPathComponent(file)
-            var bytes = try Data(contentsOf: url)
-            bytes[bytes.endIndex - 1] ^= 0xFF
-            try bytes.write(to: url)
+        // Truncate the sealed database blob through SQLite, exactly as an attacker with
+        // container write access would. The key-check row is left intact so reopening proves
+        // this particular app record — not the whole database — is what fails authentication.
+        try Self.truncateAppDataBlob(root)
 
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root, secrets)
             XCTAssertThrowsError(try engine.loadSealed(namespace: "msg", key: "k")) { error in
                 XCTAssertEqual(error as? RecordStoreError, .corruptRecord(kind: .appData))
             }
         }.value
+    }
+
+    private static func truncateAppDataBlob(_ root: URL) throws {
+        let path = root.appendingPathComponent("records.sqlite3").path
+        var database: OpaquePointer?
+        XCTAssertEqual(sqlite3_open_v2(path, &database, SQLITE_OPEN_READWRITE, nil), SQLITE_OK)
+        defer { sqlite3_close(database) }
+        let sql = """
+            UPDATE sealed_record
+            SET sealed = substr(sealed, 1, length(sealed) - 1)
+            WHERE namespace = 'proto-app-data'
+            """
+        XCTAssertEqual(sqlite3_exec(database, sql, nil, nil, nil), SQLITE_OK)
+        XCTAssertEqual(sqlite3_changes(database), 1, "the fault injection reached no app row")
     }
 
     // MARK: The slot collision the namespace rule exists to prevent
@@ -122,10 +136,10 @@ final class SealedAppStoreTests: XCTestCase {
         try await Task { @CryptoActor in
             let engine = try Self.makeEngine(root)
 
-            // ("msg/1", "x") and ("msg", "1/x") would compose to the same record key, hash to the
-            // same filename, *and* produce the same authenticated data — so the AAD binding that
-            // catches a relocated record would agree they belong in the same slot. Only the
-            // left-hand side has to be unambiguous, so the separator is refused there.
+            // ("msg/1", "x") and ("msg", "1/x") would compose to the same record key and select
+            // the same authenticated database slot (and the same legacy filename), so the AAD
+            // binding would agree they belong together. Only the left-hand side has to be
+            // unambiguous, so the separator is refused there.
             XCTAssertThrowsError(
                 try engine.storeSealed(namespace: "msg/1", key: "x", value: Data("collide".utf8))
             ) { error in
