@@ -33,9 +33,14 @@ internal final class InMemorySecretStorage: SecretStorage, Sendable {
     private struct State: Sendable {
         var items: [String: Data] = [:]
         var lostRaces = 0
+        var removeAllFailuresRemaining: Int
     }
 
-    private let state = Mutex(State())
+    private let state: Mutex<State>
+
+    internal init(removeAllFailures: Int = 0) {
+        state = Mutex(State(removeAllFailuresRemaining: removeAllFailures))
+    }
 
     /// Every `addOrLoad` that found something already present. The identity race is only
     /// safe because that path is taken, so tests can assert on it rather than assume it.
@@ -61,8 +66,18 @@ internal final class InMemorySecretStorage: SecretStorage, Sendable {
     }
 
     internal func removeAll() throws {
-        state.withLock { $0.items.removeAll() }
+        try state.withLock { state in
+            if state.removeAllFailuresRemaining > 0 {
+                state.removeAllFailuresRemaining -= 1
+                throw TestSecretStorageError.injectedRemoveAllFailure
+            }
+            state.items.removeAll()
+        }
     }
+}
+
+internal enum TestSecretStorageError: Error {
+    case injectedRemoveAllFailure
 }
 
 // MARK: - Record store spy

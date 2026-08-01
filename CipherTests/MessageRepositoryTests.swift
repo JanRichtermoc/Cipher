@@ -581,4 +581,31 @@ final class MessageRepositoryTests: XCTestCase {
         XCTAssertTrue(freshConversations.isEmpty, "sealed history survived account cleanup")
         try await reopened.destroyAllState()
     }
+
+    /// After the record key is deleted, opening surviving ciphertext correctly fails. The
+    /// persisted destruction gate must then use the no-open cleanup path rather than trapping
+    /// the account forever behind an engine it can no longer construct.
+    @MainActor
+    func testAccountCleanupFinishesPersistedEraseWhenCiphertextCannotOpen() async throws {
+        struct InterruptedErase: Error {}
+        let probe = PersistentEraseProbe()
+        let store = ConversationStore(
+            openEngine: { throw InterruptedErase() },
+            destroyPersistedState: { await probe.erase() })
+
+        try await store.destroyAccountState()
+
+        let calls = await probe.callCount()
+        XCTAssertEqual(calls, 1)
+        XCTAssertTrue(store.chats.isEmpty)
+        XCTAssertTrue(store.contacts.isEmpty)
+        XCTAssertNil(store.localAci)
+    }
+}
+
+private actor PersistentEraseProbe {
+    private var calls = 0
+
+    func erase() { calls += 1 }
+    func callCount() -> Int { calls }
 }

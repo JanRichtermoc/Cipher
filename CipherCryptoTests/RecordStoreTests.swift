@@ -254,8 +254,14 @@ final class EncryptedFileRecordStoreTests: XCTestCase {
             let first = try EncryptedFileRecordStore(root: root, secrets: InMemorySecretStorage())
             try first.store(.session, "peer.1", Data("state".utf8))
 
-            // A fresh secret store means a fresh record key over the same directory.
-            let second = try EncryptedFileRecordStore(root: root, secrets: InMemorySecretStorage())
+            // Plant a different well-formed key. An *absent* key beside ciphertext is now
+            // refused before replacement-key creation; this case still proves the AEAD itself
+            // rejects a wrong key which does exist.
+            let wrongSecrets = InMemorySecretStorage()
+            _ = try wrongSecrets.addOrLoad(
+                Data(repeating: 0xA5, count: 32),
+                forKey: EncryptedFileRecordStore.encryptionKeyAccount)
+            let second = try EncryptedFileRecordStore(root: root, secrets: wrongSecrets)
             XCTAssertThrowsError(try second.load(.session, "peer.1")) { error in
                 XCTAssertEqual(error as? RecordStoreError, .corruptRecord(kind: .session))
             }
@@ -387,6 +393,62 @@ final class DatabaseRecordStoreTests: XCTestCase {
             XCTAssertEqual(try records.count(.preKey), 0)
             XCTAssertFalse(files.contains(.preKey, "7"))
         }.value
+    }
+
+    /// ConversationArchive's format marker commits before its legacy-file unlinks. Those
+    /// unlinks are intentionally best-effort after commit, so the sealed value/tombstone which
+    /// shadows each file must also be a durable cleanup plan on the next open.
+    func testCommittedLegacyCleanupIsRetriedOnReopen() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let secrets = InMemorySecretStorage()
+
+        try await Task { @CryptoActor in
+            let fault = OneShotRemovalFailure()
+            var firstFiles: EncryptedFileRecordStore? = try EncryptedFileRecordStore(
+                root: root, secrets: secrets,
+                removeItem: { try fault.remove($0) })
+            try firstFiles?.store(.appData, "msg/legacy/0", Data("old-body".utf8))
+            var firstDatabase: SealedRecordDatabase? = try SealedRecordDatabase(
+                root: root, keys: try XCTUnwrap(firstFiles))
+            var firstRecords: DatabaseRecordStore? = DatabaseRecordStore(
+                database: try XCTUnwrap(firstDatabase), legacy: try XCTUnwrap(firstFiles))
+
+            XCTAssertEqual(
+                try firstRecords?.load(.appData, "msg/legacy/0"), Data("old-body".utf8))
+            XCTAssertTrue(
+                try XCTUnwrap(firstFiles).contains(.appData, "msg/legacy/0"),
+                "positive control: the injected first unlink did not fail")
+
+            // Model process exit: the committed database row survives; the one-shot migration
+            // marker will cause the archive itself to skip its migration body on relaunch.
+            firstRecords = nil
+            firstDatabase = nil
+            firstFiles = nil
+
+            let reopenedFiles = try EncryptedFileRecordStore(root: root, secrets: secrets)
+            let reopenedDatabase = try SealedRecordDatabase(root: root, keys: reopenedFiles)
+            let reopenedRecords = DatabaseRecordStore(
+                database: reopenedDatabase, legacy: reopenedFiles)
+
+            XCTAssertFalse(
+                reopenedFiles.contains(.appData, "msg/legacy/0"),
+                "a committed legacy file was not retried during reopen")
+            XCTAssertEqual(
+                try reopenedRecords.load(.appData, "msg/legacy/0"), Data("old-body".utf8))
+        }.value
+    }
+}
+
+private final class OneShotRemovalFailure {
+    private var shouldFail = true
+
+    func remove(_ url: URL) throws {
+        if shouldFail {
+            shouldFail = false
+            throw CocoaError(.fileWriteUnknown)
+        }
+        try FileManager.default.removeItem(at: url)
     }
 }
 

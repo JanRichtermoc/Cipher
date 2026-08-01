@@ -329,6 +329,7 @@ final class AppSession {
         // Hide the old account before touching the Keychain. If that write
         // fails, this process still remains behind the destructive gate.
         requiresAccountCleanup = true
+        detachProfileStorage()
         let replacement = credential.replacing(phase: .destroying)
         try sessions.store(replacement)
         self.credential = replacement
@@ -357,7 +358,7 @@ final class AppSession {
         requiresAccountCleanup = false
         isAppLocked = false
         isCredentialRotationInFlight = false
-        profiles = nil
+        detachProfileStorage()
         isLoadingProfile = true
         displayName = ProfileDefault.displayName
         username = ProfileDefault.username
@@ -368,8 +369,16 @@ final class AppSession {
     // MARK: - Profile storage
 
     /// The sealed store for the three profile fields. `nil` until the engine is open.
-    private var profiles: ProfileArchive?
+    private var profiles: (any ProfileStoring)?
     var isProfileStorageReady: Bool { profiles != nil }
+
+    /// One writer drains the latest pending snapshot. Separate `Task { save(...) }` calls are
+    /// unordered at both actor hops and can let an older edit overwrite a newer one.
+    private var pendingProfile: ProfileArchive.StoredProfile?
+    private var profilePersistenceTask: Task<Void, Never>?
+    /// Prevents a cancelled task from one account resuming after an `await` and touching the
+    /// next account's queue. Incremented whenever profile storage is attached or detached.
+    private var profilePersistenceGeneration: UInt64 = 0
 
     /// Suppresses the `didSet` writes while `adoptProfileStorage` populates the fields, so
     /// loading a profile does not immediately write it back.
@@ -382,8 +391,12 @@ final class AppSession {
     /// would leave the fields in both places, with the unencrypted one still authoritative for
     /// anyone reading the container.
     func adoptProfileStorage(engine: CryptoEngine) async {
+        await adoptProfileStorage(ProfileArchive(engine: engine))
+    }
+
+    /// Internal dependency seam for the ordering test; production always calls the engine form.
+    func adoptProfileStorage(_ archive: any ProfileStoring) async {
         guard profiles == nil else { return }
-        let archive = ProfileArchive(engine: engine)
 
         do {
             let stored = try await archive.load()
@@ -409,6 +422,7 @@ final class AppSession {
             removeLegacyProfileFromDefaults()
 
             profiles = archive
+            profilePersistenceGeneration &+= 1
         } catch {
             // Deliberately not fatal and deliberately not silent. The fields keep their
             // placeholders and nothing persists, which is visibly wrong in the profile editor
@@ -420,15 +434,51 @@ final class AppSession {
 
     private func persistProfile() {
         guard !isLoadingProfile, let profiles else { return }
-        let snapshot = ProfileArchive.StoredProfile(
+        pendingProfile = ProfileArchive.StoredProfile(
             displayName: displayName, username: username, about: about)
-        Task {
+        guard profilePersistenceTask == nil else { return }
+
+        let generation = profilePersistenceGeneration
+        profilePersistenceTask = Task { [weak self, profiles] in
+            guard let self else { return }
+            await self.drainProfilePersistence(using: profiles, generation: generation)
+        }
+    }
+
+    private func drainProfilePersistence(
+        using profiles: any ProfileStoring, generation: UInt64
+    ) async {
+        while !Task.isCancelled, generation == profilePersistenceGeneration,
+              let snapshot = pendingProfile
+        {
+            // New edits arriving while the save suspends replace this with one newer snapshot;
+            // intermediate UI states need not become durable, but the final state must.
+            pendingProfile = nil
             do {
                 try await profiles.save(snapshot)
             } catch {
                 AppLog.session.error("persisting the profile failed")
             }
         }
+
+        guard generation == profilePersistenceGeneration else { return }
+        profilePersistenceTask = nil
+    }
+
+    /// Waits until every profile mutation observed so far is durable. Internal so tests and
+    /// lifecycle code can prove completion without timing sleeps.
+    func flushProfilePersistence() async {
+        while let task = profilePersistenceTask {
+            await task.value
+        }
+    }
+
+    private func detachProfileStorage() {
+        profilePersistenceGeneration &+= 1
+        pendingProfile = nil
+        profilePersistenceTask?.cancel()
+        profilePersistenceTask = nil
+        profiles = nil
     }
 
     /// The three fields as a pre-P5.S11 build left them, or `nil` if it never wrote any.

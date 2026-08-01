@@ -82,32 +82,57 @@ internal final class EncryptedFileRecordStore: RecordStore, RecordKeyDeriving {
     private let root: URL
     private let masterKey: SymmetricKey
     private let fileManager: FileManager
+    private let removeItem: (URL) throws -> Void
 
     /// Opens (creating if needed) the record store rooted at `root`.
     ///
     /// The encryption key is fetched from `secrets` or created there atomically, so two
     /// processes racing on first launch converge on one key rather than each minting one
     /// and rendering the other's records unreadable.
-    internal init(root: URL, secrets: SecretStorage, fileManager: FileManager = .default) throws {
+    internal init(
+        root: URL,
+        secrets: SecretStorage,
+        fileManager: FileManager = .default,
+        removeItem: ((URL) throws -> Void)? = nil
+    ) throws {
         CryptoActor.assertIsolated()
 
         self.root = root
         self.fileManager = fileManager
+        self.removeItem = removeItem ?? { try fileManager.removeItem(at: $0) }
 
-        var candidate = Data(count: Self.keyByteCount)
-        candidate.withUnsafeMutableBytes { buffer in
-            guard let base = buffer.baseAddress else { return }
-            // The platform CSPRNG. A failure here is not recoverable and must never fall
-            // back to a weaker source.
-            let status = SecRandomCopyBytes(kSecRandomDefault, buffer.count, base)
-            precondition(status == errSecSuccess, "the system CSPRNG failed")
+        var stored: Data
+        if let existing = try secrets.load(Self.encryptionKeyAccount) {
+            stored = existing
+        } else {
+            // An absent key beside existing ciphertext is an interrupted cryptographic erase,
+            // not a fresh installation. Refuse before minting a replacement key: a new key can
+            // never open the old state and would obscure the exact recovery condition from the
+            // account-cleanup path.
+            guard !Self.containsPersistedState(root: root, fileManager: fileManager) else {
+                throw RecordStoreError.missingEncryptionKey
+            }
+
+            var candidate = Data(count: Self.keyByteCount)
+            candidate.withUnsafeMutableBytes { buffer in
+                guard let base = buffer.baseAddress else { return }
+                // The platform CSPRNG. A failure here is not recoverable and must never fall
+                // back to a weaker source.
+                let status = SecRandomCopyBytes(kSecRandomDefault, buffer.count, base)
+                precondition(status == errSecSuccess, "the system CSPRNG failed")
+            }
+
+            do {
+                stored = try secrets.addOrLoad(candidate, forKey: Self.encryptionKeyAccount)
+                // `candidate` lost the race if another writer got there first; either way this
+                // copy is done with. Both values are uniquely referenced and unsliced, which is
+                // the row of the table in `SecretData` measured to write through to the buffer.
+                candidate.resetBytes(in: candidate.startIndex..<candidate.endIndex)
+            } catch {
+                candidate.resetBytes(in: candidate.startIndex..<candidate.endIndex)
+                throw error
+            }
         }
-
-        var stored = try secrets.addOrLoad(candidate, forKey: Self.encryptionKeyAccount)
-        // `candidate` lost the race if another writer got there first; either way this copy
-        // is done with. Both values are uniquely referenced and unsliced, which is the row
-        // of the table in `SecretData` measured to write through to the real buffer.
-        candidate.resetBytes(in: candidate.startIndex..<candidate.endIndex)
 
         guard stored.count == Self.keyByteCount else {
             stored.resetBytes(in: stored.startIndex..<stored.endIndex)
@@ -119,6 +144,19 @@ internal final class EncryptedFileRecordStore: RecordStore, RecordKeyDeriving {
         stored.resetBytes(in: stored.startIndex..<stored.endIndex)
 
         try createRootIfNeeded()
+    }
+
+    private static func containsPersistedState(root: URL, fileManager: FileManager) -> Bool {
+        guard fileManager.fileExists(atPath: root.path) else { return false }
+        do {
+            // The root is private to CipherCrypto. Treat every child as state, including an
+            // empty directory or an artifact introduced by a newer build: recognizing only
+            // today's filenames would let a downgrade mint a key beside future ciphertext.
+            return try fileManager.contentsOfDirectory(atPath: root.path).isEmpty == false
+        } catch {
+            // An unreadable or non-directory root is existing state, not proof of absence.
+            return true
+        }
     }
 
     // MARK: - Layout
@@ -299,7 +337,7 @@ internal final class EncryptedFileRecordStore: RecordStore, RecordKeyDeriving {
         let path = url(kind, recordKey)
         guard fileManager.fileExists(atPath: path.path) else { return }
         do {
-            try fileManager.removeItem(at: path)
+            try removeItem(path)
         } catch {
             throw RecordStoreError.ioFailure("removing a \(kind.rawValue) record failed")
         }
@@ -326,7 +364,7 @@ internal final class EncryptedFileRecordStore: RecordStore, RecordKeyDeriving {
             let path = directory(for: kind)
             guard fileManager.fileExists(atPath: path.path) else { continue }
             do {
-                try fileManager.removeItem(at: path)
+                try removeItem(path)
             } catch {
                 throw RecordStoreError.ioFailure("removing \(kind.rawValue) records failed")
             }

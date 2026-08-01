@@ -44,7 +44,13 @@ public final class CryptoEngine {
     /// would be sealed under an orphaned key, and the next launch would mint a fresh
     /// identity and find none of it readable. The failure would appear a launch later, as
     /// peers reporting a changed safety number.
-    private var isDestroyed = false
+    private enum Lifecycle {
+        case live
+        case erasing
+        case destroyed
+    }
+
+    private var lifecycle = Lifecycle.live
 
     /// Opens the engine, creating this installation's identity on first use.
     ///
@@ -88,7 +94,7 @@ public final class CryptoEngine {
     }
 
     internal func requireLive() throws {
-        guard !isDestroyed else { throw CryptoEngineError.destroyed }
+        guard lifecycle == .live else { throw CryptoEngineError.destroyed }
     }
 
     // MARK: - Identity
@@ -148,12 +154,43 @@ public final class CryptoEngine {
     /// key that this also deletes, anything that survives on disk afterwards is ciphertext
     /// no key can open.
     ///
-    /// The engine refuses every subsequent operation. Callers must discard it and call
-    /// `open` again, which will create a new installation.
+    /// The engine refuses every subsequent operation. Callers must discard it after cleanup;
+    /// an interrupted erase is completed by the persisted account-cleanup path below before a
+    /// new installation may be opened.
     public func destroyAllState() throws {
-        try requireLive()
+        switch lifecycle {
+        case .destroyed:
+            throw CryptoEngineError.destroyed
+        case .live:
+            // Refuse every other operation from this point, including if physical cleanup has
+            // to be retried. The object still holds in-memory key material until released; it
+            // must never use it after destruction begins.
+            lifecycle = .erasing
+        case .erasing:
+            // A previous attempt erased the Keychain but could not finish unlinking files. The
+            // same engine can retry its closed/partially removed container idempotently.
+            break
+        }
+
         try store.destroyAllState()
-        isDestroyed = true
+        lifecycle = .destroyed
+    }
+
+    /// Finishes an interrupted account erase without opening ciphertext or minting replacement
+    /// keys. This is only for the persisted `.destroying` account-cleanup gate: normal callers
+    /// open an engine and use the instance method so its in-memory handles are invalidated too.
+    public static func destroyPersistedState() throws {
+        CipherCryptoBootstrap.start()
+        let root = try Self.defaultContainer()
+        try destroyPersistedState(root: root, secrets: Keychain.shared)
+    }
+
+    internal static func destroyPersistedState(root: URL, secrets: SecretStorage) throws {
+        CryptoActor.assertIsolated()
+        // First irreversible action, and a single Keychain query covering both the identity and
+        // record key. Once it returns, any file-removal failure leaves only unrecoverable bytes.
+        try secrets.removeAll()
+        try SealedRecordDatabase.destroyContainer(root: root)
     }
 }
 

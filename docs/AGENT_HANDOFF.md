@@ -415,29 +415,27 @@ git push origin <branch>
 
 ---
 
-## 10. Where the project stands right now (2026-07-30)
+## 10. Where the project stands right now (2026-08-01)
 
 Verify all of this yourself with `git log` and the `STATUS` block — this section is a snapshot and
 the block is the authority.
 
-- **Branch `p5/stage-h` is pushed and NOT merged.** It carries P5.S05 (stage H), P5.S06, P5.S08,
-  P5.S09, P5.S10 and a security-audit remediation commit. The operator merges by hand.
-- **P1–P4 are complete. P5.S01/S02/S05/S06/S08/S09/S10 are done.**
+- **Branch `codex/p5-s11-erasure-remediation` is the current unmerged work.** The operator merges
+  pull requests by hand.
+- **P1–P4 are complete. P5.S01/S02/S05/S06/S08/S09/S10/S11 are done.**
 - The app now really messages: prekey publication, session setup from a fetched bundle, encrypt
   before send, decrypt after fetch, sealed local storage, and acknowledge-only-what-is-durable.
   `MockStore` is gone (AUDIT 5.3 closed, C-02 closed).
-- **113 relay integration tests, 179 iOS tests, `verify-all.sh` 12/12.**
-- **The next step is `P5.S11`** — the encrypted local message *database*. Message bodies are already
-  sealed in the crypto module's container; what is missing is a queryable store. Read AUDIT 4.3 (it
-  states exactly what is and is not done) and 4.7 (the three profile fields still in
-  `UserDefaults`, which this step takes over). `ConversationArchive`'s interface should survive;
-  its storage format is what changes. The plan's `Done when` is: *no plaintext message body at rest;
-  a test proves the file is unreadable without the Keychain key.*
-- After that: `P5.S12` (safety numbers — which also resolves the dead end where a peer whose
-  identity key changed cannot currently be re-approved), then `P5.S13` (two-device test on staging).
-- **Outstanding for the operator**, all pre-existing: make `verify` a required status check on
-  `main`; drop the apex `mgchatman.app` A record; set `RELAY_RATELIMIT_PEPPER` on the staging box at
-  the next deploy (procedure in `RUNBOOK-VPS.md` H.0b).
+- **114 relay integration tests, 257 iOS tests, `verify-all.sh` 12/12.**
+- **The next step remains `P5.S11` remediation for AUDIT 4.14** — impose an aggregate local storage
+  quota and bounded retention without acknowledging a message that was not durably stored. The
+  queryable sealed database, shared receive transaction, crash-safe erasure, SQLite residue
+  scrubbing, ordered profile persistence and retryable legacy cleanup are already complete.
+- After the recorded P5 audit findings: `P5.S12` (safety numbers — which also resolves the dead
+  end where a peer whose identity key changed cannot currently be re-approved), then `P5.S13`
+  (two-device test on staging).
+- **Outstanding for the operator:** drop the apex `mgchatman.app` A record. It is still served by
+  the authoritative name.com nameservers; the exact verification is in the plan's STATUS block.
 
 ---
 

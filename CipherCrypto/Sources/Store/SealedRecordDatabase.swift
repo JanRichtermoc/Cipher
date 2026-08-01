@@ -75,6 +75,8 @@ internal final class SealedRecordDatabase {
     private let indexKey: SymmetricKey
     private var handle: OpaquePointer?
     private var transactionIsActive = false
+    private var transactionNeedsSecureCheckpoint = false
+    private var secureCheckpointIsPending = false
     private var afterCommitActions: [() -> Void] = []
 
     /// Base name of the database. Its `-wal` and `-shm` siblings are part of the store and are
@@ -128,6 +130,20 @@ internal final class SealedRecordDatabase {
         // interrupted write cannot leave a torn page in the main file.
         try execute("PRAGMA journal_mode = WAL")
 
+        // A logical delete must overwrite the deleted cell inside the page SQLite writes.
+        // Without this, checkpointing the page can faithfully copy the old sealed value into
+        // free space in the main database, where it remains recoverable while the installation
+        // still has the key. `ON`, not `FAST`: FAST only scrubs some b-tree content.
+        try execute("PRAGMA secure_delete = ON")
+        guard try pragmaInteger("PRAGMA secure_delete") == 1 else {
+            throw SealedDatabaseError.ioFailure("secure deletion was not enabled")
+        }
+
+        // Once a checkpoint has copied frames into the main database, leave no preallocated WAL
+        // behind. The explicit TRUNCATE checkpoints below are the primary control; this keeps a
+        // future automatic checkpoint from retaining capacity unexpectedly.
+        try execute("PRAGMA journal_size_limit = 0")
+
         // FULL, not NORMAL, and this one is a correctness requirement rather than a
         // preference. The receive path acknowledges a message to the relay only once it is
         // durably stored, and the relay then deletes its copy — an envelope decrypts exactly
@@ -152,6 +168,12 @@ internal final class SealedRecordDatabase {
             """)
 
         try verifyKey()
+        try migrateDeletionHygieneIfNeeded()
+
+        // Finish a checkpoint an interrupted older process may have left behind before any
+        // caller is allowed to use the store. This is also what makes a failed post-commit
+        // truncation retryable across a relaunch.
+        try checkpointAndTruncateWAL()
 
         // After the schema write, so the WAL exists to be protected.
         try applyFileProtection()
@@ -203,6 +225,33 @@ internal final class SealedRecordDatabase {
     private static let keyCheckTag = Data(SHA256.hash(data: Data("cipher.key-check.v1".utf8)))
 
     private static let keyCheckPlaintext = Data("cipher.sealed-record-database.v1".utf8)
+
+    /// A sealed marker distinct from the key check. Its absence means this database may have
+    /// been written by a build which neither enabled secure_delete nor scrubbed old free pages.
+    private static let deletionHygienePlaintext = Data("cipher.deletion-hygiene.v1".utf8)
+
+    /// Scrubs residue created by builds which predate secure deletion.
+    ///
+    /// Enabling the pragma only affects future page edits. `VACUUM` rebuilds the existing main
+    /// file so ciphertext left in its free space by an older logical delete is removed too. The
+    /// marker is written only after VACUUM succeeds; interruption retries rather than claiming
+    /// the historical residue was cleaned.
+    private func migrateDeletionHygieneIfNeeded() throws {
+        if let stored = try get(
+            namespace: Self.keyCheckNamespace, groupTag: Self.keyCheckTag, ordinal: 1)
+        {
+            guard stored == Self.deletionHygienePlaintext else {
+                throw SealedDatabaseError.corruptRecord
+            }
+            return
+        }
+
+        try checkpointAndTruncateWAL()
+        try execute("VACUUM")
+        try put(
+            namespace: Self.keyCheckNamespace, groupTag: Self.keyCheckTag, ordinal: 1,
+            value: Self.deletionHygienePlaintext)
+    }
 
     /// Applies the container rules to the database and to every sibling SQLite maintains.
     ///
@@ -327,6 +376,9 @@ internal final class SealedRecordDatabase {
 
     internal func put(namespace: String, groupTag tag: Data, ordinal: Int, value: Data) throws {
         CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
+        let replacesExistingValue = try slotExists(
+            namespace: namespace, groupTag: tag, ordinal: ordinal)
         let sealed = try seal(value, namespace, tag, ordinal)
 
         let sql = """
@@ -343,10 +395,12 @@ internal final class SealedRecordDatabase {
                 throw SealedDatabaseError.ioFailure("writing a row failed")
             }
         }
+        if replacesExistingValue { try noteLogicalDeletion() }
     }
 
     internal func get(namespace: String, groupTag tag: Data, ordinal: Int) throws -> Data? {
         CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
 
         let sql = """
             SELECT sealed FROM sealed_record
@@ -376,6 +430,7 @@ internal final class SealedRecordDatabase {
     internal func list(namespace: String, groupTag tag: Data) throws
         -> [(ordinal: Int, value: Data)] {
         CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
 
         let sql = """
             SELECT ordinal, sealed FROM sealed_record
@@ -416,6 +471,7 @@ internal final class SealedRecordDatabase {
     internal func listNamespace(_ namespace: String) throws
         -> [(groupTag: Data, ordinal: Int, value: Data)] {
         CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
 
         let sql = """
             SELECT group_tag, ordinal, sealed FROM sealed_record
@@ -444,6 +500,7 @@ internal final class SealedRecordDatabase {
 
     internal func remove(namespace: String, groupTag tag: Data, ordinal: Int) throws {
         CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
 
         let sql = """
             DELETE FROM sealed_record
@@ -457,12 +514,14 @@ internal final class SealedRecordDatabase {
                 throw SealedDatabaseError.ioFailure("deleting a row failed")
             }
         }
+        try noteLogicalDeletion()
     }
 
     /// Deletes every row in a group. One statement, where the file store needed a loop over
     /// every ordinal the caller had to know about.
     internal func removeGroup(namespace: String, groupTag tag: Data) throws {
         CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
 
         let sql = "DELETE FROM sealed_record WHERE namespace = ? AND group_tag = ?"
         try withStatement(sql) { statement in
@@ -472,10 +531,12 @@ internal final class SealedRecordDatabase {
                 throw SealedDatabaseError.ioFailure("deleting a group failed")
             }
         }
+        try noteLogicalDeletion()
     }
 
     internal func removeNamespace(_ namespace: String) throws {
         CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
 
         let sql = "DELETE FROM sealed_record WHERE namespace = ?"
         try withStatement(sql) { statement in
@@ -484,6 +545,7 @@ internal final class SealedRecordDatabase {
                 throw SealedDatabaseError.ioFailure("deleting a namespace failed")
             }
         }
+        try noteLogicalDeletion()
     }
 
     // MARK: - Transactions
@@ -503,29 +565,59 @@ internal final class SealedRecordDatabase {
     internal func withTransaction<T>(_ body: () throws -> T) throws -> T {
         CryptoActor.assertIsolated()
         guard !transactionIsActive else { throw SealedDatabaseError.nestedTransaction }
+        try retrySecureCheckpointIfNeeded()
 
         try execute("BEGIN IMMEDIATE")
         transactionIsActive = true
+        transactionNeedsSecureCheckpoint = false
         afterCommitActions.removeAll(keepingCapacity: true)
+        let value: T
         do {
-            let value = try body()
-            try execute("COMMIT")
-            let actions = afterCommitActions
-            afterCommitActions.removeAll(keepingCapacity: true)
-            transactionIsActive = false
-            // These actions remove legacy copies which the committed rows now shadow. They
-            // deliberately run after COMMIT: running one before it would make rollback delete
-            // the only surviving copy of a protocol record.
-            for action in actions { action() }
-            return value
+            value = try body()
         } catch {
-            // Best effort: if the rollback itself fails there is nothing further to try, and
-            // the original error is the one worth propagating.
             try? execute("ROLLBACK")
             afterCommitActions.removeAll(keepingCapacity: true)
+            transactionNeedsSecureCheckpoint = false
             transactionIsActive = false
             throw error
         }
+
+        do {
+            try execute("COMMIT")
+        } catch {
+            // A failed COMMIT leaves the transaction active; rollback is still meaningful here.
+            try? execute("ROLLBACK")
+            afterCommitActions.removeAll(keepingCapacity: true)
+            transactionNeedsSecureCheckpoint = false
+            transactionIsActive = false
+            throw error
+        }
+
+        let actions = afterCommitActions
+        let needsCheckpoint = transactionNeedsSecureCheckpoint
+        afterCommitActions.removeAll(keepingCapacity: true)
+        transactionNeedsSecureCheckpoint = false
+        transactionIsActive = false
+
+        // These actions remove legacy copies which the committed rows now shadow. They
+        // deliberately run after COMMIT: running one before it would make rollback delete
+        // the only surviving copy of a protocol record.
+        for action in actions { action() }
+
+        if needsCheckpoint {
+            do {
+                try checkpointAndTruncateWAL()
+                secureCheckpointIsPending = false
+            } catch {
+                // COMMIT already succeeded. Throwing now would lie to every caller about the
+                // transaction outcome; for an inbound ratchet, that lie causes replay of an
+                // already-consumed message key. Preserve the committed result, and fail closed
+                // before the next database operation until this scrub succeeds.
+                secureCheckpointIsPending = true
+                CipherLog.store.error("secure-delete WAL truncation will be retried")
+            }
+        }
+        return value
     }
 
     /// Joins an existing transaction or creates one when the caller is otherwise outside one.
@@ -551,27 +643,35 @@ internal final class SealedRecordDatabase {
 
     // MARK: - Destruction
 
-    /// Closes the connection and deletes the database and every sibling.
+    /// Closes the connection and deletes the entire crypto container.
     ///
-    /// Called from `destroyAllState`, which also removes the Keychain key. Ordering matters the
-    /// same way it does there: the connection is closed first, so nothing holds a handle to a
-    /// file that is about to be unlinked.
+    /// `destroyAllState` has already removed the Keychain service before calling this. Within the
+    /// physical-cleanup half, the connection is closed before its files are unlinked.
     internal func destroy() throws {
         CryptoActor.assertIsolated()
 
-        close()
-        for url in Self.fileURLs(root: root) where fileManager.fileExists(atPath: url.path) {
-            do {
-                try fileManager.removeItem(at: url)
-            } catch {
-                throw SealedDatabaseError.ioFailure("removing the database failed")
-            }
+        try close()
+        try Self.destroyContainer(root: root, fileManager: fileManager)
+    }
+
+    /// Removes persisted crypto state without opening it or creating replacement keys.
+    /// Used only by the account-cleanup recovery path after the Keychain erase has succeeded.
+    internal static func destroyContainer(
+        root: URL, fileManager: FileManager = .default
+    ) throws {
+        guard fileManager.fileExists(atPath: root.path) else { return }
+        do {
+            try fileManager.removeItem(at: root)
+        } catch {
+            throw SealedDatabaseError.ioFailure("removing the crypto container failed")
         }
     }
 
-    private func close() {
+    private func close() throws {
         if let handle {
-            sqlite3_close(handle)
+            guard sqlite3_close(handle) == SQLITE_OK else {
+                throw SealedDatabaseError.ioFailure("closing the database failed")
+            }
             self.handle = nil
         }
     }
@@ -589,6 +689,85 @@ internal final class SealedRecordDatabase {
     private func requireHandle() throws -> OpaquePointer {
         guard let handle else { throw SealedDatabaseError.closed }
         return handle
+    }
+
+    /// `secure_delete` scrubs the new page image; this copies that image into the main file and
+    /// truncates the WAL that may still contain the previous image. Both halves are required.
+    private func checkpointAndTruncateWAL() throws {
+        guard !transactionIsActive else { throw SealedDatabaseError.nestedTransaction }
+        let db = try requireHandle()
+        var frames: Int32 = 0
+        var checkpointed: Int32 = 0
+        guard sqlite3_wal_checkpoint_v2(
+            db, nil, SQLITE_CHECKPOINT_TRUNCATE, &frames, &checkpointed) == SQLITE_OK
+        else {
+            throw SealedDatabaseError.ioFailure("truncating the database WAL failed")
+        }
+    }
+
+    private func retrySecureCheckpointIfNeeded() throws {
+        guard secureCheckpointIsPending, !transactionIsActive else { return }
+        try checkpointAndTruncateWAL()
+        secureCheckpointIsPending = false
+    }
+
+    private func noteLogicalDeletion() throws {
+        let db = try requireHandle()
+        guard sqlite3_changes(db) > 0 else { return }
+        if transactionIsActive {
+            transactionNeedsSecureCheckpoint = true
+            return
+        }
+        do {
+            try checkpointAndTruncateWAL()
+            secureCheckpointIsPending = false
+        } catch {
+            secureCheckpointIsPending = true
+            throw SealedDatabaseError.secureDeletionPending
+        }
+    }
+
+    /// Reads the effective value from this connection, not the SQL string we attempted to set.
+    private func pragmaInteger(_ sql: String) throws -> Int {
+        var value: Int?
+        try withStatement(sql) { statement in
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                throw SealedDatabaseError.ioFailure("reading a database pragma failed")
+            }
+            value = Int(sqlite3_column_int64(statement, 0))
+        }
+        guard let value else {
+            throw SealedDatabaseError.ioFailure("reading a database pragma failed")
+        }
+        return value
+    }
+
+    /// Checks only the primary key. No value is copied or authenticated, so replacement keeps
+    /// the existing overwrite semantics while still learning whether an older sealed value must
+    /// be scrubbed from the database/WAL.
+    private func slotExists(namespace: String, groupTag tag: Data, ordinal: Int) throws -> Bool {
+        let sql = """
+            SELECT 1 FROM sealed_record
+            WHERE namespace = ? AND group_tag = ? AND ordinal = ?
+            """
+        var exists = false
+        try withStatement(sql) { statement in
+            try bind(statement, 1, text: namespace)
+            try bind(statement, 2, blob: tag)
+            try bind(statement, 3, int: ordinal)
+            switch sqlite3_step(statement) {
+            case SQLITE_ROW: exists = true
+            case SQLITE_DONE: exists = false
+            default: throw SealedDatabaseError.ioFailure("checking a row slot failed")
+            }
+        }
+        return exists
+    }
+
+    /// Test-visible assertion of the setting on the live connection.
+    internal func secureDeletionIsEnabled() throws -> Bool {
+        CryptoActor.assertIsolated()
+        return try pragmaInteger("PRAGMA secure_delete") == 1
     }
 
     /// Runs a statement that returns no rows.
@@ -695,5 +874,8 @@ internal enum SealedDatabaseError: Error, Equatable {
     /// A nested transaction is a caller bug. Refused explicitly rather than delegated to an
     /// SQLite error whose behaviour could change with the transaction mode.
     case nestedTransaction
+    /// A delete committed, but SQLite could not yet checkpoint and truncate the WAL. The next
+    /// operation and the next open both retry before accepting more work.
+    case secureDeletionPending
     case ioFailure(String)
 }

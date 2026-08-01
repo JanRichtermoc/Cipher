@@ -81,6 +81,7 @@ internal final class DatabaseRecordStore: RecordStore {
         CryptoActor.assertIsolated()
         self.database = database
         self.legacy = legacy
+        retryCommittedLegacyCleanup()
     }
 
     internal func load(_ kind: RecordKind, _ key: String) throws -> Data? {
@@ -194,6 +195,37 @@ internal final class DatabaseRecordStore: RecordStore {
         }
     }
 
+    /// Retries file cleanup which a previous process lost after committing its database copy.
+    ///
+    /// Both value rows and tombstones carry the original key inside their sealed envelope, so
+    /// cleanup does not depend on a one-shot migration marker or on being able to reverse a
+    /// legacy hashed filename. A failed unlink remains harmless (the database row shadows it)
+    /// and is retried on every open until it succeeds.
+    private func retryCommittedLegacyCleanup() {
+        for kind in RecordKind.allCases {
+            for namespace in [valueNamespace(kind), tombstoneNamespace(kind)] {
+                let entries: [(groupTag: Data, ordinal: Int, value: Data)]
+                do {
+                    entries = try database.listNamespace(namespace)
+                } catch {
+                    CipherLog.store.error("could not inspect committed legacy cleanup records")
+                    continue
+                }
+                for entry in entries {
+                    do {
+                        let key = try decodeEnvelope(entry.value, kind: kind).key
+                        guard legacy.contains(kind, key) else { continue }
+                        try legacy.remove(kind, key)
+                    } catch {
+                        // One damaged cleanup record must not prevent valid entries later in the
+                        // namespace from being retried. Its own normal access still fails closed.
+                        CipherLog.store.error("legacy record cleanup will be retried")
+                    }
+                }
+            }
+        }
+    }
+
     private func valueNamespace(_ kind: RecordKind) -> String { "proto-\(kind.rawValue)" }
     private func tombstoneNamespace(_ kind: RecordKind) -> String { "proto-del-\(kind.rawValue)" }
 
@@ -256,7 +288,7 @@ internal final class DatabaseRecordStore: RecordStore {
                 throw RecordStoreError.unsupportedRecordVersion(version)
             case .rowTooLarge(let bytes):
                 throw RecordStoreError.recordTooLarge(kind: kind, bytes: bytes)
-            case .closed, .nestedTransaction, .ioFailure:
+            case .closed, .nestedTransaction, .secureDeletionPending, .ioFailure:
                 throw RecordStoreError.ioFailure("the protocol database was unavailable")
             }
         }
@@ -277,6 +309,9 @@ internal enum RecordStoreError: Error, Equatable {
     case unsupportedRecordVersion(UInt8)
     /// The record encryption key in the Keychain is not the expected size.
     case malformedEncryptionKey
+    /// Ciphertext exists but the Keychain key which owned it is gone. This is an interrupted
+    /// cryptographic erase, never a fresh store and never a reason to mint a replacement key.
+    case missingEncryptionKey
     /// A slot holds more bytes than any record this module writes, so it was refused
     /// **without being read**. Distinct from `corruptRecord`: nothing was authenticated here,
     /// and the point is that the allocation never happened.

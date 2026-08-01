@@ -12,6 +12,7 @@
 
 import Foundation
 import LibSignalClient
+import SQLite3
 import XCTest
 
 @testable import CipherCrypto
@@ -164,6 +165,51 @@ final class MessagingTests: XCTestCase {
                 XCTAssertEqual(error as? MessagingError, .storeUnavailable)
                 XCTAssertFalse(error is RecordStoreError)
             }
+        }.value
+    }
+
+    /// A WAL checkpoint happens after COMMIT. If a concurrent reader makes that checkpoint busy,
+    /// the inbound ratchet and archive work are already durable and must not be reported as
+    /// rolled back: retrying the relay envelope would replay a consumed message key. The pending
+    /// scrub instead blocks the next database operation until it can complete.
+    func testCommittedInboundTransactionDefersABusySecureDeletionCheckpoint() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+            _ = try pair.deliverToPeer(
+                try pair.engine.encrypt(Data("establish".utf8), to: pair.remote))
+            let envelope = try pair.envelopeFromPeer("committed once")
+
+            try pair.engine.storeSealedRow(
+                namespace: "checkpoint-probe", group: "group", ordinal: 0,
+                value: Data("delete me".utf8))
+            let blocker = try SQLiteReadBlocker(root: root)
+            defer { blocker.release() }
+
+            let decrypted = try pair.engine.withDecryptedMessageTransaction(envelope) {
+                message, rows in
+                try rows.remove(namespace: "checkpoint-probe", group: "group", ordinal: 0)
+                return message
+            }
+            XCTAssertEqual(decrypted.plaintext, Data("committed once".utf8))
+
+            XCTAssertThrowsError(
+                try pair.engine.loadSealedRow(
+                    namespace: "checkpoint-probe", group: "group", ordinal: 0)
+            ) { error in
+                XCTAssertEqual(
+                    error as? SealedDatabaseError,
+                    .ioFailure("truncating the database WAL failed"),
+                    "pending residue must fail closed while the reader still blocks its scrub")
+            }
+
+            blocker.release()
+            XCTAssertNil(
+                try pair.engine.loadSealedRow(
+                    namespace: "checkpoint-probe", group: "group", ordinal: 0))
         }.value
     }
 
@@ -448,4 +494,59 @@ final class MessagingTests: XCTestCase {
             }
         }.value
     }
+}
+
+/// Holds a real SQLite read snapshot open so a `TRUNCATE` checkpoint returns `SQLITE_BUSY`.
+/// This tests SQLite's failure boundary rather than a mock which might fail at the wrong point.
+private final class SQLiteReadBlocker {
+    private var database: OpaquePointer?
+    private var statement: OpaquePointer?
+
+    init(root: URL) throws {
+        let path = root.appendingPathComponent("records.sqlite3").path
+        var opened: OpaquePointer?
+        guard sqlite3_open_v2(path, &opened, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK,
+              let opened
+        else {
+            if opened != nil { sqlite3_close(opened) }
+            throw SealedDatabaseError.ioFailure("test could not open a blocking reader")
+        }
+        database = opened
+
+        guard sqlite3_exec(opened, "PRAGMA wal_checkpoint(TRUNCATE)", nil, nil, nil) == SQLITE_OK,
+              sqlite3_exec(opened, "BEGIN", nil, nil, nil) == SQLITE_OK
+        else {
+            release()
+            throw SealedDatabaseError.ioFailure("test could not begin a blocking reader")
+        }
+
+        var prepared: OpaquePointer?
+        guard sqlite3_prepare_v2(
+            opened, "SELECT sealed FROM sealed_record LIMIT 1", -1, &prepared, nil) == SQLITE_OK,
+            let prepared
+        else {
+            if prepared != nil { sqlite3_finalize(prepared) }
+            release()
+            throw SealedDatabaseError.ioFailure("test could not prepare a blocking reader")
+        }
+        statement = prepared
+        guard sqlite3_step(prepared) == SQLITE_ROW else {
+            release()
+            throw SealedDatabaseError.ioFailure("test could not hold a blocking read snapshot")
+        }
+    }
+
+    func release() {
+        if let statement {
+            sqlite3_finalize(statement)
+            self.statement = nil
+        }
+        if let database {
+            sqlite3_exec(database, "ROLLBACK", nil, nil, nil)
+            sqlite3_close(database)
+            self.database = nil
+        }
+    }
+
+    deinit { release() }
 }
