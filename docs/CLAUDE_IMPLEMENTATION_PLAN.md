@@ -21,7 +21,9 @@ authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_N
 CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
                 P5.S05/S06/S08/S09/S10/S11 done. P5.S11 IS NOW COMPLETE —
                 AUDIT 4.13 and 4.14 are both closed.
-UNMERGED:       P5.S11 erasure + storage-quota remediation is on
+                Invite-code-only identity is now LOCKED DECISION 7 (§0.2).
+UNMERGED:       P5.S11 erasure + storage-quota remediation, and the §0.2.7
+                identity lock on top of it, are on
                 `codex/p5-s11-erasure-remediation`; not merged. The user merges
                 PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
@@ -147,8 +149,29 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 against real envelopes in MessageRepositoryTests. New residual
                 recorded as AUDIT 4.15. All eleven guards negative-tested by
                 name. ***
-                114 integration tests + 268 iOS tests, verify-all.sh 12/12.
-                (268 = 161 CipherCrypto XCTest + 77 Cipher XCTest + 30 Swift
+                *** §0.2.7 LOCKED — invite-code-only identity. Cipher already
+                collected no phone number, email, username or verification
+                code; it is now a REQUIREMENT that fails loudly rather than a
+                property that happens to hold. Confirmed from source first: the
+                `accounts` row is aci/identity_key/registration_id/last_seen
+                and nothing else, redeem takes {code, identity_key,
+                registration_id} and returns a server-minted opaque ACI, and
+                the client `username` never leaves the device. Two enforcers,
+                because one cannot reach both halves:
+                LockedDecisionsTests.testIdentityCarriesNoHumanIdentifier pins
+                the wire types by reflection, and the new gate 4,
+                Scripts/verify-identity-fields.py, refuses an identity-shaped
+                field across the whole relay, the wire format and
+                Cipher/Networking. It strips comments with a per-language lexer
+                first (R3 — the prose documenting this decision names every
+                string it forbids) and carries three positive controls (R2).
+                Negative-tested both ways: the script fires on all six
+                surfaces, stays silent on the same words in a comment, and
+                fails when blinded; the test fails BY NAME on a phone field, a
+                verification code, a widened identifier and a decoder that
+                stops rejecting one. Residual recorded as AUDIT 5.31. ***
+                114 integration tests + 269 iOS tests, verify-all.sh 13/13.
+                (269 = 162 CipherCrypto XCTest + 77 Cipher XCTest + 30 Swift
                 Testing cases, measured off the verify-all run, not derived.)
                 (257 = 158 CipherCrypto XCTest + 69 Cipher XCTest + 30 Swift
                 Testing cases, measured; earlier revisions undercounted.)
@@ -314,12 +337,37 @@ Argued in code and in `AUDIT.md`. **Requirements, not bugs.**
    design later, do not sneak it in.
 6. **Keychain `AfterFirstUnlockThisDeviceOnly` + non-synchronizable** (AUDIT 2.1 — ACCEPTED). Do not
    "tighten" to `WhenUnlocked` without an NSE + notification-content redesign.
+7. **Invite-code-only identity** (THREAT_MODEL §3.4 — ACCEPTED) — Cipher collects **no phone
+   number, no email address, no server-side username, and no verification code**. An account comes
+   into existence only by redeeming an invite code, and the `aci` the server mints at redemption is
+   an opaque UUIDv4 with no link to a person. Adding a "sign in with email", an SMS verification
+   step, or a lookup-by-handle is a threat-model change, not a feature.
+   - **Rationale.** An identifier that is never collected cannot be leaked, correlated against
+     another service, subpoenaed, or used to enumerate the user base — which is why `BACKEND.md`
+     §2.1 lists `display_name`, `username` and `about` under **"Absent on purpose"** and why the
+     `aci` row says an opaque identifier "with no link to a person, phone, email, or device … is
+     the whole point of §3.4". It also removes server-side contact discovery entirely, historically
+     the largest metadata leak in messengers that have it. And a phone or mail flow would put a
+     **third party** inside a design that has none: an SMS or mail provider learns who signed up,
+     when, and from where, and is itself seizable under §1.1 — an adversary Cipher's own controls
+     (pinning, E2E) do not reach, because the leak happens before any of them apply.
+   - **Not in scope, deliberately:** the *local* profile — display name, username, "about" — is
+     client-side only, sealed by `ProfileArchive`, and never sent anywhere. This decision is about
+     what Cipher **collects**, not what someone types for themselves.
 
 **Enforced, not merely documented.** `CipherCryptoTests/LockedDecisionsTests.swift` fails if any is
 quietly "fixed", with a message saying why it was that way. Its header table maps each decision to
 the test pinning it. Decisions 1 and 6 were already covered behaviourally (`ProtocolStoreTests`,
-`KeychainTests`); 2–5 are pinned there. Conformance and predicate checks carry positive controls, so
-a check that stops working fails loudly instead of passing vacuously.
+`KeychainTests`); 2–5 and the wire half of 7 are pinned there. Conformance, predicate and
+reflection checks carry positive controls, so a check that stops working fails loudly instead of
+passing vacuously.
+
+Decision 7 needs a second enforcer, because most of its surface is outside `CipherCrypto` and no
+Swift unit test can reach it: the account model, the auth API and the relay schema are Go and SQL.
+`Scripts/verify-identity-fields.py` (gate 4 of `verify-all.sh`) is that half — it refuses an
+identity-shaped field name in those four surfaces, strips comments first so it does not fire on the
+prose describing the decision (AUDIT **R3**), and carries positive controls so a blinded scanner
+fails instead of reporting a clean tree it never read (AUDIT **R2**).
 
 ## 0.3 Genuinely OPEN items
 
@@ -673,16 +721,18 @@ production VPS before staging E2E works.
 
 ## Standing regression checklist (every PR)
 
-`./Scripts/verify-all.sh` runs 1–5 serialized. Items 6–8 are judgement and stay manual.
+`./Scripts/verify-all.sh` runs 1–6 serialized. Items 7–9 are judgement and stay manual.
 
 1. `Scripts/verify-supply-chain.sh`
 2. App-target manifest gate
 3. CipherCrypto tests (app-hosted, serialized per simulator)
 4. Cipher build
 5. Locked-decision tests + plaintext-logging grep
-6. Confirm groups/sender-key still rejected
-7. Confirm identity-change policy: receive trusted, send refused until exact `acceptIdentity`
-8. Update `AUDIT.md` and the STATUS block if status changed
+6. `Scripts/verify-identity-fields.py` — no phone/email/username/verification-code field in
+   the relay, the wire format or `Cipher/Networking` (§0.2.7)
+7. Confirm groups/sender-key still rejected
+8. Confirm identity-change policy: receive trusted, send refused until exact `acceptIdentity`
+9. Update `AUDIT.md` and the STATUS block if status changed
 
 ---
 
@@ -693,7 +743,7 @@ production VPS before staging E2E works.
 | Crypto façade | `CipherCrypto/Sources/Engine/CryptoEngine.swift` |
 | Store / Keychain | `CipherCrypto/Sources/Store/*` |
 | Envelope | `CipherCrypto/Sources/Wire/Envelope.swift` |
-| Locked decisions | `CipherCryptoTests/LockedDecisionsTests.swift` |
+| Locked decisions | `CipherCryptoTests/LockedDecisionsTests.swift`, and for §0.2.7 also `Scripts/verify-identity-fields.py` |
 | Threat model | `docs/THREAT_MODEL.md` |
 | Audit ledger | `docs/AUDIT.md` |
 | Supply chain | `Vendor/libsignal/*`, `Scripts/verify-supply-chain.sh`, `Podfile` |

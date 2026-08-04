@@ -144,7 +144,7 @@ Run these from `/Users/janrichtermoc/Cipher` unless stated otherwise.
 # Ruby (project scripts) is NOT on the default PATH:
 export PATH="/opt/homebrew/opt/ruby/bin:$PATH"
 
-# The full gate. Must print 12/12 with no FAILED. Takes ~30 minutes.
+# The full gate. Must print 13/13 with no FAILED. Takes ~30 minutes.
 ./Scripts/verify-all.sh
 
 # Faster while iterating (skips the Release device build and the two audits after it):
@@ -240,7 +240,7 @@ what you are doing.
 ### 5.5 The gate
 
 ```sh
-./Scripts/verify-all.sh                      # must be 12/12, no FAILED
+./Scripts/verify-all.sh                      # must be 13/13, no FAILED
 ./Scripts/verify-relay-integration.sh        # if you touched server/
 ```
 
@@ -405,7 +405,7 @@ git push origin <branch>
 2. **What you built**, in a few lines, with clickable file references like
    `Cipher/Messaging/ConversationArchive.swift`.
 3. **What you found**, if anything — a bug or weakness discovered on the way, with its AUDIT id.
-4. **Gate results**: `verify-all.sh 12/12`, the test counts, and the integration suite if you ran it.
+4. **Gate results**: `verify-all.sh 13/13`, the test counts, and the integration suite if you ran it.
 5. **Anything left undone**, and anything blocked on them.
 6. **What the next step is** (`P#.S##`), one line on what it involves, and **whether it is
    security-critical enough that they should switch to a stronger model** for it. Say so plainly if
@@ -426,7 +426,7 @@ the block is the authority.
 - The app now really messages: prekey publication, session setup from a fetched bundle, encrypt
   before send, decrypt after fetch, sealed local storage, and acknowledge-only-what-is-durable.
   `MockStore` is gone (AUDIT 5.3 closed, C-02 closed).
-- **114 relay integration tests, 257 iOS tests, `verify-all.sh` 12/12.**
+- **114 relay integration tests, 257 iOS tests, `verify-all.sh` 13/13.**
 - **The next step remains `P5.S11` remediation for AUDIT 4.14** — impose an aggregate local storage
   quota and bounded retention without acknowledging a message that was not durably stored. The
   queryable sealed database, shared receive transaction, crash-safe erasure, SQLite residue
@@ -442,7 +442,7 @@ the block is the authority.
 ## 11. A short checklist to re-read before you say you are done
 
 - [ ] One step, and only that step.
-- [ ] `./Scripts/verify-all.sh` is 12/12 with no `FAILED`.
+- [ ] `./Scripts/verify-all.sh` is 13/13 with no `FAILED`.
 - [ ] Integration suite run if `server/` changed.
 - [ ] Every new test's **name** appeared in the test output.
 - [ ] `bundle exec ruby Scripts/bootstrap-targets.rb` was run if a test file was added.

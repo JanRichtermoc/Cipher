@@ -5,7 +5,7 @@
 //  Copyright (C) 2026 Jan Richter
 //  SPDX-License-Identifier: AGPL-3.0-only
 //
-//  The six decisions in docs/CLAUDE_IMPLEMENTATION_PLAN.md §0.2, made enforceable.
+//  The seven decisions in docs/CLAUDE_IMPLEMENTATION_PLAN.md §0.2, made enforceable.
 //
 //  Each of those decisions looks like a bug to someone reading the code cold: refusing to
 //  send while still accepting receipts, a store that implements five of libsignal's six
@@ -27,6 +27,11 @@
 //  |      |                                             | + EnvelopeTests.testRefusesUnauthenticatedPlaintext…  |
 //  | 5    | Wire v1 is single-device, no deviceId       | testWireVersionOneCarriesNoDeviceId (here)            |
 //  | 6    | Keychain AfterFirstUnlockThisDeviceOnly     | KeychainTests.testStoredItemsAreDeviceOnlyAnd…        |
+//  | 7    | Invite codes only: no phone number, email,  | testIdentityCarriesNoHumanIdentifier (here) — the     |
+//  |      | server-side username or verification code   | wire half only. The account model, the auth API and   |
+//  |      |                                             | the relay schema are Go and SQL and no Swift test can |
+//  |      |                                             | reach them: Scripts/verify-identity-fields.py is that |
+//  |      |                                             | half, and verify-all.sh runs both.                    |
 //
 
 import Foundation
@@ -181,5 +186,145 @@ final class LockedDecisionsTests: XCTestCase {
                 kind: .aci, uuid: UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!),
             timestamp: 0, ciphertext: ciphertext).encode()
         XCTAssertEqual(encoded.count, Envelope.headerSize + ciphertext.count)
+    }
+
+    // MARK: - §0.2.7 — identity is an invite code and an opaque ACI, nothing else
+
+    /// Cipher collects no phone number, no email address, no server-side username and no
+    /// verification code. This test pins the half of that decision which lives in this
+    /// module: **the types that say who someone is carry no human-facing identifier, and
+    /// the wire has no field one could travel in.**
+    ///
+    /// The other half — the `accounts` row, the redemption request, the relay schema — is
+    /// Go and SQL and is out of reach here. `Scripts/verify-identity-fields.py` covers it,
+    /// and `verify-all.sh` runs both. Neither is sufficient alone, which is why the plan
+    /// names both.
+    ///
+    /// Reflection rather than a compile-time assertion because the failure being guarded
+    /// against is *additive*: someone adds `phoneNumber` beside `uuid` and everything still
+    /// compiles. `Mirror` sees stored properties, so the new field shows up here.
+    func testIdentityCarriesNoHumanIdentifier() throws {
+        // Every type in this module that answers "who is this". If identity ever grows a
+        // new carrier, it belongs in this list — that is the maintenance cost of the
+        // decision, and it is deliberate.
+        let uuid = UUID(uuidString: "de305d54-75b4-431b-adb2-eb6b9e546014")!
+        let identifier = ServiceIdentifier(kind: .aci, uuid: uuid)
+        let carriers: [(String, Any)] = [
+            ("ServiceIdentifier", identifier),
+            ("PeerAddress", PeerAddress(serviceId: identifier)),
+            ("Envelope", try Envelope(type: .whisper, sender: identifier, timestamp: 0,
+                                      ciphertext: Data([0x01]))),
+            ("PeerKeyBundle", PeerKeyBundle(
+                registrationId: 1, identityKey: Data(), preKeyId: 1, preKey: Data(),
+                signedPreKeyId: 2, signedPreKey: Data(), signedPreKeySignature: Data(),
+                kyberPreKeyId: 3, kyberPreKey: Data(), kyberPreKeySignature: Data())),
+            ("PublishedKeys.SignedKey", PublishedKeys.SignedKey(
+                keyId: 1, publicKey: Data(), signature: Data())),
+            ("PublishedKeys.OneTimeKey", PublishedKeys.OneTimeKey(
+                keyId: 1, publicKey: Data())),
+            ("PublishedKeys", PublishedKeys(
+                signedPreKey: PublishedKeys.SignedKey(
+                    keyId: 1, publicKey: Data(), signature: Data()),
+                kyberLastResort: PublishedKeys.SignedKey(
+                    keyId: 2, publicKey: Data(), signature: Data()),
+                kyberPreKeys: [], oneTimePreKeys: [])),
+            ("DecryptedMessage", DecryptedMessage(
+                sender: PeerAddress(serviceId: identifier), senderIdentityKey: Data(),
+                plaintext: Data(), claimedSender: identifier, envelopeTimestampMs: 0,
+                establishedSession: true)),
+        ]
+
+        // Positive control. Every assertion below is "the name was not found", and an
+        // empty Mirror produces exactly that answer while checking nothing. So first
+        // prove reflection still sees properties that are definitely there. See AUDIT R2.
+        //
+        // A *superset* check, deliberately: asserting the set is exactly `kind` and
+        // `uuid` would mean a newly added `phoneNumber` failed here first, reporting
+        // "reflection is broken" for a tree in which reflection worked perfectly and
+        // found a phone number. The control must not be able to pre-empt the finding it
+        // exists to make believable.
+        let identifierFields = Set(Mirror(reflecting: identifier).children.compactMap(\.label))
+        XCTAssertTrue(
+            identifierFields.isSuperset(of: ["kind", "uuid"]),
+            "reflection no longer sees ServiceIdentifier's stored properties (saw "
+                + "\(identifierFields.sorted())); every assertion below is void")
+
+        // Matched on whole words so `mailbox` is not `mail` and `preKeyId` is not `key`,
+        // the same rule Scripts/verify-identity-fields.py applies to the Go and SQL
+        // surfaces. This list is that gate's FORBIDDEN_TOKENS plus `handle` and
+        // `nickname`, which it cannot use: over there they would fire on `mux.Handle`
+        // and on every SQLite handle in the tree, whereas here the entire search space
+        // is the stored properties of the eight types above.
+        let forbidden: Set<String> = [
+            "phone", "telephone", "msisdn", "e164", "email", "mailto",
+            "sms", "smtp", "otp", "username", "handle", "nickname",
+        ]
+
+        for (name, value) in carriers {
+            let labels = Mirror(reflecting: value).children.compactMap(\.label)
+            XCTAssertFalse(labels.isEmpty, "\(name) reflected to no stored properties")
+
+            for label in labels {
+                let words = Set(Self.identifierWords(label))
+                let hit = forbidden.intersection(words)
+                XCTAssertTrue(
+                    hit.isEmpty,
+                    """
+                    \(name).\(label) is a human-facing identifier. That is a locked \
+                    decision (plan §0.2.7, THREAT_MODEL.md §3.4): Cipher's only identifier \
+                    is an invite code redeemed for an opaque ACI. An identifier that is \
+                    never collected cannot be leaked, correlated, subpoenaed, or used to \
+                    enumerate the user base, and a phone or mail flow would put an SMS or \
+                    mail provider — a seizable third party — inside a design that has none.
+                    """)
+                XCTAssertFalse(
+                    words.contains("verification") && words.contains("code"),
+                    """
+                    \(name).\(label) carries a verification code, which implies an \
+                    out-of-band delivery channel Cipher does not have (plan §0.2.7).
+                    """)
+            }
+        }
+
+        // The wire identifier is a namespace byte and 16 UUID bytes, and that is all it
+        // can ever be: there is no length in which a phone number or an address could
+        // travel, and `decode` rejects any other size rather than reading a prefix.
+        XCTAssertEqual(ServiceIdentifier.encodedSize, 1 + 16)
+        XCTAssertEqual(identifier.fixedWidthBinary.count, ServiceIdentifier.encodedSize)
+        XCTAssertThrowsError(
+            try ServiceIdentifier.decode(
+                fixedWidth: identifier.fixedWidthBinary + Data("+15551234567".utf8)),
+            """
+            a longer identifier now decodes. The 17-byte fixed width is what makes it \
+            impossible to smuggle a human-facing identifier into an address (plan §0.2.7).
+            """)
+    }
+
+    /// Splits `phoneNumber`, `phone_number` and `PHONE_NUMBER` into the same words, so a
+    /// field is matched however it is spelled and `preKeyId` never reads as `key`.
+    private static func identifierWords(_ name: String) -> [String] {
+        var words: [String] = []
+        var current = ""
+
+        func flush() {
+            if !current.isEmpty { words.append(current.lowercased()) }
+            current = ""
+        }
+
+        for character in name {
+            if character == "_" || character == "-" {
+                flush()
+            } else if character.isUppercase, !current.isEmpty,
+                      current.last?.isUppercase == false {
+                // camelCase boundary only: an acronym run (`ACIKind`) stays whole until a
+                // lowercase letter starts the next word, which `flush` below handles.
+                flush()
+                current.append(character)
+            } else {
+                current.append(character)
+            }
+        }
+        flush()
+        return words
     }
 }
