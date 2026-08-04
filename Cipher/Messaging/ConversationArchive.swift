@@ -8,6 +8,7 @@
 
 import CipherCrypto
 import Foundation
+import os
 
 /// Conversations and message bodies, sealed in the crypto module's container.
 ///
@@ -67,9 +68,12 @@ actor ConversationArchive {
     /// Read-modify-write over an async store is not atomic under actor reentrancy. See
     /// ``SerialGate``.
     private let gate = SerialGate()
+    /// The bounds on what a peer can make this device store (AUDIT 4.14).
+    private let quota: StorageQuota
 
-    init(engine: CryptoEngine) {
+    init(engine: CryptoEngine, quota: StorageQuota = .standard) {
         self.engine = engine
+        self.quota = quota
     }
 
     // MARK: - Namespaces
@@ -89,6 +93,77 @@ actor ConversationArchive {
     /// only namespace in which the ordinal carries meaning. Naming it rather than writing `0` at
     /// nine call sites keeps that distinction visible.
     private static let singleton = 0
+
+    // MARK: - Storage quota (AUDIT 4.14)
+
+    /// The bounds on what a peer can make this device store.
+    ///
+    /// **The vector.** Anyone who can fetch this account's published prekey bundle can establish
+    /// a session, so inbound message volume is unauthenticated growth (the same shape as AUDIT
+    /// 3.1's witness FIFO, which is bounded for exactly this reason). Individual records were
+    /// already bounded — a payload is at most 32 KiB and a row at most 1 MiB — but nothing
+    /// bounded their *number*, so a peer with a valid session could fill the device.
+    ///
+    /// **Three bounds, and why each is needed rather than implied by the others.**
+    /// A per-conversation cap alone leaves `maxConversations × maxMessagesPerConversation ×
+    /// 32 KiB` of headroom, which is far more disk than a phone has. A byte quota alone can be
+    /// defeated by spreading one message across a great many conversations, because eviction
+    /// then has nothing large to reclaim. So the count of conversations is bounded too, and the
+    /// three together give a hard ceiling.
+    ///
+    /// **Eviction never fails the store.** Trimming happens inside the same transaction as the
+    /// append that triggered it, so either both commit or neither does, and the receive path
+    /// acknowledges only on that commit. Refusing to store instead would be worse than useless:
+    /// the relay would redeliver the same envelope forever and `receiveExclusively` stops taking
+    /// messages on a storage failure, so a full disk would wedge *all* delivery rather than
+    /// bounding one conversation.
+    ///
+    /// **Whose history is trimmed.** Always the conversation holding the most, so a peer
+    /// flooding this device evicts its own history before anybody else's. That is the property
+    /// which keeps this from being a way to delete someone else's messages.
+    ///
+    /// **A value, not a set of global constants**, so the tests can drive eviction against a
+    /// container of a few kilobytes rather than filling 192 MiB to reach the shipping limit. A
+    /// quota too expensive to test is a quota nobody has watched work.
+    nonisolated struct StorageQuota: Sendable, Equatable {
+        /// Conversations. A private-circle messenger, so this is generous rather than tight.
+        var maxConversations: Int
+
+        /// Messages kept per conversation. The floor a trim moves, never a counter it rewinds.
+        var maxMessagesPerConversation: Int
+
+        /// Logical container size at which eviction starts.
+        var maxDatabaseBytes: Int
+
+        /// Eviction runs until the container is back under this. The gap from
+        /// ``maxDatabaseBytes`` is deliberate hysteresis: evicting to exactly the limit would
+        /// put the next append back over it, so every subsequent message would pay for an
+        /// eviction pass.
+        var evictionTargetBytes: Int
+
+        /// A conversation is never trimmed below this, so eviction cannot empty one — and, more
+        /// importantly, cannot remove the message whose own append triggered it.
+        ///
+        /// It also has to be small enough that the floor eviction cannot go below,
+        /// `maxConversations × minRetainedPerConversation × 32 KiB` = 64 MiB, stays under
+        /// ``evictionTargetBytes``. Otherwise eviction could not reach its target and would spin
+        /// against a bound it can never satisfy.
+        var minRetainedPerConversation: Int
+
+        /// Termination bound, not an expected count. Each round at least halves one
+        /// conversation's span, so the loop converges in far fewer; this exists so that a
+        /// pathological container cannot make the receive path run unboundedly.
+        var maxEvictionRounds: Int
+
+        /// What ships.
+        static let standard = StorageQuota(
+            maxConversations: 256,
+            maxMessagesPerConversation: 5_000,
+            maxDatabaseBytes: 192 * 1024 * 1024,
+            evictionTargetBytes: 160 * 1024 * 1024,
+            minRetainedPerConversation: 8,
+            maxEvictionRounds: 4_096)
+    }
 
     // MARK: - Records
 
@@ -171,6 +246,17 @@ actor ConversationArchive {
         case unsupportedPayload
         case blocked
         case undecryptable
+        /// A first message from a new peer, refused because the conversation limit is reached
+        /// (AUDIT 4.14).
+        ///
+        /// In the acknowledgeable family with `blocked` and `unsupportedPayload`, not with a
+        /// thrown storage failure, and the distinction is the whole design. This is a *policy*
+        /// decision taken with the ratchet committed, not a write that failed: the envelope
+        /// decrypted, nothing about it is retryable, and refusing to acknowledge it would leave
+        /// the relay redelivering it on every cycle while `receiveExclusively` refuses to take
+        /// anything behind it. Existing conversations are never evicted to make room, so the
+        /// loss is bounded to peers this device has never spoken to.
+        case quotaExceeded
     }
 
     // MARK: - Conversations
@@ -205,6 +291,16 @@ actor ConversationArchive {
         try await ensureMigrated()
         return try await gate.withExclusiveAccess {
             if let existing = try await conversation(peer) { return existing }
+            // The same cap the inbound path enforces (AUDIT 4.14). Applied here too because the
+            // aggregate byte quota can only converge while the number of conversations is
+            // bounded: eviction reclaims by trimming long conversations, and a container of
+            // very many short ones has nothing left to give. Refused rather than silently
+            // capped, because this path is a deliberate user action and has a caller to tell.
+            guard try await engine.sealedRowCount(namespace: Namespace.conversation)
+                < quota.maxConversations
+            else {
+                throw ArchiveError.conversationLimitReached
+            }
             let record = StoredConversation(peer: peer, lastActivityMs: nowMs)
             try await write(record)
             return record
@@ -263,6 +359,7 @@ actor ConversationArchive {
         try await ensureMigrated()
         let group = Self.group(peer)
 
+        let quota = self.quota
         return try await gate.withExclusiveAccess {
             // Read, write, write — all three inside one transaction and one hop onto the crypto
             // actor, so nothing can observe or interleave with the intermediate state. The old
@@ -273,7 +370,8 @@ actor ConversationArchive {
                     to: peer, group: group, direction: direction, text: text,
                     timestampMs: timestampMs, state: state,
                     senderIdentityKey: senderIdentityKey,
-                    establishedSession: establishedSession, transaction: transaction)
+                    establishedSession: establishedSession, quota: quota,
+                    transaction: transaction)
             }
         }
     }
@@ -285,6 +383,7 @@ actor ConversationArchive {
     /// relay may then safely offer the exact envelope again.
     func storeIncoming(envelope: Data, timestampMs: UInt64) async throws -> IncomingDisposition {
         try await ensureMigrated()
+        let quota = self.quota
         do {
             return try await gate.withExclusiveAccess {
                 try await engine.withDecryptedMessageTransaction(envelope) {
@@ -300,12 +399,22 @@ actor ConversationArchive {
                     // never from the relay-controlled sender field in the envelope.
                     let peer = decrypted.sender.serviceId.uuid
                     let group = Self.group(peer)
-                    if try transaction.load(
+                    let existing = try transaction.load(
                         namespace: Namespace.conversation, group: group, ordinal: Self.singleton)
-                        .map({ try Self.decode(StoredConversation.self, from: $0) })?
-                        .isBlocked == true
+                        .map { try Self.decode(StoredConversation.self, from: $0) }
+                    if existing?.isBlocked == true { return .blocked }
+
+                    // A new correspondent, at the conversation cap (AUDIT 4.14). Refused here
+                    // rather than by evicting somebody: an attacker who can push an existing
+                    // conversation out of the store to make room for its own would have a
+                    // remote delete primitive, which is a worse outcome than losing a first
+                    // message from a peer this device has never spoken to. Counted, not
+                    // enumerated — `rowCount` unseals nothing.
+                    if existing == nil,
+                        try transaction.rowCount(namespace: Namespace.conversation)
+                            >= quota.maxConversations
                     {
-                        return .blocked
+                        return .quotaExceeded
                     }
 
                     let text: String
@@ -317,7 +426,7 @@ actor ConversationArchive {
                         to: peer, group: group, direction: .incoming, text: text,
                         timestampMs: timestampMs, state: .received,
                         senderIdentityKey: decrypted.senderIdentityKey,
-                        establishedSession: decrypted.establishedSession,
+                        establishedSession: decrypted.establishedSession, quota: quota,
                         transaction: transaction)
                     return .stored
                 }
@@ -346,6 +455,7 @@ actor ConversationArchive {
         state: StoredMessage.State,
         senderIdentityKey: Data?,
         establishedSession: Bool,
+        quota: StorageQuota,
         transaction: SealedRowTransaction
     ) throws -> StoredMessage {
         var conversation = try transaction.load(
@@ -372,10 +482,102 @@ actor ConversationArchive {
         if direction == .outgoing {
             conversation.lastReadOrdinal = conversation.nextOrdinal
         }
+
+        // Retention for this conversation, before its record is written, so the floor and the
+        // rows it describes are stored by the same transaction that stored the message.
+        try Self.trim(
+            &conversation, toAtMost: quota.maxMessagesPerConversation, group: group,
+            transaction: transaction)
+
         try transaction.store(
             namespace: Namespace.conversation, group: group, ordinal: Self.singleton,
             value: try Self.encode(conversation))
+
+        // The aggregate bound, which may trim *other* conversations. Also inside this
+        // transaction: a message is only ever acknowledged on its commit, so eviction cannot
+        // leave the device claiming to hold something it dropped.
+        try Self.evictToQuota(quota: quota, transaction: transaction)
         return message
+    }
+
+    /// Raises a conversation's retention floor to keep at most `limit` messages, deleting
+    /// everything below it. Returns how many rows went.
+    ///
+    /// The floor only ever moves up — the same rule as "clear chat" — because `nextOrdinal` is
+    /// never rewound and reusing an ordinal would file a new message in a slot whose
+    /// AEAD-bound predecessor might still exist. `lastReadOrdinal` is carried up with the floor
+    /// so the unread count stays a statement about messages that exist.
+    @CryptoActor
+    @discardableResult
+    private static func trim(
+        _ conversation: inout StoredConversation,
+        toAtMost limit: Int,
+        group: String,
+        transaction: SealedRowTransaction
+    ) throws -> Int {
+        let floor = max(conversation.firstOrdinal, conversation.nextOrdinal - max(limit, 0))
+        guard floor > conversation.firstOrdinal else { return 0 }
+
+        let removed = try transaction.removeRowsBelow(
+            namespace: Namespace.message, group: group, ordinal: floor)
+        conversation.firstOrdinal = floor
+        conversation.lastReadOrdinal = max(conversation.lastReadOrdinal, floor)
+        return removed
+    }
+
+    /// Brings the container back under the byte quota by trimming the largest conversations.
+    ///
+    /// Reads the cheap measure first and returns immediately in the ordinary case, because this
+    /// sits on the receive path: `usedBytes` is three header pragmas, while the enumeration
+    /// below unseals every conversation record and must not run per message.
+    ///
+    /// Largest-first is the fairness property that makes this safe. A peer flooding the device
+    /// makes *its own* conversation the largest, so it evicts its own history rather than
+    /// anyone else's; conversations smaller than the floor are never touched at all.
+    @CryptoActor
+    private static func evictToQuota(
+        quota: StorageQuota, transaction: SealedRowTransaction
+    ) throws {
+        var used = try transaction.usedBytes()
+        guard used > quota.maxDatabaseBytes else { return }
+
+        var records = try transaction.listNamespace(Namespace.conversation)
+            .map { try Self.decode(StoredConversation.self, from: $0) }
+
+        func span(_ record: StoredConversation) -> Int {
+            max(0, record.nextOrdinal - record.firstOrdinal)
+        }
+
+        var rounds = 0
+        while used > quota.evictionTargetBytes, rounds < quota.maxEvictionRounds {
+            rounds += 1
+
+            let trimmable = records.indices.filter {
+                span(records[$0]) > quota.minRetainedPerConversation
+            }
+            guard let index = trimmable.max(by: { span(records[$0]) < span(records[$1]) })
+            else { break }
+
+            // Halve rather than shave: each round then reduces one span geometrically, so the
+            // loop converges in a handful of passes instead of thousands of single-row deletes.
+            let target = max(quota.minRetainedPerConversation, span(records[index]) / 2)
+            let group = Self.group(records[index].peer)
+            try Self.trim(&records[index], toAtMost: target, group: group, transaction: transaction)
+            try transaction.store(
+                namespace: Namespace.conversation, group: group, ordinal: Self.singleton,
+                value: try Self.encode(records[index]))
+
+            used = try transaction.usedBytes()
+        }
+
+        if used > quota.maxDatabaseBytes {
+            // Everything is already at the retention floor. Nothing further can be reclaimed
+            // without deleting conversations outright, which is exactly the primitive this
+            // design refuses to give an attacker. The conversation cap is what keeps this
+            // branch unreachable in practice; it is logged rather than thrown because the
+            // append itself is still durable and still safe to acknowledge.
+            AppLog.store.error("the local message store is at its floor and still over quota")
+        }
     }
 
     /// Every message in the conversation, oldest first.
@@ -671,4 +873,8 @@ nonisolated enum ArchiveError: Error, Equatable {
     case unsupportedSchema(Int)
     /// The sealed container refused an operation during an atomic inbound receive.
     case storageUnavailable
+    /// This device already holds `StorageQuota.maxConversations` conversations (AUDIT 4.14).
+    /// Only the user-initiated path throws this; an inbound first message becomes
+    /// `IncomingDisposition.quotaExceeded` instead, because nothing inbound may be retried.
+    case conversationLimitReached
 }

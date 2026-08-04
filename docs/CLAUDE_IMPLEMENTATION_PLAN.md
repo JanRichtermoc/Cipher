@@ -19,8 +19,9 @@ authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_N
 
 ```
 CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
-                P5.S05/S06/S08/S09/S10/S11 done.
-UNMERGED:       P5.S11 erasure remediation is on
+                P5.S05/S06/S08/S09/S10/S11 done. P5.S11 IS NOW COMPLETE —
+                AUDIT 4.13 and 4.14 are both closed.
+UNMERGED:       P5.S11 erasure + storage-quota remediation is on
                 `codex/p5-s11-erasure-remediation`; not merged. The user merges
                 PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
@@ -125,7 +126,30 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 Profile writes cannot reorder across edits or accounts, and
                 committed legacy-file cleanup retries on every open. All eleven
                 guards were independently negative-tested by name. ***
-                114 integration tests + 257 iOS tests, verify-all.sh 12/12.
+                *** P5.S11 STORAGE QUOTA 2026-08-04 — AUDIT 4.14 CLOSED, and
+                P5.S11 is finished. Local storage is bounded three ways at once
+                (256 conversations, 5 000 messages each, 192 MiB logical
+                container measured as page_count - freelist_count so that
+                freeing pages actually lowers it). Retention raises the floor
+                and never rewinds the counter. Eviction takes from the LARGEST
+                conversation, so a flooding peer trims its own history first,
+                and never below a floor of 8, so it cannot delete the message
+                whose append triggered it. All of it commits inside the
+                append's own transaction, so "acknowledge only what is durable"
+                still holds. A first message from a new peer at the cap is
+                quotaExceeded: dropped and ACKed with the ratchet committed —
+                withholding the ack would leave the relay redelivering an
+                envelope that can never decrypt again and would stop every
+                message behind it. FOUND ON THE WAY: two of the new tests
+                passed with the check deleted, because they drove `append`
+                rather than the inbound path that carries the check — R2
+                exactly, caught by negative testing. Both were rewritten
+                against real envelopes in MessageRepositoryTests. New residual
+                recorded as AUDIT 4.15. All eleven guards negative-tested by
+                name. ***
+                114 integration tests + 268 iOS tests, verify-all.sh 12/12.
+                (268 = 161 CipherCrypto XCTest + 77 Cipher XCTest + 30 Swift
+                Testing cases, measured off the verify-all run, not derived.)
                 (257 = 158 CipherCrypto XCTest + 69 Cipher XCTest + 30 Swift
                 Testing cases, measured; earlier revisions undercounted.)
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
@@ -190,13 +214,19 @@ FOUND IN S10:   Four things, all CLOSED, all in AUDIT.md:
                   5.21 Six shipping affordances depicted capabilities that do
                        not exist (calls, attachments, voice recording,
                        delivery/read receipts, linked devices, storage).
-NEXT STEP:      Continue P5.S11 remediation with AUDIT 4.14: enforce an
-                aggregate local-storage quota and bounded retention without
-                acknowledging a message that did not become durable.
-                SECURITY-CRITICAL: hostile peers can currently exhaust device
-                storage, and receive/ack ordering protects message durability.
-                Use the strongest available model. Then continue the recorded
-                P5 audit findings one step at a time before P5.S12 and P5.S13.
+NEXT STEP:      P5.S11 is done. Continue the recorded P5 audit findings one
+                step at a time, in this order, before P5.S12 and P5.S13:
+                AUDIT 5.26 (the pinned client buffers an unbounded response
+                body, follows redirects by default, and misreports cancellation
+                during backoff as a TLS failure) — SECURITY-CRITICAL, it is the
+                remaining hostile-input surface on the transport and the one
+                place a hostile relay still has room. Then 5.27 (relay
+                transaction and input bounds weaker than their API contract),
+                then 1.14 (CI executes a mutable libsignal tag's build scripts
+                before proving which commit it names) — also security-critical,
+                it is a supply-chain ordering defect. 6.14 (gates that can skip
+                or under-prove their named property) should come before any
+                further reliance on those gates.
 STILL HUMAN:    ONE item. The apex A record (FOUND IN S07 item 2) was
                 reported dropped on 2026-07-30 but is STILL SERVED by all four
                 authoritative name.com nameservers — verify with

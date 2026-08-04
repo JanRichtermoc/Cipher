@@ -677,4 +677,115 @@ final class SealedRowStoreTests: XCTestCase {
             XCTAssertEqual(again.withUnsafeBytes { Data($0) }, valueBytes)
         }.value
     }
+
+    // MARK: - Storage accounting (AUDIT 4.14)
+
+    /// The load-bearing SQLite assumption behind the whole quota, asserted rather than believed.
+    ///
+    /// Eviction runs *inside* the transaction that appends the message which triggered it, and
+    /// it decides when to stop by re-reading `usedBytes`. Both halves of that have to be true:
+    /// the freed space must be visible before the commit, and it must be visible as a *fall* in
+    /// the figure. `page_count` alone satisfies neither — SQLite never hands freed pages back to
+    /// the filesystem — so a quota built on it would trip once and then evict on every append
+    /// forever, against a number that never moves. This test is what says the freelist
+    /// subtraction is doing that job.
+    func testFreedSpaceIsVisibleToTheQuotaInsideTheSameTransaction() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root)
+            let payload = Data(repeating: 0xAB, count: 4_000)
+            for ordinal in 0..<400 {
+                try engine.storeSealedRow(
+                    namespace: "msg", group: "peer", ordinal: ordinal, value: payload)
+            }
+
+            try engine.withSealedTransaction { transaction in
+                let before = try transaction.usedBytes()
+                XCTAssertGreaterThan(before, 1_000_000, "400 × 4 KiB should be on disk")
+
+                let removed = try transaction.removeRowsBelow(
+                    namespace: "msg", group: "peer", ordinal: 350)
+                XCTAssertEqual(removed, 350)
+
+                // Before COMMIT. If this only became true afterwards, eviction could never tell
+                // whether it had reclaimed enough and would trim to the floor every time.
+                let after = try transaction.usedBytes()
+                XCTAssertLessThan(
+                    after, before / 2,
+                    "freed pages must leave usedBytes inside the same transaction")
+            }
+
+            // And the survivors are intact and still authenticate in their own slots.
+            let rows = try engine.listSealedRows(namespace: "msg", group: "peer")
+            XCTAssertEqual(rows.map(\.ordinal), Array(350..<400))
+            XCTAssertEqual(rows.first?.value, payload)
+        }.value
+    }
+
+    /// `removeRowsBelow` is a retention primitive, so it must take exactly the rows below the
+    /// floor — in one group, in one namespace, and nothing else.
+    func testTrimmingRemovesOnlyRowsBelowTheFloorInItsOwnGroup() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root)
+            for ordinal in 0..<10 {
+                try engine.storeSealedRow(
+                    namespace: "msg", group: "kept", ordinal: ordinal,
+                    value: Data("kept-\(ordinal)".utf8))
+                try engine.storeSealedRow(
+                    namespace: "msg", group: "trimmed", ordinal: ordinal,
+                    value: Data("trimmed-\(ordinal)".utf8))
+                try engine.storeSealedRow(
+                    namespace: "other", group: "trimmed", ordinal: ordinal,
+                    value: Data("other-\(ordinal)".utf8))
+            }
+
+            try engine.withSealedTransaction { transaction in
+                let removed = try transaction.removeRowsBelow(
+                    namespace: "msg", group: "trimmed", ordinal: 6)
+                XCTAssertEqual(removed, 6)
+            }
+
+            XCTAssertEqual(
+                try engine.listSealedRows(namespace: "msg", group: "trimmed").map(\.ordinal),
+                Array(6..<10))
+            // A different group in the same namespace, and the same group in a different
+            // namespace, are both untouched.
+            XCTAssertEqual(
+                try engine.listSealedRows(namespace: "msg", group: "kept").map(\.ordinal),
+                Array(0..<10))
+            XCTAssertEqual(
+                try engine.listSealedRows(namespace: "other", group: "trimmed").map(\.ordinal),
+                Array(0..<10))
+        }.value
+    }
+
+    /// The conversation cap counts rows, and it is read on the receive path — so it must count
+    /// its own namespace only, and must not unseal anything to do it.
+    func testRowCountCountsOneNamespaceWithoutUnsealing() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root)
+            for index in 0..<7 {
+                try engine.storeSealedRow(
+                    namespace: "conv", group: "peer-\(index)", ordinal: 0,
+                    value: Data("conversation".utf8))
+            }
+            for ordinal in 0..<25 {
+                try engine.storeSealedRow(
+                    namespace: "msg", group: "peer-0", ordinal: ordinal,
+                    value: Data("message".utf8))
+            }
+
+            XCTAssertEqual(try engine.sealedRowCount(namespace: "conv"), 7)
+            XCTAssertEqual(try engine.sealedRowCount(namespace: "msg"), 25)
+            XCTAssertEqual(try engine.sealedRowCount(namespace: "flag"), 0)
+        }.value
+    }
 }
