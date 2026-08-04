@@ -565,8 +565,13 @@ here.
 sudo certbot certonly --webroot -w /var/www/acme \
   -d relay.mgchatman.app \
   --key-type ecdsa --reuse-key \
-  --agree-tos -m jandajhdbahc@seznam.cz --no-eff-email
+  --agree-tos --register-unsafely-without-email
 ```
+
+**No registration email is supplied.** Let's Encrypt ended expiration-notification emails in
+June 2025 and no longer stores email contacts on ACME accounts, so an address provides no renewal
+safety here. `--register-unsafely-without-email` is Certbot's explicit non-interactive opt-out.
+Treat the renewal dry run below and independent certificate-expiry monitoring as the alert path.
 
 **`--reuse-key` is not optional.** Certbot generates a *new* private key on every renewal by
 default. The iOS client pins the SPKI (P5.S08, `BACKEND.md` §9.1 rule 5) and fails closed, so a
