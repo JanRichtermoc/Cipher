@@ -295,6 +295,104 @@ final class MessageRepositoryTests: XCTestCase {
         XCTAssertFalse(RoutedStubRelay.requests("POST /v1/messages/ack").isEmpty)
     }
 
+    /// AUDIT 4.14. A first message from a new peer, arriving at the conversation cap, is
+    /// **dropped and acknowledged** — and that is deliberate, not an oversight.
+    ///
+    /// The ratchet advanced and committed inside the decrypt transaction, so this envelope can
+    /// never be decrypted again. Withholding the acknowledgement would therefore not preserve
+    /// it; it would leave the relay serving the same undecryptable bytes on every cycle, and
+    /// `receiveExclusively` stops taking messages behind a storage failure — so a device at its
+    /// conversation cap would stop receiving from *everyone*. Bounding one peer's first message
+    /// is the smaller loss, and the cap never evicts an existing conversation to reach it.
+    func testAMessageRefusedByTheConversationCapIsStillAcknowledged() async throws {
+        let envelope = try await fixture.envelopeFromPeer("from an unknown peer")
+        let id = UUID()
+        var routes = try await defaultRoutes()
+        routes["GET /v1/messages"] = [
+            .init(status: 200, json: MessagingFixture.fetchBody([(id, envelope)])),
+            .init(status: 200, json: #"{"messages":[],"more":false}"#),
+        ]
+        RoutedStubRelay.reset(routes)
+
+        // Exactly one conversation slot, already spent on somebody else.
+        let archive = ConversationArchive(
+            engine: fixture.engine,
+            quota: ConversationArchive.StorageQuota(
+                maxConversations: 1,
+                maxMessagesPerConversation: 5_000,
+                maxDatabaseBytes: 192 * 1024 * 1024,
+                evictionTargetBytes: 160 * 1024 * 1024,
+                minRetainedPerConversation: 8,
+                maxEvictionRounds: 4_096))
+        let occupant = UUID()
+        _ = try await archive.ensureConversation(occupant, nowMs: 1)
+
+        let client = RoutedStubRelay.client()
+        let repository = MessageRepository(
+            engine: fixture.engine, archive: archive,
+            directory: RelayKeyDirectory(client: client),
+            mailbox: RelayMailbox(client: client),
+            sessions: TestSession.store())
+
+        // Not a thrown storage failure: the cycle completes.
+        let stored = try await repository.receive()
+        XCTAssertEqual(stored, 0)
+
+        let messages = try await repository.messages(with: fixture.peerAci)
+        XCTAssertTrue(messages.isEmpty, "nothing was stored for the refused peer")
+
+        // The occupant is untouched — the cap refuses the newcomer, it does not evict anyone.
+        let ids = try await archive.conversationIds()
+        XCTAssertEqual(ids, [occupant])
+
+        let ack = try XCTUnwrap(RoutedStubRelay.requests("POST /v1/messages/ack").first)
+        XCTAssertTrue(String(decoding: ack, as: UTF8.self).contains(id.uuidString.lowercased()))
+    }
+
+    /// Being at the conversation cap must not stop the conversations that already exist.
+    ///
+    /// This is the `existing == nil` half of the check, and it needs a real envelope to prove:
+    /// an earlier version of this guard lived in `ConversationQuotaTests` and drove
+    /// `archive.append`, which never runs the inbound check at all — so it stayed green with
+    /// the check deleted (AUDIT §0 R2). Without the `existing == nil` condition, one flood of
+    /// unknown peers would take the device off the air for every correspondent it actually has.
+    func testAnEstablishedConversationStillReceivesWhileAtTheConversationCap() async throws {
+        let envelope = try await fixture.envelopeFromPeer("still getting through")
+        let id = UUID()
+        var routes = try await defaultRoutes()
+        routes["GET /v1/messages"] = [
+            .init(status: 200, json: MessagingFixture.fetchBody([(id, envelope)])),
+            .init(status: 200, json: #"{"messages":[],"more":false}"#),
+        ]
+        RoutedStubRelay.reset(routes)
+
+        // One slot, and the sender already occupies it. The store is full; this peer is known.
+        let archive = ConversationArchive(
+            engine: fixture.engine,
+            quota: ConversationArchive.StorageQuota(
+                maxConversations: 1,
+                maxMessagesPerConversation: 5_000,
+                maxDatabaseBytes: 192 * 1024 * 1024,
+                evictionTargetBytes: 160 * 1024 * 1024,
+                minRetainedPerConversation: 8,
+                maxEvictionRounds: 4_096))
+        _ = try await archive.ensureConversation(fixture.peerAci, nowMs: 1)
+
+        let client = RoutedStubRelay.client()
+        let repository = MessageRepository(
+            engine: fixture.engine, archive: archive,
+            directory: RelayKeyDirectory(client: client),
+            mailbox: RelayMailbox(client: client),
+            sessions: TestSession.store())
+
+        let stored = try await repository.receive()
+        XCTAssertEqual(stored, 1, "an established conversation still receives at the cap")
+
+        let messages = try await repository.messages(with: fixture.peerAci)
+        XCTAssertEqual(messages.map(\.text), ["still getting through"])
+        XCTAssertFalse(RoutedStubRelay.requests("POST /v1/messages/ack").isEmpty)
+    }
+
     func testAReceiveTransactionFailureRollsBackTheRatchetSoRetryStoresAndAcknowledges()
         async throws {
         // The single most important branch in the receive path. Acknowledging deletes the relay's

@@ -53,6 +53,13 @@ __pycache__/
 # next. The contract an agent works to IS committed: docs/AGENT_HANDOFF.md.
 .codex/
 
+# Same reasoning, other tool. `.cursor/` was left out when `.codex/` was added, and
+# the omission was not theoretical: the P5.S11 quota commit's `git add -A` staged a
+# `.cursor/debug-e19b4b.log` full of UI telemetry. The rules directory IS project
+# documentation and stays tracked; the transient debug logs beside it do not.
+.cursor/*
+!.cursor/rules/
+
 # Relay secrets. server/.env holds the Postgres and Redis passwords; server/.env.example
 # is the tracked template and holds none.
 #

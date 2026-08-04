@@ -47,8 +47,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=12
-[ "$FAST" -eq 1 ] && TOTAL=9
+TOTAL=13
+[ "$FAST" -eq 1 ] && TOTAL=10
 
 step() {
   STEP=$((STEP + 1))
@@ -87,7 +87,22 @@ if grep -rnE '(^|[^A-Za-z_.])(print|NSLog|debugPrint|dump)[[:space:]]*\(' \
 fi
 echo "  ok    no direct print/NSLog in the crypto module"
 
-# --- 4. Dependency vulnerabilities ------------------------------------------
+# --- 4. Invite-code-only identity -------------------------------------------
+# Locked decision §0.2.7. Cipher collects no phone number, email address, server-side
+# username or verification code, and that has to be a requirement rather than a property
+# that happens to hold — every other messenger has the field, and "sign in with email"
+# looks like three lines of work to someone who has not read THREAT_MODEL.md §3.4.
+#
+# Next to the logging grep because it is the same kind of check: source only, no build,
+# a second to run. Unlike that grep it is not a grep — the prose documenting this decision
+# names every string being forbidden, so comments are stripped by a per-language lexer
+# first (AUDIT R3) and the self-test runs before any all-clear is believed (AUDIT R2).
+step "invite-code-only identity (no phone, email, username or verification code)"
+./Scripts/verify-identity-fields.py --self-test || fail "the identity-field gate cannot be trusted"
+./Scripts/verify-identity-fields.py ||
+  fail "an identity-shaped field reached the account model, auth API, wire format or relay schema (plan §0.2.7)"
+
+# --- 5. Dependency vulnerabilities ------------------------------------------
 # Next to the supply chain, because it answers the other half of that question:
 # step 1 proves the dependencies are the ones we pinned, this one proves that
 # what we pinned has no known reachable hole. `golang.org/x/text` sat here with a
@@ -99,7 +114,7 @@ else
   ./Scripts/verify-vulns.sh || fail "a reachable dependency vulnerability (see the output above)"
 fi
 
-# --- 5. Relay ---------------------------------------------------------------
+# --- 6. Relay ---------------------------------------------------------------
 # Placed here, before anything that invokes xcodebuild, because it takes seconds
 # and the iOS gates take half an hour. A relay defect discovered after a full
 # simulator build is the same defect discovered thirty minutes later.
@@ -110,7 +125,7 @@ fi
 step "relay: build, vet, tests, compose invariants"
 ./Scripts/verify-relay.sh || fail "relay (see docs/BACKEND.md)"
 
-# --- 6. UI honesty and localization drift -----------------------------------
+# --- 7. UI honesty and localization drift -----------------------------------
 # Cipher must not present a control implying protection it does not provide, in any
 # language. See Scripts/verify-localization.py for what it checks and why.
 #
@@ -122,14 +137,14 @@ step "UI honesty and localization drift"
 ./Scripts/verify-localization.py --self-test || fail "the localization gate cannot be trusted"
 ./Scripts/verify-localization.py || fail "a retired claim is rendered, or the string catalog has drifted (docs/AUDIT.md 5.4, 5.11)"
 
-# --- 7. Module boundary -----------------------------------------------------
+# --- 8. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
 ./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
 
-# --- 8. Crypto tests --------------------------------------------------------
+# --- 9. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -192,7 +207,7 @@ grep -q "SessionCredentialTests" "$LOG" ||
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
-# --- 9. App builds ----------------------------------------------------------
+# --- 10. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -205,7 +220,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 10. Release device build ------------------------------------------------
+# --- 11. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then
@@ -221,7 +236,7 @@ if [ "$FAST" -eq 0 ]; then
     fail "Release device build"
   echo "  ok    release arm64 builds"
 
-  # --- 11. No debug affordance survives into a shipping bundle ---------------
+  # --- 12. No debug affordance survives into a shipping bundle ---------------
   # Fencing the *buttons* that drive a debug switch is not the same as fencing the switch:
   # `debugSkipToMain` was a live authentication bypass in Release for exactly that reason
   # (AUDIT 5.6). This asserts against the built artifact, which is the only place the
@@ -260,7 +275,7 @@ if [ "$FAST" -eq 0 ]; then
   [ "$leaked" -eq 0 ] || fail "a debug affordance ships in Release (AUDIT 5.6, 5.11, 5.19)"
   echo "  ok    no debug affordance anywhere in the Release bundle"
 
-  # --- 12. Required-reason APIs are declared ---------------------------------
+  # --- 13. Required-reason APIs are declared ---------------------------------
   # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol
   # surface ships whether Cipher calls it or not — a required-reason API can appear with no
   # source change on our side, and the first sign would otherwise be App Review.
@@ -273,8 +288,8 @@ cat <<'EOF'
 
 All mechanical gates passed.
 
-Still your job — these are judgement, not greps (plan, Standing regression checklist 6-8):
-  6. Groups / sender-key still rejected everywhere they could have crept in
-  7. Identity change: receive trusted, send refused until acceptIdentity names the exact key
-  8. docs/AUDIT.md and the plan's STATUS block updated if anything changed status
+Still your job — these are judgement, not greps (plan, Standing regression checklist 7-9):
+  7. Groups / sender-key still rejected everywhere they could have crept in
+  8. Identity change: receive trusted, send refused until acceptIdentity names the exact key
+  9. docs/AUDIT.md and the plan's STATUS block updated if anything changed status
 EOF

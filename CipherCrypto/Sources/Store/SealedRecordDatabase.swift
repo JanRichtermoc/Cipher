@@ -770,6 +770,78 @@ internal final class SealedRecordDatabase {
         return try pragmaInteger("PRAGMA secure_delete") == 1
     }
 
+    // MARK: - Storage accounting (AUDIT 4.14)
+
+    /// Bytes this database occupies logically — allocated pages, less the ones on the freelist.
+    ///
+    /// **`page_count` alone is the wrong measure, and quietly so.** SQLite never returns freed
+    /// pages to the filesystem: it moves them to an internal freelist and reuses them. So the
+    /// file does not shrink when rows are deleted, and a quota built on `page_count` would latch
+    /// on permanently the first time it tripped — every later append would evict, forever, while
+    /// the figure it was reacting to never moved. Subtracting the freelist gives a number that
+    /// *falls* when rows go away, which is the only kind a quota can use.
+    ///
+    /// Both pragmas are header reads rather than scans, so this is cheap enough to sit on the
+    /// receive path, and both reflect the state of an **open** transaction — which eviction
+    /// depends on, because it has to see the space it just freed in order to know when to stop.
+    /// That is asserted by `testFreedSpaceIsVisibleToTheQuotaInsideTheSameTransaction` rather
+    /// than assumed from the documentation.
+    internal func usedBytes() throws -> Int {
+        CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
+        let pages = try pragmaInteger("PRAGMA page_count")
+        let free = try pragmaInteger("PRAGMA freelist_count")
+        let pageSize = try pragmaInteger("PRAGMA page_size")
+        return max(0, pages - free) * pageSize
+    }
+
+    /// How many rows a namespace holds. Used to bound the number of conversations; a range scan
+    /// over one namespace of the primary key, and only ever called on the small `conv` range.
+    internal func rowCount(namespace: String) throws -> Int {
+        CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
+
+        var count = 0
+        try withStatement("SELECT COUNT(*) FROM sealed_record WHERE namespace = ?") { statement in
+            try bind(statement, 1, text: namespace)
+            guard sqlite3_step(statement) == SQLITE_ROW else {
+                throw SealedDatabaseError.ioFailure("counting rows failed")
+            }
+            count = Int(sqlite3_column_int64(statement, 0))
+        }
+        return count
+    }
+
+    /// Deletes every row in a group below `ordinal`, and reports how many went.
+    ///
+    /// One statement, so a retention trim is not a loop of deletes the caller has to keep
+    /// consistent — and it inherits `noteLogicalDeletion`, so trimmed ciphertext is scrubbed on
+    /// the same terms as any other delete rather than being left recoverable in the WAL.
+    @discardableResult
+    internal func removeRowsBelow(namespace: String, groupTag tag: Data, ordinal: Int) throws
+        -> Int {
+        CryptoActor.assertIsolated()
+        try retrySecureCheckpointIfNeeded()
+
+        let sql = """
+            DELETE FROM sealed_record
+            WHERE namespace = ? AND group_tag = ? AND ordinal < ?
+            """
+        try withStatement(sql) { statement in
+            try bind(statement, 1, text: namespace)
+            try bind(statement, 2, blob: tag)
+            try bind(statement, 3, int: ordinal)
+            guard sqlite3_step(statement) == SQLITE_DONE else {
+                throw SealedDatabaseError.ioFailure("trimming rows failed")
+            }
+        }
+        // Read before `noteLogicalDeletion`, which consults the same counter. No statement runs
+        // in between, so this is still the DELETE's count.
+        let removed = Int(sqlite3_changes(try requireHandle()))
+        try noteLogicalDeletion()
+        return removed
+    }
+
     /// Runs a statement that returns no rows.
     ///
     /// `sqlite3_exec` rather than prepare/step: these are fixed, literal statements with no

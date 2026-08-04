@@ -97,6 +97,16 @@ extension CryptoEngine {
 
     /// Deletes every row in a group. One statement, where the old layout needed the caller to
     /// know every ordinal and issue one unlink each.
+    /// How many rows a namespace holds, without unsealing any of them.
+    ///
+    /// The conversation count is a quota input (AUDIT 4.14) and is read on the receive path, so
+    /// it must not cost one AEAD open per conversation the way `listSealedNamespace` does.
+    public func sealedRowCount(namespace: String) throws -> Int {
+        try requireLive()
+        try Self.validate(namespace: namespace, group: "-")
+        return try store.appDatabase.rowCount(namespace: namespace)
+    }
+
     public func removeSealedGroup(namespace: String, group: String) throws {
         try requireLive()
         try Self.validate(namespace: namespace, group: group)
@@ -209,5 +219,38 @@ public struct SealedRowTransaction {
         try SealedRowSlot.validate(namespace: namespace, group: group)
         try database.removeGroup(
             namespace: namespace, groupTag: database.groupTag(Data(group.utf8)))
+    }
+
+    /// Every row in a namespace. Values only — the group tags stay inside, exactly as on the
+    /// engine's own `listSealedNamespace`, because a blind tag names nobody to a caller anyway.
+    public func listNamespace(_ namespace: String) throws -> [Data] {
+        try SealedRowSlot.validate(namespace: namespace, group: "-")
+        return try database.listNamespace(namespace).map(\.value)
+    }
+
+    // MARK: - Quota (AUDIT 4.14)
+
+    /// Logical size of the whole container, freed pages excluded. See `usedBytes` on the
+    /// database for why the freelist has to come off.
+    public func usedBytes() throws -> Int {
+        try database.usedBytes()
+    }
+
+    public func rowCount(namespace: String) throws -> Int {
+        try SealedRowSlot.validate(namespace: namespace, group: "-")
+        return try database.rowCount(namespace: namespace)
+    }
+
+    /// Drops everything in a group below `ordinal`, returning how many rows went.
+    ///
+    /// Retention lives here, in the transaction handle, rather than on the engine: the trim has
+    /// to commit with the append that made it necessary. Splitting them would mean either a
+    /// message stored outside its own quota or a trim that survived a rolled-back append, and
+    /// the receive path acknowledges on that commit.
+    @discardableResult
+    public func removeRowsBelow(namespace: String, group: String, ordinal: Int) throws -> Int {
+        try SealedRowSlot.validate(namespace: namespace, group: group)
+        return try database.removeRowsBelow(
+            namespace: namespace, groupTag: database.groupTag(Data(group.utf8)), ordinal: ordinal)
     }
 }

@@ -458,6 +458,13 @@ actor MessageRepository {
                 return .dropped
             case .blocked:
                 return .dropped
+            case .quotaExceeded:
+                // Acknowledged deliberately. The ratchet advanced and committed, so this
+                // envelope can never decrypt again; leaving it unacknowledged would have the
+                // relay serve it every cycle and stop every message behind it (AUDIT 4.14).
+                AppLog.store.error(
+                    "the conversation limit is reached; a message from a new peer was dropped")
+                return .dropped
             case .undecryptable:
                 // Deliberately unqualified. Revealing replay versus corruption would let a
                 // hostile relay probe which messages this device has already seen.

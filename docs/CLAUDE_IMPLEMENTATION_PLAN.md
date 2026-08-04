@@ -19,8 +19,11 @@ authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_N
 
 ```
 CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
-                P5.S05/S06/S08/S09/S10/S11 done.
-UNMERGED:       P5.S11 erasure remediation is on
+                P5.S05/S06/S08/S09/S10/S11 done. P5.S11 IS NOW COMPLETE —
+                AUDIT 4.13 and 4.14 are both closed.
+                Invite-code-only identity is now LOCKED DECISION 7 (§0.2).
+UNMERGED:       P5.S11 erasure + storage-quota remediation, and the §0.2.7
+                identity lock on top of it, are on
                 `codex/p5-s11-erasure-remediation`; not merged. The user merges
                 PRs by hand — give them the link and stop.
 DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
@@ -125,7 +128,51 @@ DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
                 Profile writes cannot reorder across edits or accounts, and
                 committed legacy-file cleanup retries on every open. All eleven
                 guards were independently negative-tested by name. ***
-                114 integration tests + 257 iOS tests, verify-all.sh 12/12.
+                *** P5.S11 STORAGE QUOTA 2026-08-04 — AUDIT 4.14 CLOSED, and
+                P5.S11 is finished. Local storage is bounded three ways at once
+                (256 conversations, 5 000 messages each, 192 MiB logical
+                container measured as page_count - freelist_count so that
+                freeing pages actually lowers it). Retention raises the floor
+                and never rewinds the counter. Eviction takes from the LARGEST
+                conversation, so a flooding peer trims its own history first,
+                and never below a floor of 8, so it cannot delete the message
+                whose append triggered it. All of it commits inside the
+                append's own transaction, so "acknowledge only what is durable"
+                still holds. A first message from a new peer at the cap is
+                quotaExceeded: dropped and ACKed with the ratchet committed —
+                withholding the ack would leave the relay redelivering an
+                envelope that can never decrypt again and would stop every
+                message behind it. FOUND ON THE WAY: two of the new tests
+                passed with the check deleted, because they drove `append`
+                rather than the inbound path that carries the check — R2
+                exactly, caught by negative testing. Both were rewritten
+                against real envelopes in MessageRepositoryTests. New residual
+                recorded as AUDIT 4.15. All eleven guards negative-tested by
+                name. ***
+                *** §0.2.7 LOCKED — invite-code-only identity. Cipher already
+                collected no phone number, email, username or verification
+                code; it is now a REQUIREMENT that fails loudly rather than a
+                property that happens to hold. Confirmed from source first: the
+                `accounts` row is aci/identity_key/registration_id/last_seen
+                and nothing else, redeem takes {code, identity_key,
+                registration_id} and returns a server-minted opaque ACI, and
+                the client `username` never leaves the device. Two enforcers,
+                because one cannot reach both halves:
+                LockedDecisionsTests.testIdentityCarriesNoHumanIdentifier pins
+                the wire types by reflection, and the new gate 4,
+                Scripts/verify-identity-fields.py, refuses an identity-shaped
+                field across the whole relay, the wire format and
+                Cipher/Networking. It strips comments with a per-language lexer
+                first (R3 — the prose documenting this decision names every
+                string it forbids) and carries three positive controls (R2).
+                Negative-tested both ways: the script fires on all six
+                surfaces, stays silent on the same words in a comment, and
+                fails when blinded; the test fails BY NAME on a phone field, a
+                verification code, a widened identifier and a decoder that
+                stops rejecting one. Residual recorded as AUDIT 5.31. ***
+                114 integration tests + 269 iOS tests, verify-all.sh 13/13.
+                (269 = 162 CipherCrypto XCTest + 77 Cipher XCTest + 30 Swift
+                Testing cases, measured off the verify-all run, not derived.)
                 (257 = 158 CipherCrypto XCTest + 69 Cipher XCTest + 30 Swift
                 Testing cases, measured; earlier revisions undercounted.)
 STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
@@ -190,13 +237,19 @@ FOUND IN S10:   Four things, all CLOSED, all in AUDIT.md:
                   5.21 Six shipping affordances depicted capabilities that do
                        not exist (calls, attachments, voice recording,
                        delivery/read receipts, linked devices, storage).
-NEXT STEP:      Continue P5.S11 remediation with AUDIT 4.14: enforce an
-                aggregate local-storage quota and bounded retention without
-                acknowledging a message that did not become durable.
-                SECURITY-CRITICAL: hostile peers can currently exhaust device
-                storage, and receive/ack ordering protects message durability.
-                Use the strongest available model. Then continue the recorded
-                P5 audit findings one step at a time before P5.S12 and P5.S13.
+NEXT STEP:      P5.S11 is done. Continue the recorded P5 audit findings one
+                step at a time, in this order, before P5.S12 and P5.S13:
+                AUDIT 5.26 (the pinned client buffers an unbounded response
+                body, follows redirects by default, and misreports cancellation
+                during backoff as a TLS failure) — SECURITY-CRITICAL, it is the
+                remaining hostile-input surface on the transport and the one
+                place a hostile relay still has room. Then 5.27 (relay
+                transaction and input bounds weaker than their API contract),
+                then 1.14 (CI executes a mutable libsignal tag's build scripts
+                before proving which commit it names) — also security-critical,
+                it is a supply-chain ordering defect. 6.14 (gates that can skip
+                or under-prove their named property) should come before any
+                further reliance on those gates.
 STILL HUMAN:    ONE item. The apex A record (FOUND IN S07 item 2) was
                 reported dropped on 2026-07-30 but is STILL SERVED by all four
                 authoritative name.com nameservers — verify with
@@ -284,12 +337,37 @@ Argued in code and in `AUDIT.md`. **Requirements, not bugs.**
    design later, do not sneak it in.
 6. **Keychain `AfterFirstUnlockThisDeviceOnly` + non-synchronizable** (AUDIT 2.1 — ACCEPTED). Do not
    "tighten" to `WhenUnlocked` without an NSE + notification-content redesign.
+7. **Invite-code-only identity** (THREAT_MODEL §3.4 — ACCEPTED) — Cipher collects **no phone
+   number, no email address, no server-side username, and no verification code**. An account comes
+   into existence only by redeeming an invite code, and the `aci` the server mints at redemption is
+   an opaque UUIDv4 with no link to a person. Adding a "sign in with email", an SMS verification
+   step, or a lookup-by-handle is a threat-model change, not a feature.
+   - **Rationale.** An identifier that is never collected cannot be leaked, correlated against
+     another service, subpoenaed, or used to enumerate the user base — which is why `BACKEND.md`
+     §2.1 lists `display_name`, `username` and `about` under **"Absent on purpose"** and why the
+     `aci` row says an opaque identifier "with no link to a person, phone, email, or device … is
+     the whole point of §3.4". It also removes server-side contact discovery entirely, historically
+     the largest metadata leak in messengers that have it. And a phone or mail flow would put a
+     **third party** inside a design that has none: an SMS or mail provider learns who signed up,
+     when, and from where, and is itself seizable under §1.1 — an adversary Cipher's own controls
+     (pinning, E2E) do not reach, because the leak happens before any of them apply.
+   - **Not in scope, deliberately:** the *local* profile — display name, username, "about" — is
+     client-side only, sealed by `ProfileArchive`, and never sent anywhere. This decision is about
+     what Cipher **collects**, not what someone types for themselves.
 
 **Enforced, not merely documented.** `CipherCryptoTests/LockedDecisionsTests.swift` fails if any is
 quietly "fixed", with a message saying why it was that way. Its header table maps each decision to
 the test pinning it. Decisions 1 and 6 were already covered behaviourally (`ProtocolStoreTests`,
-`KeychainTests`); 2–5 are pinned there. Conformance and predicate checks carry positive controls, so
-a check that stops working fails loudly instead of passing vacuously.
+`KeychainTests`); 2–5 and the wire half of 7 are pinned there. Conformance, predicate and
+reflection checks carry positive controls, so a check that stops working fails loudly instead of
+passing vacuously.
+
+Decision 7 needs a second enforcer, because most of its surface is outside `CipherCrypto` and no
+Swift unit test can reach it: the account model, the auth API and the relay schema are Go and SQL.
+`Scripts/verify-identity-fields.py` (gate 4 of `verify-all.sh`) is that half — it refuses an
+identity-shaped field name in those four surfaces, strips comments first so it does not fire on the
+prose describing the decision (AUDIT **R3**), and carries positive controls so a blinded scanner
+fails instead of reporting a clean tree it never read (AUDIT **R2**).
 
 ## 0.3 Genuinely OPEN items
 
@@ -643,16 +721,18 @@ production VPS before staging E2E works.
 
 ## Standing regression checklist (every PR)
 
-`./Scripts/verify-all.sh` runs 1–5 serialized. Items 6–8 are judgement and stay manual.
+`./Scripts/verify-all.sh` runs 1–6 serialized. Items 7–9 are judgement and stay manual.
 
 1. `Scripts/verify-supply-chain.sh`
 2. App-target manifest gate
 3. CipherCrypto tests (app-hosted, serialized per simulator)
 4. Cipher build
 5. Locked-decision tests + plaintext-logging grep
-6. Confirm groups/sender-key still rejected
-7. Confirm identity-change policy: receive trusted, send refused until exact `acceptIdentity`
-8. Update `AUDIT.md` and the STATUS block if status changed
+6. `Scripts/verify-identity-fields.py` — no phone/email/username/verification-code field in
+   the relay, the wire format or `Cipher/Networking` (§0.2.7)
+7. Confirm groups/sender-key still rejected
+8. Confirm identity-change policy: receive trusted, send refused until exact `acceptIdentity`
+9. Update `AUDIT.md` and the STATUS block if status changed
 
 ---
 
@@ -663,7 +743,7 @@ production VPS before staging E2E works.
 | Crypto façade | `CipherCrypto/Sources/Engine/CryptoEngine.swift` |
 | Store / Keychain | `CipherCrypto/Sources/Store/*` |
 | Envelope | `CipherCrypto/Sources/Wire/Envelope.swift` |
-| Locked decisions | `CipherCryptoTests/LockedDecisionsTests.swift` |
+| Locked decisions | `CipherCryptoTests/LockedDecisionsTests.swift`, and for §0.2.7 also `Scripts/verify-identity-fields.py` |
 | Threat model | `docs/THREAT_MODEL.md` |
 | Audit ledger | `docs/AUDIT.md` |
 | Supply chain | `Vendor/libsignal/*`, `Scripts/verify-supply-chain.sh`, `Podfile` |
