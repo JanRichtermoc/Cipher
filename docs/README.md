@@ -54,6 +54,7 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 | Document | Purpose and authority | Kind | Read when | Mutable? |
 |---|---|---|---|---|
 | [`../CLAUDE.md`](../CLAUDE.md) | Permanent project behavior for Claude Code. | Normative instruction | Every session; automatic. | No |
+| [`CLAUDE_CODE_SESSION_PROMPT.md`](CLAUDE_CODE_SESSION_PROMPT.md) | Copyable fresh-session bootstrap that grants one-step continuation, routes optional personal plugins, and points to canonical sources without duplicating status. | Human entry point | Paste into a new local Claude Code session. | No |
 | [`README.md`](README.md) | Document authority, precedence, and reading routes. | Normative index | Every task. | No |
 | [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) | Stable human-readable execution, verification, operator, commit, and PR guide. Root `CLAUDE.md` owns the contract; the plan and audit own current state. | Operational guide | Any non-trivial change or release handoff. | No |
 | [`CLAUDE_IMPLEMENTATION_PLAN.md`](CLAUDE_IMPLEMENTATION_PLAN.md) | Current phase, locked decisions, open-item summary, and roadmap step definitions. | Current status + normative roadmap | Every roadmap task. | Yes |
@@ -82,6 +83,8 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 
 ## Tool-specific and third-party material
 
+- `CLAUDE_CODE_SESSION_PROMPT.md` names optional user-installed plugins as capability-routing hints.
+  It does not make them project dependencies, enable them, or grant them authority over this map.
 - `.cursor/rules/project-authority.mdc` is retained for Cursor and owns no project facts; it only
   loads the permanent contract and routes tasks through this documentation map.
 - `.codex/` and `.claude/settings.local.json` are machine-local and must not be committed.
