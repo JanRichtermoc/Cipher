@@ -108,6 +108,17 @@ final class SessionCredentialTests: XCTestCase {
         XCTAssertNil(defaults.object(forKey: "cipher.isAuthenticated"))
     }
 
+    func testTheRetiredNotificationPreviewPreferenceIsCleared() {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+
+        defaults.set(true, forKey: "cipher.notificationPreviews")
+        _ = AppSession(sessions: store, defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: "cipher.notificationPreviews"),
+                     "an inert preference must not survive as apparently meaningful state")
+    }
+
     // MARK: - Presence is the state
 
     func testCredentialPresenceIsTheAuthenticationState() throws {

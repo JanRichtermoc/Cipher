@@ -284,17 +284,16 @@ catch up.
 | `token_nonce` | `BYTEA NOT NULL` | Per-row nonce for the above. Stored because it must be, and it is not secret. | Nothing. |
 | `rotated_at` | `DATE NOT NULL` | Drives the rotation policy in §3.3 of the threat model. Day resolution. | The day a token was last rotated. |
 
-> **A correction to `THREAT_MODEL.md` §3.3.** That section says to store the push token *hashed*.
-> That is not implementable: the token must be replayed verbatim to APNs, so a one-way function
-> cannot be used. This is not a small wording slip — "hashed" would read as a stronger guarantee than
+> **Why encryption rather than hashing.** The token must be replayed verbatim to APNs, so a one-way
+> function cannot be used. Calling the stored value “hashed” would promise a stronger guarantee than
 > anything achievable here.
 >
 > The strongest achievable property is encryption at rest under a key that is not in the database, so
 > that a Postgres dump, a backup, or a stolen replica is insufficient on its own. **It does not
 > defeat §1.1 host seizure**, where the process environment is seized along with the disk. The
 > controls that do the real work there are the ones §3.3 already names and this schema implements:
-> rotate, and delete with the account. Recorded as a finding in [`AUDIT.md`](AUDIT.md) so the threat
-> model is amended rather than quietly diverged from.
+> rotate, and delete with the account. `THREAT_MODEL.md` §3.3 and [`AUDIT.md`](AUDIT.md) 6.10 record
+> the correction and its limit.
 
 ---
 

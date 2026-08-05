@@ -221,16 +221,6 @@
         }
       }
     },
-    "Badges": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odznaky"
-          }
-        }
-      }
-    },
     "Block": {
       "localizations": {
         "cs": {
@@ -352,16 +342,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cipher nemohl zapsat do svého zašifrovaného úložiště, nic se proto nezměnilo."
-          }
-        }
-      }
-    },
-    "Cipher does not send notifications yet. None of these settings does anything.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cipher zatím neposílá oznámení. Žádné z těchto nastavení nic nedělá."
           }
         }
       }
@@ -1084,16 +1064,6 @@
         }
       }
     },
-    "Notifications": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Oznámení"
-          }
-        }
-      }
-    },
     "Off": {
       "localizations": {
         "cs": {
@@ -1152,16 +1122,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Připnout"
-          }
-        }
-      }
-    },
-    "Preview build: messages are not encrypted yet and are not sent anywhere. Do not use Cipher for anything you need kept private.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ukázkové sestavení: zprávy zatím nejsou šifrované a nikam se neodesílají. Nepoužívejte Cipher na nic, co má zůstat soukromé."
           }
         }
       }
@@ -1398,37 +1358,7 @@
         }
       }
     },
-    "Show Preview": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zobrazit náhled"
-          }
-        }
-      }
-    },
     "Simulate incoming call": {},
-    "So you know when a friend messages you. Cipher never puts message text in the notification payload.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Ať víte, když vám kamarád napíše. Cipher do notifikací nikdy nedává text zprávy."
-          }
-        }
-      }
-    },
-    "Sounds": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zvuky"
-          }
-        }
-      }
-    },
     "Speaker": {},
     "Start Conversation": {
       "localizations": {
@@ -1767,16 +1697,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Hlasová zpráva"
-          }
-        }
-      }
-    },
-    "When they arrive, the server payload will carry no message content — previews are rendered on-device, after decryption, and default to off.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Až budou k dispozici, nebude přenos ze serveru obsahovat žádný obsah zprávy — náhledy se vykreslují v zařízení až po dešifrování a ve výchozím stavu jsou vypnuté."
           }
         }
       }

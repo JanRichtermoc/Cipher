@@ -62,11 +62,9 @@ struct SettingsHubView: View {
                     } label: {
                         SettingsRow(title: "Appearance", systemImage: "paintbrush.fill", tint: .pink)
                     }
-                    NavigationLink {
-                        NotificationSettingsView()
-                    } label: {
-                        SettingsRow(title: "Notifications", systemImage: "bell.badge.fill", tint: .red)
-                    }
+                    // Push, permission requests and local preview rendering do not exist until
+                    // P7/P8. Keep notification controls out of Release until they have a mechanism
+                    // to configure; a disabled form still advertises a product surface (AUDIT 5.30).
                     NavigationLink {
                         ChatsSettingsView()
                     } label: {
@@ -223,32 +221,6 @@ struct AppearanceSettingsView: View {
             }
         }
         .navigationTitle("Appearance")
-    }
-}
-
-struct NotificationSettingsView: View {
-    @Environment(AppSession.self) private var session
-    @State private var sounds = true
-    @State private var badges = true
-
-    var body: some View {
-        @Bindable var session = session
-        Form {
-            // The old footer described the intended design in the present tense, which read
-            // as a guarantee. There are no notifications at all yet.
-            Section {
-                Toggle("Show Preview", isOn: $session.notificationPreviewsEnabled)
-                Toggle("Sounds", isOn: $sounds)
-                Toggle("Badges", isOn: $badges)
-            } footer: {
-                VStack(alignment: .leading, spacing: 8) {
-                    UnimplementedNotice("Cipher does not send notifications yet. None of these settings does anything.")
-                    Text("When they arrive, the server payload will carry no message content — previews are rendered on-device, after decryption, and default to off.")
-                }
-            }
-            .disabled(true)
-        }
-        .navigationTitle("Notifications")
     }
 }
 
