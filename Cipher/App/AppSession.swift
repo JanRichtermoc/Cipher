@@ -40,9 +40,6 @@ final class AppSession {
             if !appLockEnabled { isAppLocked = false }
         }
     }
-    var defaultDisappearingSeconds: Int {
-        didSet { defaults.set(defaultDisappearingSeconds, forKey: Keys.disappearing) }
-    }
     /// The local user's own profile fields.
     ///
     /// **Sealed, not in `UserDefaults`** since P5.S11 — see `ProfileArchive` and AUDIT 4.7. They
@@ -83,7 +80,6 @@ final class AppSession {
     private enum Keys {
         static let onboarding = "cipher.hasCompletedOnboarding"
         static let appLock = "cipher.appLockEnabled"
-        static let disappearing = "cipher.defaultDisappearing"
         static let displayName = "cipher.displayName"
         static let username = "cipher.username"
         static let about = "cipher.about"
@@ -130,10 +126,14 @@ final class AppSession {
         // like an implemented privacy decision to a future migration.
         defaults.removeObject(forKey: "cipher.notificationPreviews")
 
+        // The default disappearing-message timer was also write-only: the composer and
+        // repository never read it, and no deletion mechanism exists yet. Remove old values
+        // with the retired control so this cannot masquerade as an enforced retention choice.
+        defaults.removeObject(forKey: "cipher.defaultDisappearing")
+
         let lockEnabled = defaults.object(forKey: Keys.appLock) as? Bool ?? false
         self.hasCompletedOnboarding = defaults.bool(forKey: Keys.onboarding)
         self.appLockEnabled = lockEnabled
-        self.defaultDisappearingSeconds = defaults.object(forKey: Keys.disappearing) as? Int ?? 0
         // Placeholders. The real values are sealed in the container and arrive via
         // `adoptProfileStorage`, which also moves anything a pre-P5.S11 build left in the plist
         // and then deletes it. They are not read from `defaults` here even as a fallback: doing

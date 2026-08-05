@@ -57,28 +57,13 @@ struct SettingsHubView: View {
                     } label: {
                         SettingsRow(title: "Linked Devices", systemImage: "laptopcomputer.and.iphone", tint: .indigo)
                     }
-                    NavigationLink {
-                        AppearanceSettingsView()
-                    } label: {
-                        SettingsRow(title: "Appearance", systemImage: "paintbrush.fill", tint: .pink)
-                    }
                     // Push, permission requests and local preview rendering do not exist until
                     // P7/P8. Keep notification controls out of Release until they have a mechanism
                     // to configure; a disabled form still advertises a product surface (AUDIT 5.30).
                     NavigationLink {
-                        ChatsSettingsView()
-                    } label: {
-                        SettingsRow(title: "Chats", systemImage: "bubble.left.and.bubble.right.fill", tint: CipherTheme.accent)
-                    }
-                    NavigationLink {
                         PrivacySecurityView()
                     } label: {
                         SettingsRow(title: "Privacy & Security", systemImage: "lock.shield.fill", tint: .green)
-                    }
-                    NavigationLink {
-                        StorageSettingsView()
-                    } label: {
-                        SettingsRow(title: "Storage", systemImage: "internaldrive.fill", tint: .orange)
                     }
                 }
 
@@ -199,48 +184,6 @@ struct LinkedDevicesView: View {
     }
 }
 
-struct AppearanceSettingsView: View {
-    @State private var followSystem = true
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("Match System Appearance", isOn: $followSystem)
-            } footer: {
-                Text("Cipher uses system Dynamic Type and Liquid Glass materials automatically.")
-            }
-            Section("Accent") {
-                HStack(spacing: 12) {
-                    Circle().fill(CipherTheme.accent).frame(width: 28, height: 28)
-                        .overlay(Circle().strokeBorder(.primary, lineWidth: 2))
-                    Circle().fill(Color.blue).frame(width: 28, height: 28)
-                    Circle().fill(Color.orange).frame(width: 28, height: 28)
-                    Circle().fill(Color.mint).frame(width: 28, height: 28)
-                }
-                .padding(.vertical, 4)
-            }
-        }
-        .navigationTitle("Appearance")
-    }
-}
-
-struct ChatsSettingsView: View {
-    @State private var enterIsSend = false
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle("Enter Key Sends", isOn: $enterIsSend)
-                NavigationLink("Archived Chats") {
-                    EmptyStateView(systemImage: "archivebox", title: "No Archives", message: "Archived chats will appear here.")
-                }
-                Button("Export Chat History") {}
-            }
-        }
-        .navigationTitle("Chats")
-    }
-}
-
 struct PrivacySecurityView: View {
     @Environment(AppSession.self) private var session
     @Environment(ConversationStore.self) private var store
@@ -271,16 +214,6 @@ struct PrivacySecurityView: View {
                 if session.appLockEnabled {
                     Button("Lock Now") { session.lockIfNeeded() }
                 }
-            }
-
-            Section("Disappearing Messages") {
-                Picker("Default Timer", selection: $session.defaultDisappearingSeconds) {
-                    Text("Off").tag(0)
-                    Text("1 hour").tag(3600)
-                    Text("1 day").tag(86_400)
-                    Text("1 week").tag(604_800)
-                }
-                .unimplemented("Messages are not deleted yet. Nothing reads this setting.")
             }
 
             // Blocking is local and real: `MessageRepository` refuses to send to a blocked peer,
@@ -319,32 +252,8 @@ struct PrivacySecurityView: View {
                     .navigationTitle("Registration Lock")
                 }
             }
-
-            Section("Sessions") {
-                NavigationLink("Manage Sessions") {
-                    LinkedDevicesView()
-                }
-            }
         }
         .navigationTitle("Privacy & Security")
-        .onChange(of: session.appLockEnabled) { _, enabled in
-            // Clearing the lock when the toggle goes off is `appLockEnabled`'s own
-            // business now — see AppSession. Doing it here as well would be a second
-            // place that can unlock the app.
-        }
-    }
-}
-
-struct StorageSettingsView: View {
-    var body: some View {
-        Form {
-            // The three figures here were constants — 24 MB, 180 MB, 6 MB — identical on every
-            // install, next to two buttons with empty actions. Nothing measured anything.
-            Section {
-                UnimplementedNotice("Storage reporting is not implemented yet. The figures that used to be here were fixed numbers compiled into the app, not a measurement of this device.")
-            }
-        }
-        .navigationTitle("Storage")
     }
 }
 

@@ -126,16 +126,6 @@
         }
       }
     },
-    "Accent": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Akcent"
-          }
-        }
-      }
-    },
     "Accept": {},
     "All": {
       "localizations": {
@@ -157,42 +147,12 @@
         }
       }
     },
-    "Appearance": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vzhled"
-          }
-        }
-      }
-    },
     "Apple Design Resources": {
       "localizations": {
         "cs": {
           "stringUnit": {
             "state": "translated",
             "value": "Designové zdroje Apple"
-          }
-        }
-      }
-    },
-    "Archived Chats": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Archivované chaty"
-          }
-        }
-      }
-    },
-    "Archived chats will appear here.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Archivované chaty se zobrazí tady."
           }
         }
       }
@@ -303,16 +263,6 @@
         }
       }
     },
-    "Chats": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Chaty"
-          }
-        }
-      }
-    },
     "Cipher": {
       "extractionState": "manual",
       "localizations": {
@@ -392,16 +342,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Cipher šifruje a dešifruje na vašem zařízení. Server přeposílá šifrovaný text, který neumí přečíst, a každou zprávu smaže, jakmile vaše zařízení potvrdí její doručení."
-          }
-        }
-      }
-    },
-    "Cipher uses system Dynamic Type and Liquid Glass materials automatically.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cipher automaticky používá systémový Dynamic Type a materiály Liquid Glass."
           }
         }
       }
@@ -538,16 +478,6 @@
       }
     },
     "Decline": {},
-    "Default Timer": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Výchozí časovač"
-          }
-        }
-      }
-    },
     "Delete": {
       "localizations": {
         "cs": {
@@ -625,26 +555,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vstoupit do Cipher"
-          }
-        }
-      }
-    },
-    "Enter Key Sends": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Enter odesílá"
-          }
-        }
-      }
-    },
-    "Export Chat History": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Exportovat historii chatů"
           }
         }
       }
@@ -839,32 +749,12 @@
         }
       }
     },
-    "Manage Sessions": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Spravovat relace"
-          }
-        }
-      }
-    },
     "Mark Unread": {
       "localizations": {
         "cs": {
           "stringUnit": {
             "state": "translated",
             "value": "Označit jako nepřečtené"
-          }
-        }
-      }
-    },
-    "Match System Appearance": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Podle systému"
           }
         }
       }
@@ -877,16 +767,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Zpráva"
-          }
-        }
-      }
-    },
-    "Messages are not deleted yet. Nothing reads this setting.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zprávy se zatím nemažou. Toto nastavení nikdo nečte."
           }
         }
       }
@@ -968,16 +848,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Další"
-          }
-        }
-      }
-    },
-    "No Archives": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Žádný archiv"
           }
         }
       }
@@ -1328,16 +1198,6 @@
         }
       }
     },
-    "Sessions": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Relace"
-          }
-        }
-      }
-    },
     "Set a device passcode to use the app lock.": {
       "localizations": {
         "cs": {
@@ -1386,26 +1246,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Začínám…"
-          }
-        }
-      }
-    },
-    "Storage": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Úložiště"
-          }
-        }
-      }
-    },
-    "Storage reporting is not implemented yet. The figures that used to be here were fixed numbers compiled into the app, not a measurement of this device.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Přehled úložiště zatím není implementován. Čísla, která tu byla, byla pevně zakompilovaná do aplikace, nešlo o měření tohoto zařízení."
           }
         }
       }
