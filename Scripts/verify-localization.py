@@ -74,6 +74,24 @@ DENY = [
     ("Vybrat fotku", "Czech rendering of the retired no-op profile-photo control"),
     ("Contact support", "Cipher has no configured support channel (AUDIT 5.30)"),
     ("Kontaktovat podporu", "Czech rendering of the retired placeholder support control"),
+    (
+        "Preview build: messages are not encrypted yet",
+        "the production messaging path encrypts through CipherCrypto (AUDIT 5.3)",
+    ),
+    (
+        "Ukázkové sestavení: zprávy zatím nejsou šifrované",
+        "Czech rendering of the retired pre-encryption build warning",
+    ),
+    ("Show Preview", "notification previews do not exist until P8.S03 (AUDIT 5.30)"),
+    ("Zobrazit náhled", "Czech rendering of the inert notification-preview control"),
+    (
+        "So you know when a friend messages you",
+        "onboarding cannot promise notifications before push exists (AUDIT 5.30)",
+    ),
+    (
+        "Ať víte, když vám kamarád napíše",
+        "Czech rendering of the premature notification promise",
+    ),
 ]
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
@@ -593,6 +611,66 @@ SELF_TESTS = [
             }
         },
         "'Kontaktovat podporu'",
+    ),
+    (
+        "C: retired pre-encryption build warning",
+        {"Preview build: messages are not encrypted yet.": (False, "X.swift:1")},
+        {"Preview build: messages are not encrypted yet.": {}},
+        "'Preview build: messages are not encrypted yet'",
+    ),
+    (
+        "C: retired Czech pre-encryption build warning",
+        {"Messaging is encrypted.": (False, "X.swift:1")},
+        {
+            "Messaging is encrypted.": {
+                "localizations": {
+                    "cs": {
+                        "stringUnit": {
+                            "value": "Ukázkové sestavení: zprávy zatím nejsou šifrované."
+                        }
+                    }
+                }
+            }
+        },
+        "'Ukázkové sestavení: zprávy zatím nejsou šifrované'",
+    ),
+    (
+        "C: retired notification-preview control",
+        {"Show Preview": (False, "X.swift:1")},
+        {"Show Preview": {}},
+        "'Show Preview'",
+    ),
+    (
+        "C: retired Czech notification-preview control",
+        {"Notification privacy": (False, "X.swift:1")},
+        {
+            "Notification privacy": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Zobrazit náhled"}}
+                }
+            }
+        },
+        "'Zobrazit náhled'",
+    ),
+    (
+        "C: premature onboarding notification promise",
+        {"So you know when a friend messages you.": (False, "X.swift:1")},
+        {"So you know when a friend messages you.": {}},
+        "'So you know when a friend messages you'",
+    ),
+    (
+        "C: premature Czech onboarding notification promise",
+        {"Notifications are future work.": (False, "X.swift:1")},
+        {
+            "Notifications are future work.": {
+                "localizations": {
+                    "cs": {
+                        "stringUnit": {"value": "Ať víte, když vám kamarád napíše."}
+                    }
+                }
+            }
+        },
+        "'Ať víte, když vám kamarád napíše'",
     ),
     (
         "C: retired placeholder support address",

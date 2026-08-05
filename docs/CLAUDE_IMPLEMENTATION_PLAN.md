@@ -393,7 +393,7 @@ the hostile/seizable-server model (`THREAT_MODEL.md` §0) makes this load-bearin
 |----|------|-------|--------|-----------|--------|
 | **P7.S01** | **Sealed sender.** libsignal already ships it (`Pods/LibSignalClient/swift/Sources/LibSignalClient/SealedSender.swift`), so this is wiring plus a server-issued sender-certificate scheme — **not new cryptography**. `Envelope`'s `wireVersion` + reserved type space exists precisely so this arrives without a wire break. | AI | 3.4 | Server cannot determine the sender of a relayed message; test proves it | Invent a certificate format |
 | **P7.S02** | Length bucketing: pad ciphertext to fixed buckets before relay. `Envelope` caps at 64 KB, so the bucket set is bounded. | AI | — | Wire lengths take a small fixed set of values | Claim it defeats a global adversary |
-| **P7.S03** | Push-token hardening: hash the token↔account mapping, rotate it, delete it with the account. It is metadata that survives message deletion. | AI | — | No plaintext push token at rest; rotation tested | Let it outlive the account |
+| **P7.S03** | Push-token hardening: encrypt the replayable token under a service key held outside the database, rotate it, and delete it with the account. It is metadata that survives message deletion; encryption at rest does not defeat whole-host seizure (`THREAT_MODEL.md` §3.3). | AI | — | A database dump has no plaintext push token; rotation and account deletion are tested | Hash a token APNs must receive verbatim; let it outlive the account |
 
 **Exit criteria:**
 - [ ] AUDIT 3.4 closed or formally ACCEPTED with rationale

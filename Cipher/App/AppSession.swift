@@ -43,9 +43,6 @@ final class AppSession {
     var defaultDisappearingSeconds: Int {
         didSet { defaults.set(defaultDisappearingSeconds, forKey: Keys.disappearing) }
     }
-    var notificationPreviewsEnabled: Bool {
-        didSet { defaults.set(notificationPreviewsEnabled, forKey: Keys.previews) }
-    }
     /// The local user's own profile fields.
     ///
     /// **Sealed, not in `UserDefaults`** since P5.S11 — see `ProfileArchive` and AUDIT 4.7. They
@@ -87,7 +84,6 @@ final class AppSession {
         static let onboarding = "cipher.hasCompletedOnboarding"
         static let appLock = "cipher.appLockEnabled"
         static let disappearing = "cipher.defaultDisappearing"
-        static let previews = "cipher.notificationPreviews"
         static let displayName = "cipher.displayName"
         static let username = "cipher.username"
         static let about = "cipher.about"
@@ -128,11 +124,16 @@ final class AppSession {
         // Its stored value goes too, so it cannot look meaningful to a future reader.
         defaults.removeObject(forKey: "cipher.screenshotWarning")
 
+        // Notification onboarding and its preview toggle were removed because Cipher has no
+        // push or local-notification mechanism yet. The preference was write-only and even
+        // defaulted to true, contrary to P8.S03. Remove old values so an inert flag cannot look
+        // like an implemented privacy decision to a future migration.
+        defaults.removeObject(forKey: "cipher.notificationPreviews")
+
         let lockEnabled = defaults.object(forKey: Keys.appLock) as? Bool ?? false
         self.hasCompletedOnboarding = defaults.bool(forKey: Keys.onboarding)
         self.appLockEnabled = lockEnabled
         self.defaultDisappearingSeconds = defaults.object(forKey: Keys.disappearing) as? Int ?? 0
-        self.notificationPreviewsEnabled = defaults.object(forKey: Keys.previews) as? Bool ?? true
         // Placeholders. The real values are sealed in the container and arrive via
         // `adoptProfileStorage`, which also moves anything a pre-P5.S11 build left in the plist
         // and then deletes it. They are not read from `defaults` here even as a fallback: doing

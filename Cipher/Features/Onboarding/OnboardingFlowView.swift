@@ -12,7 +12,6 @@ struct OnboardingFlowView: View {
     enum Step: Hashable {
         case welcome
         case privacy
-        case permissions
     }
 
     var body: some View {
@@ -22,9 +21,7 @@ struct OnboardingFlowView: View {
                 case .welcome:
                     WelcomeView(onContinue: { step = .privacy })
                 case .privacy:
-                    PrivacyCarouselView(onContinue: { step = .permissions })
-                case .permissions:
-                    PermissionsView(onContinue: {
+                    PrivacyCarouselView(onContinue: {
                         session.completeOnboarding()
                     })
                 }
@@ -140,14 +137,6 @@ struct PrivacyCarouselView: View {
             }
             .tabViewStyle(.page(indexDisplayMode: .always))
 
-            // The pillars above describe the destination. This says where the build
-            // actually is, on the same screen, so no one reads them as a promise already
-            // kept. Removed by P5.S14, when messaging genuinely runs through CryptoEngine.
-            UnimplementedNotice(
-                "Preview build: messages are not encrypted yet and are not sent anywhere. Do not use Cipher for anything you need kept private."
-            )
-            .padding(.horizontal, CipherTheme.spacingXL)
-
             PrimaryGlassButton(title: page < pages.count - 1 ? "Continue" : "Next") {
                 if page < pages.count - 1 {
                     withAnimation { page += 1 }
@@ -159,31 +148,6 @@ struct PrivacyCarouselView: View {
             .padding(.bottom, CipherTheme.spacingXL)
         }
         .navigationTitle("Privacy")
-        .navigationBarTitleDisplayMode(.inline)
-    }
-}
-
-struct PermissionsView: View {
-    var onContinue: () -> Void
-    @State private var notificationsOn = true
-
-    var body: some View {
-        Form {
-            Section {
-                Toggle(isOn: $notificationsOn) {
-                    Label("Notifications", systemImage: "bell.badge.fill")
-                }
-            } footer: {
-                Text("So you know when a friend messages you. Cipher never puts message text in the notification payload.")
-            }
-        }
-        .safeAreaInset(edge: .bottom) {
-            PrimaryGlassButton(title: "Continue", systemImage: "checkmark") {
-                onContinue()
-            }
-            .padding()
-        }
-        .navigationTitle("Notifications")
         .navigationBarTitleDisplayMode(.inline)
     }
 }
