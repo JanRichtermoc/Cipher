@@ -85,8 +85,12 @@ nonisolated struct InviteRedemption: Sendable {
     ///   this account. Injected rather than opened here so a test can drive the whole flow
     ///   against a temporary container.
     func redeem(code: String, using engine: CryptoEngine) async throws -> Redeemed {
-        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw Failure.refused }
+        // Checked before the request, not by it: `POST /v1/invite/redeem` is the only per-IP
+        // limit the relay has (5/hour), and it is the only flow an unauthenticated install
+        // can use — so four mistyped codes would lock the user out of onboarding for an hour.
+        // ``InviteCode`` mirrors the relay's own parser; see its type comment for why the
+        // mirror is written to be no stricter than the original.
+        guard let parsed = InviteCode(code) else { throw Failure.refused }
 
         let identityKey: Data
         let registrationId: UInt32
@@ -103,7 +107,9 @@ nonisolated struct InviteRedemption: Sendable {
             throw Failure.malformedResponse
         }
 
-        let payload = RedeemRequest(code: trimmed,
+        // The canonical form, which is what the relay's parser would have produced from what
+        // the user typed — separators and transcription substitutions already resolved.
+        let payload = RedeemRequest(code: parsed.canonical,
                                     identityKey: identityKey.base64EncodedString(),
                                     registrationId: registrationId)
 
@@ -124,6 +130,13 @@ nonisolated struct InviteRedemption: Sendable {
         let response: RelayClient.Response
         do {
             response = try await client.send(request)
+        } catch RelayClient.TransportError.responseTooLarge {
+            throw Failure.malformedResponse
+        } catch is CancellationError {
+            // See `RelayMailbox.perform`: a cancelled caller is not an unreachable relay, and
+            // must not become one — the copy for an unreachable relay during redemption is
+            // the one that follows a refused pin.
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }
@@ -249,6 +262,12 @@ nonisolated struct SessionLifecycle: Sendable {
             response = try await client.send(RelayRequest(
                 method: "POST", path: "/v1/auth/rotate", bearerToken: token,
                 isIdempotent: false))
+        } catch RelayClient.TransportError.responseTooLarge {
+            throw Failure.malformedResponse
+        } catch is CancellationError {
+            // Rotation is single-flight and non-retrying: a cancelled attempt must leave the
+            // current credential in place, which reporting it as a failure would not.
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }

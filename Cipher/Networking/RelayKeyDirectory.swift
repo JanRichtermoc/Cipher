@@ -75,12 +75,38 @@ nonisolated struct RelayKeyDirectory: Sendable {
 
         switch response.status {
         case 200:
-            return
+            break
         case 401:
             throw Failure.unauthenticated
         case 429:
             throw Failure.rateLimited
         default:
+            throw Failure.malformedResponse
+        }
+
+        let decoded: PublishResponse
+        do {
+            decoded = try JSONDecoder().decode(PublishResponse.self, from: response.body)
+        } catch {
+            throw Failure.malformedResponse
+        }
+
+        // What this checks, and what it deliberately does not.
+        //
+        // The relay reports the account's own remaining pool sizes after the upload commits.
+        // A negative count describes nothing, and a pool reported *empty* immediately after
+        // keys were uploaded into it means the upload this call is about did not happen —
+        // both are a broken or misrouted relay, and a caller that recorded "published" on
+        // either would leave an account whose peers cannot start a session with it.
+        //
+        // It does **not** require "at least as many as I sent". The count is taken after the
+        // publish transaction commits, so a peer dispensing a prekey in between is legitimate
+        // and a stricter gate would fail a correct publication — a gate that cries wolf is one
+        // that gets deleted (AUDIT **R2**). Nor does it catch a relay that simply lies: it
+        // bounds a number the relay chooses, which is worth stating rather than implying.
+        guard decoded.oneTimePreKeys >= 0, decoded.kyberPreKeys >= 0,
+              keys.oneTimePreKeys.isEmpty || decoded.oneTimePreKeys > 0,
+              keys.kyberPreKeys.isEmpty || decoded.kyberPreKeys > 0 else {
             throw Failure.malformedResponse
         }
     }
@@ -138,6 +164,11 @@ nonisolated struct RelayKeyDirectory: Sendable {
             return try await client.send(request)
         } catch RelayClient.TransportError.exhaustedRetries(let lastStatus) {
             throw lastStatus == 429 ? Failure.rateLimited : Failure.serverUnavailable
+        } catch RelayClient.TransportError.responseTooLarge {
+            throw Failure.malformedResponse
+        } catch is CancellationError {
+            // See `RelayMailbox.perform`: a cancelled caller is not an unreachable relay.
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }
@@ -191,6 +222,18 @@ nonisolated struct RelayKeyDirectory: Sendable {
             case kyberLastResort = "kyber_last_resort"
             case kyberPreKeys = "kyber_prekeys"
             case oneTimePreKeys = "one_time_prekeys"
+        }
+    }
+
+    /// The account's own remaining pool sizes. Never anyone else's — a peer's pool size is
+    /// precisely the measurement an attacker draining it wants (`BACKEND.md` §2.4).
+    private struct PublishResponse: Decodable {
+        let oneTimePreKeys: Int
+        let kyberPreKeys: Int
+
+        enum CodingKeys: String, CodingKey {
+            case oneTimePreKeys = "one_time_prekeys"
+            case kyberPreKeys = "kyber_prekeys"
         }
     }
 
