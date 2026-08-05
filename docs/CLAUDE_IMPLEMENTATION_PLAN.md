@@ -491,15 +491,13 @@ production VPS before staging E2E works.
 
 ## Standing regression checklist (every PR)
 
-`./Scripts/verify-all.sh` runs 1–6 serialized. Items 7–9 are judgement and stay manual.
+[`Scripts/verify-all.sh`](../Scripts/verify-all.sh) owns the mechanical gate list, order and count.
+Run the full command serially and use its output as the evidence; do not copy the inventory or
+totals into this plan.
 
-1. `Scripts/verify-supply-chain.sh`
-2. App-target manifest gate
-3. CipherCrypto tests (app-hosted, serialized per simulator)
-4. Cipher build
-5. Locked-decision tests + plaintext-logging grep
-6. `Scripts/verify-identity-fields.py` — no phone/email/username/verification-code field in
-   the relay, the wire format or `Cipher/Networking` (§0.2.7)
+After it passes, complete the three judgement checks below. Their identifiers remain 7–9 because
+the verifier prints them as its manual handoff; they are not a count of mechanical gates.
+
 7. Confirm groups/sender-key still rejected
 8. Confirm identity-change policy: receive trusted, send refused until exact `acceptIdentity`
 9. Update `AUDIT.md` and the STATUS block if status changed
