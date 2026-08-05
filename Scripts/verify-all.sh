@@ -236,7 +236,7 @@ if [ "$FAST" -eq 0 ]; then
     fail "Release device build"
   echo "  ok    release arm64 builds"
 
-  # --- 12. No debug affordance survives into a shipping bundle ---------------
+  # --- 12. No debug affordance or retired claim survives into Release --------
   # Fencing the *buttons* that drive a debug switch is not the same as fencing the switch:
   # `debugSkipToMain` was a live authentication bypass in Release for exactly that reason
   # (AUDIT 5.6). This asserts against the built artifact, which is the only place the
@@ -246,16 +246,40 @@ if [ "$FAST" -eq 0 ]; then
   # in regardless, and cs.lproj/Localizable.strings was shipping "Skip to App", "Unlock &
   # Show Main" and "Demo Controls" into Release while the executable was clean (AUDIT 5.11).
   # Anything that names a debug affordance to an attacker reading the IPA counts.
-  step "Release bundle carries no debug affordance"
+  step "Release bundle carries no debug affordance or retired claim"
   APP="$(ls -d "$HOME/Library/Developer/Xcode/DerivedData/Cipher-"*/Build/Products/Release-iphoneos/Cipher.app 2>/dev/null | head -1)"
   [ -n "$APP" ] && [ -d "$APP" ] || fail "could not locate the Release bundle to audit"
 
-  # A positive control, first. Every check below is "grep found nothing", and "found nothing"
-  # is also what a broken search looks like — a wrong path, a bundle that never built, a
-  # `grep` that cannot read the file. This asserts the search *can* see a symbol that is
-  # definitely there, so the all-clear below means something. See AUDIT R2.
-  if ! grep -rlaF "ChatsListView" "$APP" >/dev/null 2>&1; then
+  # Xcode 26 emits Localizable.strings as binary plists. A recursive grep sees the English
+  # key in the executable but not a Czech value in that plist, so the old "whole bundle"
+  # audit was not actually multilingual (AUDIT 5.30). Decode every compiled string table
+  # once, failing closed if one cannot be read, and search that text alongside raw files.
+  localized_bundle_text=""
+  localized_bundle_files=0
+  while IFS= read -r strings_file; do
+    decoded_strings="$(plutil -convert json -o - "$strings_file" 2>/dev/null)" ||
+      fail "could not decode compiled localization table ${strings_file#$APP/}"
+    localized_bundle_text+="$decoded_strings"$'\n'
+    localized_bundle_files=$((localized_bundle_files + 1))
+  done < <(find "$APP" -type f -name '*.strings' -print)
+  [ "$localized_bundle_files" -gt 0 ] || fail "the Release bundle contains no localization tables"
+
+  bundle_hits() {
+    local needle="$1"
+    grep -rlaF "$needle" "$APP" 2>/dev/null || true
+    if [[ "$localized_bundle_text" == *"$needle"* ]]; then
+      echo "compiled localization tables"
+    fi
+  }
+
+  # Two positive controls, first. Every check below is "found nothing", and "found nothing"
+  # is also what a broken search looks like. The symbol proves raw bundle search works; the
+  # Czech Settings translation proves binary localization decoding works. See AUDIT R2.
+  if ! bundle_hits "ChatsListView" >/dev/null; then
     fail "the Release bundle audit found no ChatsListView — the search itself is broken, so its all-clear would be meaningless"
+  fi
+  if ! bundle_hits "Nastavení" >/dev/null; then
+    fail "the Release bundle audit found no Czech Settings translation — compiled-localization search is broken"
   fi
 
   leaked=0
@@ -265,15 +289,19 @@ if [ "$FAST" -eq 0 ]; then
     MediaGalleryGrid previewCalls previewChatID \
     "Skip to App" "Unlock & Show Main" "Demo Controls" "UI Catalog" "Reset Onboarding" \
     "Leave & Reset Demo" "Simulate incoming call" "Hold to record" \
-    "Recording… release to cancel"; do
-    # -a: treat every file as text, so Mach-O, Assets.car and .strings are all searched.
-    if hits="$(grep -rlaF "$sym" "$APP" 2>/dev/null)" && [ -n "$hits" ]; then
+    "Recording… release to cancel" \
+    "Keys stay on your device" "Klíče zůstávají na zařízení" \
+    "Your identity key is generated on your iPhone" "Váš identitní klíč se vytvoří na vašem iPhonu" \
+    "The relay only sees ciphertext" "Relay vidí jen šifrovaný text" \
+    "never plaintext, never your keys" "nikdy otevřený text, nikdy vaše klíče" \
+    "Keys never leave your devices" "Klíče neopouštějí vaše zařízení"; do
+    if hits="$(bundle_hits "$sym")" && [ -n "$hits" ]; then
       echo "  !     '$sym' is present in: $(printf '%s\n' "$hits" | sed "s|$APP/||" | tr '\n' ' ')"
       leaked=1
     fi
   done
-  [ "$leaked" -eq 0 ] || fail "a debug affordance ships in Release (AUDIT 5.6, 5.11, 5.19)"
-  echo "  ok    no debug affordance anywhere in the Release bundle"
+  [ "$leaked" -eq 0 ] || fail "a debug affordance or retired claim ships in Release (AUDIT 5.6, 5.11, 5.19, 5.30)"
+  echo "  ok    no debug affordance or retired claim anywhere in the Release bundle"
 
   # --- 13. Required-reason APIs are declared ---------------------------------
   # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol

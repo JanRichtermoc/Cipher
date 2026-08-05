@@ -436,12 +436,12 @@
         }
       }
     },
-    "Cipher uses the Signal Protocol. Keys never leave your devices. The server only relays ciphertext.": {
+    "Cipher uses the Signal Protocol. Your device retains all private key material. The server receives public keys needed to establish encrypted sessions and relays ciphertext it cannot decrypt.": {
       "localizations": {
         "cs": {
           "stringUnit": {
             "state": "translated",
-            "value": "Cipher používá Signal Protocol. Klíče neopouštějí vaše zařízení. Server jen přeposílá šifrovaná data."
+            "value": "Cipher používá Signal Protocol. Vaše zařízení uchovává veškerý soukromý klíčový materiál. Server přijímá veřejné klíče potřebné k navázání šifrovaných relací a přeposílá šifrovaný text, který nemůže dešifrovat."
           }
         }
       }
@@ -835,16 +835,6 @@
         }
       }
     },
-    "Keys stay on your device": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Klíče zůstávají na zařízení"
-          }
-        }
-      }
-    },
     "Leave": {},
     "Leave Group": {},
     "Leave this group?": {},
@@ -1226,6 +1216,16 @@
         }
       }
     },
+    "Private keys remain on this iPhone": {
+      "localizations": {
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Soukromé klíče zůstávají v tomto iPhonu"
+          }
+        }
+      }
+    },
     "React": {},
     "Recording… release to cancel": {},
     "Registration Lock": {
@@ -1520,6 +1520,16 @@
         }
       }
     },
+    "The relay cannot decrypt messages": {
+      "localizations": {
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Relay nemůže zprávy dešifrovat"
+          }
+        }
+      }
+    },
     "The relay is rate-limiting this device. Wait a few minutes.": {
       "localizations": {
         "cs": {
@@ -1540,12 +1550,12 @@
         }
       }
     },
-    "The relay only sees ciphertext": {
+    "The relay receives public keys needed to establish encrypted sessions, but never private keys or plaintext. It deletes ciphertext after your device confirms delivery.": {
       "localizations": {
         "cs": {
           "stringUnit": {
             "state": "translated",
-            "value": "Relay vidí jen šifrovaný text"
+            "value": "Relay přijímá veřejné klíče potřebné k navázání šifrovaných relací, ale nikdy soukromé klíče ani otevřený text. Šifrovaný text smaže, jakmile vaše zařízení potvrdí doručení."
           }
         }
       }
@@ -1556,16 +1566,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Server tento požadavek odmítl."
-          }
-        }
-      }
-    },
-    "The server is designed to forward encrypted blobs and delete them once delivered — never plaintext, never your keys.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Server je navržen tak, aby přeposílal šifrovaná data a po doručení je smazal — nikdy otevřený text, nikdy vaše klíče."
           }
         }
       }
@@ -1861,22 +1861,22 @@
         }
       }
     },
-    "Your identity key is generated on your iPhone and stored in the iOS Keychain, marked so it never syncs to iCloud and never appears in a backup.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Váš identitní klíč se vytvoří na vašem iPhonu a uloží se do Klíčenky iOS s označením, které brání jeho synchronizaci na iCloud i jeho zahrnutí do zálohy."
-          }
-        }
-      }
-    },
     "Your name": {
       "localizations": {
         "cs": {
           "stringUnit": {
             "state": "translated",
             "value": "Vaše jméno"
+          }
+        }
+      }
+    },
+    "Your private identity key is generated on this iPhone and stored in the iOS Keychain so it never syncs to iCloud or appears in a backup.": {
+      "localizations": {
+        "cs": {
+          "stringUnit": {
+            "state": "translated",
+            "value": "Váš soukromý identitní klíč se vytvoří v tomto iPhonu a uloží se do Klíčenky iOS, takže se nikdy nesynchronizuje na iCloud ani se neobjeví v záloze."
           }
         }
       }
