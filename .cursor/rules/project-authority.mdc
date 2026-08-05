@@ -1,0 +1,24 @@
+---
+description: Cipher repository authority and task-reading bootstrap
+globs:
+alwaysApply: true
+---
+
+# Cipher repository authority
+
+Cursor support is retained, but this rule owns no product, security, architecture, status, or
+toolchain facts.
+
+Before changing the repository:
+
+1. Read @CLAUDE.md and follow it as the permanent repository contract, including its approved-step
+   boundary, public-repository safeguards, verification requirements, and stop conditions.
+2. Read @docs/README.md and follow its authority table and task reading map.
+3. Load the applicable implementation-plan and audit rows, task-specific canonical documents,
+   complete source and tests, executable scripts, configuration, and relevant history before editing.
+4. Derive mutable facts from Git, scripts, manifests, fresh test output, CI, or live read-only checks.
+5. If guidance conflicts, the canonical owner named by `docs/README.md` wins. Update that owner;
+   never copy the disputed fact into this rule.
+
+When a task touches paths covered by `.claude/rules/*.md`, read the matching rule manually as
+additional repository guidance; its activation metadata is specific to Claude Code.
