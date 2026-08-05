@@ -65,7 +65,6 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 | [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md) | Reproducible staging deployment, verification, rollback, and recovery procedures. | Operational | Any staging or TLS change. | Yes |
 | [`PRIVACY_MANIFEST.md`](PRIVACY_MANIFEST.md) | Required-reason API inventory and audit method. | Compliance reference | API use, dependency, manifest, or Release changes. | Yes |
 | [`APP_ICON.md`](APP_ICON.md) | Icon source, generation, and replacement provenance. | Reference | Icon or asset replacement. | No |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Early generic architecture proposal. Non-authoritative pending consolidation; never override plan §0.2, threat model, backend, or code. | Legacy reference | Only when tracing historical design or CLEANUP.S06. | No |
 | [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) | Dated external-style review plus Appendix C remediation crosswalk. `AUDIT.md` owns current status. | Historical audit | Security review and rationale archaeology. | No; preserve report chronology |
 | [`STEP_NOTES/README.md`](STEP_NOTES/README.md) | Purpose and limits of step notes. | Historical index | Creating or interpreting a step note. | No |
 | [`STEP_NOTES/P5.S09.md`](STEP_NOTES/P5.S09.md) | Account-lifecycle implementation and negative-test evidence. | Historical evidence | Work touching registration, credentials, or account erasure. | No |
@@ -79,11 +78,12 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 | [`../.claude/rules/relay.md`](../.claude/rules/relay.md) | Path-scoped relay constraints. | Tool instruction | Automatic on matching paths. | No |
 | [`../.claude/rules/verification.md`](../.claude/rules/verification.md) | Path-scoped test, gate, and CI constraints. | Tool instruction | Automatic on matching paths. | No |
 | [`../.claude/rules/documentation.md`](../.claude/rules/documentation.md) | Path-scoped documentation authority and consistency rules. | Tool instruction | Automatic on matching paths. | No |
+| [`../.cursor/rules/project-authority.mdc`](../.cursor/rules/project-authority.mdc) | Always-applied Cursor bootstrap that routes work to canonical project sources without copying architecture or mutable facts. | Tool instruction | Automatic in Cursor. | No |
 
 ## Tool-specific and third-party material
 
-- `.cursor/rules/e2e-messaging-architecture.mdc` is a tracked Cursor rule, not project authority. It
-  remains pending the operator's Cursor-support decision and CLEANUP.S06.
+- `.cursor/rules/project-authority.mdc` is retained for Cursor and owns no project facts; it only
+  loads the permanent contract and routes tasks through this documentation map.
 - `.codex/` and `.claude/settings.local.json` are machine-local and must not be committed.
 - `Pods/**`, `server/vendor/**`, and installed `Vendor/bundle/**` documentation belongs to upstream
   dependencies. It may explain that dependency, but cannot instruct first-party Cipher work.
