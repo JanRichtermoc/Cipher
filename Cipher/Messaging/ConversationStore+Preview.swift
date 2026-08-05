@@ -49,14 +49,14 @@ extension ConversationStore {
                 participantIDs: [previewAlice, previewChatID],
                 lastMessagePreview: "Meet at 6?", lastMessageDate: now.addingTimeInterval(-120),
                 unreadCount: 2, isPinned: true, isMuted: false, isVerified: false,
-                disappearingSeconds: nil, avatarInitials: "AC", accentHue: 0.55),
+                avatarInitials: "AC", accentHue: 0.55),
             Chat(
                 id: previewBob, title: "Bob Novak", isGroup: false,
                 participantIDs: [previewAlice, previewBob],
                 lastMessagePreview: "Will call later.",
                 lastMessageDate: now.addingTimeInterval(-7200),
                 unreadCount: 0, isPinned: false, isMuted: false, isVerified: false,
-                disappearingSeconds: nil, avatarInitials: "BN", accentHue: 0.08),
+                avatarInitials: "BN", accentHue: 0.08),
         ]
 
         let messages: [UUID: [Message]] = [
@@ -65,26 +65,26 @@ extension ConversationStore {
                     id: UUID(), chatID: previewChatID, senderID: previewChatID,
                     kind: .text("Did the invite code land?"),
                     date: now.addingTimeInterval(-40_000), status: .sent,
-                    isFromCurrentUser: false, replyToID: nil, reactions: [:]),
+                    isFromCurrentUser: false, reactions: [:]),
                 Message(
                     id: UUID(), chatID: previewChatID, senderID: previewAlice,
                     kind: .text("Yes — sending one over."),
                     date: now.addingTimeInterval(-39_000), status: .sent,
-                    isFromCurrentUser: true, replyToID: nil, reactions: [:]),
+                    isFromCurrentUser: true, reactions: [:]),
                 Message(
                     id: UUID(), chatID: previewChatID, senderID: previewChatID,
                     kind: .text("Meet at 6?"), date: now.addingTimeInterval(-120),
-                    status: .sent, isFromCurrentUser: false, replyToID: nil, reactions: [:]),
+                    status: .sent, isFromCurrentUser: false, reactions: [:]),
                 Message(
                     id: UUID(), chatID: previewChatID, senderID: previewChatID,
                     kind: .emoji("🙌"), date: now.addingTimeInterval(-90), status: .sent,
-                    isFromCurrentUser: false, replyToID: nil, reactions: [:]),
+                    isFromCurrentUser: false, reactions: [:]),
             ],
             previewBob: [
                 Message(
                     id: UUID(), chatID: previewBob, senderID: previewAlice,
                     kind: .text("Will call later."), date: now.addingTimeInterval(-7200),
-                    status: .failed, isFromCurrentUser: true, replyToID: nil, reactions: [:]),
+                    status: .failed, isFromCurrentUser: true, reactions: [:]),
             ],
         ]
 

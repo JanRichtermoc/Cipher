@@ -10,7 +10,6 @@ struct ChatInfoView: View {
     @Environment(\.dismiss) private var dismiss
     let chatID: UUID
 
-    @State private var showSafety = false
     @State private var confirmBlock = false
     @State private var confirmClear = false
     @State private var nickname = ""
@@ -77,23 +76,6 @@ struct ChatInfoView: View {
                 Toggle(isOn: muteBinding(chat)) {
                     Label("Mute", systemImage: "bell.slash")
                 }
-                Picker(selection: disappearingBinding(chat)) {
-                    Text("Off").tag(0)
-                    Text("1 hour").tag(3600)
-                    Text("1 day").tag(86_400)
-                    Text("1 week").tag(604_800)
-                } label: {
-                    Label("Disappearing Messages", systemImage: "timer")
-                }
-                .unimplemented("Messages are not deleted yet. This preference is stored but nothing reads it.")
-            }
-
-            Section("Security") {
-                Button {
-                    showSafety = true
-                } label: {
-                    Label("Verify Safety Number", systemImage: "qrcode")
-                }
             }
 
             Section {
@@ -111,9 +93,6 @@ struct ChatInfoView: View {
             }
         }
         .onAppear { nickname = chat.title }
-        .sheet(isPresented: $showSafety) {
-            SafetyNumberView(contact: contact)
-        }
         .confirmationDialog("Block \(contact.name)?", isPresented: $confirmBlock) {
             Button(store.blockedContactIDs.contains(contact.id) ? "Unblock" : "Block", role: .destructive) {
                 Task { await store.toggleBlock(contact.id) }
@@ -133,14 +112,6 @@ struct ChatInfoView: View {
         )
     }
 
-    private func disappearingBinding(_ chat: Chat) -> Binding<Int> {
-        Binding(
-            get: { chat.disappearingSeconds ?? 0 },
-            set: { value in
-                Task { await store.setDisappearing(value == 0 ? nil : value, chatID: chat.id) }
-            }
-        )
-    }
 }
 
 // Groups do not exist cryptographically (AUDIT 3.7) and no production conversation is a group,
@@ -279,60 +250,3 @@ struct MediaGalleryGrid: View {
 }
 
 #endif
-
-struct SafetyNumberView: View {
-    let contact: Contact
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        NavigationStack {
-            ScrollView {
-                VStack(spacing: CipherTheme.spacingXL) {
-                    AvatarView(
-                        initials: contact.initials,
-                        color: contact.accentColor,
-                        size: CipherTheme.avatarL,
-                        isVerified: contact.isVerified
-                    )
-
-                    Text("Safety number with \(contact.name)")
-                        .font(.title3.bold())
-                        .multilineTextAlignment(.center)
-
-                    // No QR code, no digits, and no "Mark as Verified" until these are
-                    // derived from real identity keys (P5.S12).
-                    //
-                    // What stood here was a hardcoded array of twelve digit blocks under the
-                    // words "If these numbers match on both devices, your connection is
-                    // secure". Because the constants were the same on every install, two
-                    // users comparing them would always match — the screen did not fail to
-                    // verify, it actively certified an unverified connection, and it would
-                    // have passed a careful user's check. An empty state is strictly safer
-                    // than a confident wrong answer.
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .fill(Color(.secondarySystemBackground))
-                        .frame(width: 200, height: 200)
-                        .overlay {
-                            Image(systemName: "qrcode.viewfinder")
-                                .font(.system(size: 72))
-                                .foregroundStyle(.tertiary)
-                        }
-                        .accessibilityHidden(true)
-
-                    UnimplementedNotice(
-                        "Safety numbers are not implemented yet. Nothing on this screen is derived from your keys, so there is nothing here to compare — do not treat this conversation as verified."
-                    )
-                    .padding(.horizontal)
-                }
-                .padding(.vertical)
-            }
-            .navigationTitle("Safety Number")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-        }
-    }
-}

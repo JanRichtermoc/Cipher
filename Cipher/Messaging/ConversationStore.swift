@@ -266,10 +266,6 @@ final class ConversationStore {
         messagesByChat[chatID] ?? []
     }
 
-    func message(id: UUID, in chatID: UUID) -> Message? {
-        messagesByChat[chatID]?.first { $0.id == id }
-    }
-
     func contact(id: UUID) -> Contact? {
         contacts.first { $0.id == id }
     }
@@ -358,10 +354,6 @@ final class ConversationStore {
     func toggleMute(chatID: UUID) async {
         guard let chat = chat(id: chatID) else { return }
         await mutate { try await $0.setMuted(!chat.isMuted, for: chatID) }
-    }
-
-    func setDisappearing(_ seconds: Int?, chatID: UUID) async {
-        await mutate { try await $0.setDisappearing(seconds, for: chatID) }
     }
 
     func rename(chatID: UUID, to nickname: String?) async {
@@ -461,7 +453,6 @@ final class ConversationStore {
                 isPinned: conversation.isPinned,
                 isMuted: conversation.isMuted,
                 isVerified: false,
-                disappearingSeconds: conversation.disappearingSeconds,
                 avatarInitials: Self.initials(for: conversation),
                 accentHue: Self.hue(for: conversation.peer))
         }
@@ -483,7 +474,6 @@ final class ConversationStore {
             date: Date(timeIntervalSince1970: Double(stored.timestampMs) / 1000),
             status: Self.status(of: stored),
             isFromCurrentUser: isMine,
-            replyToID: nil,
             reactions: [:])
     }
 

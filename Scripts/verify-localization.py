@@ -112,6 +112,28 @@ DENY = [
         "Přehled úložiště zatím není implementován",
         "Czech rendering of the storage placeholder",
     ),
+    ("Reply", "messages carry no reply reference (AUDIT 5.30)"),
+    ("Odpovědět", "Czech rendering of the local-only reply control"),
+    (
+        "Disappearing messages",
+        "no deletion mechanism enforces a disappearing timer (AUDIT 5.30)",
+    ),
+    ("Mizící zprávy", "Czech rendering of the unenforced disappearing-message control"),
+    ("Safety Number", "no key-derived comparison exists until P5.S12 (AUDIT 2.5, 5.30)"),
+    ("Bezpečnostní čísl", "Czech rendering of the unavailable safety-number surface"),
+    ("Registration Lock", "Cipher has no registration-lock protocol or stored PIN (AUDIT 5.30)"),
+    ("Zámek registrace", "Czech rendering of the unavailable registration-lock surface"),
+    ("zámku registrace", "Czech inflection used by the unavailable registration-lock PIN"),
+]
+
+# Exact retired labels. These cannot use DENY's substring match: "Groups" is a dead Release
+# filter, while "digit groups" is legitimate safety-number terminology. Keep the guard precise
+# enough that P5.S12 does not have to weaken an unrelated P10 boundary to explain its UI.
+DENY_EXACT = [
+    ("Groups", "group messaging remains unreachable until P10 (AUDIT 3.7, 5.30)"),
+    ("Skupiny", "Czech rendering of the empty production groups filter"),
+    ("No Groups", "the production groups filter can only be empty (AUDIT 3.7, 5.30)"),
+    ("Žádné skupiny", "Czech rendering of the empty production groups result"),
 ]
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
@@ -373,6 +395,12 @@ def analyse(literals, catalog):
         folded = value.casefold()
         for phrase, why in DENY:
             if phrase.casefold() in folded:
+                findings.append(
+                    f"{where} [{lang}]: {value!r}\n"
+                    f"          claims {phrase!r} — {why}"
+                )
+        for phrase, why in DENY_EXACT:
+            if phrase.casefold() == folded:
                 findings.append(
                     f"{where} [{lang}]: {value!r}\n"
                     f"          claims {phrase!r} — {why}"
@@ -811,6 +839,112 @@ SELF_TESTS = [
             }
         },
         "'Přehled úložiště zatím není implementován'",
+    ),
+    (
+        "C: retired local-only reply control",
+        {"Reply": (False, "X.swift:1")},
+        {"Reply": {}},
+        "'Reply'",
+    ),
+    (
+        "C: retired Czech local-only reply control",
+        {"Respond": (False, "X.swift:1")},
+        {
+            "Respond": {
+                "localizations": {"cs": {"stringUnit": {"value": "Odpovědět"}}}
+            }
+        },
+        "'Odpovědět'",
+    ),
+    (
+        "C: retired unenforced disappearing-message control",
+        {"Disappearing Messages": (False, "X.swift:1")},
+        {"Disappearing Messages": {}},
+        "'Disappearing messages'",
+    ),
+    (
+        "C: retired Czech disappearing-message control",
+        {"Retention": (False, "X.swift:1")},
+        {
+            "Retention": {
+                "localizations": {"cs": {"stringUnit": {"value": "Mizící zprávy"}}}
+            }
+        },
+        "'Mizící zprávy'",
+    ),
+    (
+        "C: retired empty groups filter",
+        {"Groups": (False, "X.swift:1")},
+        {"Groups": {}},
+        "'Groups'",
+    ),
+    (
+        "C: retired Czech empty groups filter",
+        {"Conversations": (False, "X.swift:1")},
+        {
+            "Conversations": {
+                "localizations": {"cs": {"stringUnit": {"value": "Skupiny"}}}
+            }
+        },
+        "'Skupiny'",
+    ),
+    (
+        "C: retired empty groups result",
+        {"No Groups": (False, "X.swift:1")},
+        {"No Groups": {}},
+        "'No Groups'",
+    ),
+    (
+        "C: retired Czech empty groups result",
+        {"No conversations": (False, "X.swift:1")},
+        {
+            "No conversations": {
+                "localizations": {"cs": {"stringUnit": {"value": "Žádné skupiny"}}}
+            }
+        },
+        "'Žádné skupiny'",
+    ),
+    (
+        "C: unavailable safety-number surface",
+        {"Verify Safety Number": (False, "X.swift:1")},
+        {"Verify Safety Number": {}},
+        "'Safety Number'",
+    ),
+    (
+        "C: unavailable Czech safety-number surface",
+        {"Verify identity": (False, "X.swift:1")},
+        {
+            "Verify identity": {
+                "localizations": {"cs": {"stringUnit": {"value": "Bezpečnostní čísla"}}}
+            }
+        },
+        "'Bezpečnostní čísl'",
+    ),
+    (
+        "C: unavailable registration-lock surface",
+        {"Registration Lock": (False, "X.swift:1")},
+        {"Registration Lock": {}},
+        "'Registration Lock'",
+    ),
+    (
+        "C: unavailable Czech registration-lock surface",
+        {"Registration protection": (False, "X.swift:1")},
+        {
+            "Registration protection": {
+                "localizations": {"cs": {"stringUnit": {"value": "Zámek registrace"}}}
+            }
+        },
+        "'Zámek registrace'",
+    ),
+    (
+        "C: unavailable inflected Czech registration-lock PIN",
+        {"Registration PIN": (False, "X.swift:1")},
+        {
+            "Registration PIN": {
+                "localizations": {"cs": {"stringUnit": {"value": "PIN zámku registrace"}}}
+            }
+        },
+        "'zámku registrace'",
     ),
     (
         "C: retired placeholder support address",

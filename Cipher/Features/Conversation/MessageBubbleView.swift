@@ -7,8 +7,6 @@ import SwiftUI
 
 struct MessageBubbleView: View {
     let message: Message
-    var replyPreview: String?
-    var onReply: () -> Void
     var onReact: (String) -> Void
     var onForward: () -> Void
     var onDelete: () -> Void
@@ -43,17 +41,6 @@ struct MessageBubbleView: View {
                             emojiBody
                         } else {
                             VStack(alignment: .leading, spacing: 6) {
-                                if let replyPreview {
-                                    Text(replyPreview)
-                                        .font(.caption)
-                                        .foregroundStyle(message.isFromCurrentUser ? Color.white.opacity(0.85) : Color.secondary)
-                                        .padding(8)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .background(
-                                            (message.isFromCurrentUser ? Color.white.opacity(0.18) : Color.primary.opacity(0.06)),
-                                            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-                                        )
-                                }
                                 bubbleBody
                             }
                             .padding(.horizontal, 14)
@@ -91,7 +78,6 @@ struct MessageBubbleView: View {
             if !message.isFromCurrentUser { Spacer(minLength: 56) }
         }
         .contextMenu {
-            Button("Reply", systemImage: "arrowshape.turn.up.left") { onReply() }
             // Reactions have no wire representation: `MessagePayload` carries text and nothing
             // else, so a reaction would render on this device and never reach the peer — a
             // local decoration presented as something they can see. The picker stays for the

@@ -239,10 +239,6 @@ actor MessageRepository {
         try await mutate(peer) { $0.isBlocked = blocked }
     }
 
-    func setDisappearing(_ seconds: Int?, for peer: UUID) async throws {
-        try await mutate(peer) { $0.disappearingSeconds = seconds }
-    }
-
     func setNickname(_ nickname: String?, for peer: UUID) async throws {
         try await mutate(peer) { $0.nickname = nickname }
     }

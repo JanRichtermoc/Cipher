@@ -189,6 +189,9 @@ actor ConversationArchive {
         var isPinned: Bool = false
         var isMuted: Bool = false
         var isBlocked: Bool = false
+        /// Decoder-only compatibility with schema 1 records written by earlier builds.
+        /// No shipping model reads this value and no writer changes it: deletion semantics do
+        /// not exist yet, but dropping the field would be an unrelated storage-schema change.
         var disappearingSeconds: Int?
         /// The oldest ordinal that may still exist. Raised by a clear, never lowered.
         var firstOrdinal: Int = 0
