@@ -28,6 +28,11 @@ Everything below follows from that. Two consequences shape every decision on thi
    later, with no observation required. This is why several fields that would be convenient are
    absent below, and why their absence is written down rather than left to be re-litigated.
 
+The relay is not keyless. It stores public identity/prekey material because peers need it to start
+sessions. Private E2E identity, prekey, session, and ratchet keys remain on-device. The host's TLS
+private keys and service secrets are a third, operational category: necessary on the server, but
+not capable of decrypting E2E message content.
+
 ---
 
 ## 1. Service modules
@@ -356,10 +361,11 @@ Rules that make this real rather than aspirational:
   images the Postgres volume and the blob directory, so for up to 24 hours a snapshot holds rows
   and files the relay has already deleted. This is the one place the rule above is not true, and
   it is recorded as a residual rather than written around: `AUDIT.md` 4.8. Everything in it is
-  ciphertext — keys never touch the server — so what survives is *metadata*: who had mail waiting,
-  and that a blob of a given size existed. Bounded at 24 hours, and held by the same provider
-  already subject to the same legal process as the live host, so it widens the window rather than
-  the set of adversaries.
+  message and attachment ciphertext, public identity/prekey material, account and routing metadata,
+  server configuration/secrets, and TLS private keys. It does not contain plaintext message content
+  or private E2E keys. The same provider already has the live host and process, so this widens the
+  retention window rather than the adversary set; the operational secrets are still named because
+  describing the image as ciphertext-only would hide what a whole-host snapshot actually is.
 - **The user-visible consequence is surfaced honestly**: a device offline past 30 days loses
   undelivered messages. That is a UI string subject to the same honesty rule as every other, and it
   must say so plainly rather than presenting silent loss as delivery.

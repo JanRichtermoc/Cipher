@@ -31,6 +31,11 @@ sender (§3.2) is a real phase rather than backlog. Encrypting content is table 
 model the goal is that a seized box yields no content, no history, and as little of the social graph
 as the routing layer can be made to forget.
 
+This is not a claim that the server is keyless. The relay intentionally stores public identity and
+prekey material so peers can establish sessions. Private E2E identity, prekey, session, and ratchet
+keys remain on-device. The host also necessarily holds a different category of key material —
+TLS private keys and service secrets — which protects transport and operations, not message encryption.
+
 ---
 
 ## 1. Adversaries
@@ -44,7 +49,7 @@ The defining adversary. Has the disk, the memory, the database, and can compel f
 | | |
 |---|---|
 | **Pre-relay baseline (2026-07-28)** | Nothing — no server had been deployed. Historical, not current state. |
-| **Required exposure bound** | Undelivered ciphertext still in flight; recipient identifiers for those; push tokens; account existence and creation times. |
+| **Required exposure bound** | Public identity and prekey material; undelivered ciphertext still in flight; recipient identifiers for those; push tokens; account existence and activity dates. |
 | **Residual / accepted exception** | Coarse timing and volume of *undelivered* traffic. The live database deletes delivered messages (§3.1), but the accepted provider-snapshot residual means this is not host-wide deletion (AUDIT 4.8). After sealed sender lands (AUDIT 3.4), the sender of an undelivered message is not visible (§3.2). |
 
 Compelled *future* cooperation is the case that no amount of deletion fixes: a seized-but-running
@@ -73,8 +78,11 @@ The relay is untrusted by construction; this is the adversary `Envelope` was des
 Passive observer or active MITM between device and relay.
 
 - TLS 1.3 plus certificate/public-key pinning, failing closed. No ATS exceptions, ever.
-- Even a total TLS break yields ciphertext only — that is the point of end-to-end encryption, and
-  the reason pinning is defence in depth rather than the primary control.
+- Loss of TLS confidentiality exposes bearer credentials, public identity and prekey material,
+  routing metadata, and message ciphertext. It does not expose private E2E keys or plaintext from an
+  existing session; active interference with registration or first-contact key distribution is a
+  separate risk, so pinning remains load-bearing rather than a reason to call the transport
+  “ciphertext only.”
 - **Residual:** traffic timing and length. Addressed by length bucketing (§3.5).
 
 ### 1.4 Device thief
