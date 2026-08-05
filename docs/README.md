@@ -36,7 +36,7 @@ branch state from Git, CI requirements from GitHub, and deployed state from read
 
 | Task | Read before editing |
 |---|---|
-| Any implementation or cleanup | Plan sections above, `AUDIT.md` §0 and applicable rows, then [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) for the detailed execution checklist. |
+| Any implementation or cleanup | Plan sections above and `AUDIT.md` §0 plus applicable rows. Use [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) for the stable detailed execution checklist; it contains no current status. |
 | iOS UI, app state, or Xcode | [`DEVELOPMENT.md`](DEVELOPMENT.md), applicable threat/audit rows, privacy manifest when the shipped bundle changes. |
 | Cryptography, identity, keys, wire types, or sealed storage | [`THREAT_MODEL.md`](THREAT_MODEL.md), plan §0.2/§0.6, [`AUDIT.md`](AUDIT.md), [`Vendor/libsignal/DECISIONS.md`](../Vendor/libsignal/DECISIONS.md), and applicable backend sections. |
 | Relay, schema, auth, retention, or rate limits | [`BACKEND.md`](BACKEND.md), threat model, audit ledger, [`server/README.md`](../server/README.md), and migrations. |
@@ -55,7 +55,7 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 |---|---|---|---|---|
 | [`../CLAUDE.md`](../CLAUDE.md) | Permanent project behavior for Claude Code. | Normative instruction | Every session; automatic. | No |
 | [`README.md`](README.md) | Document authority, precedence, and reading routes. | Normative index | Every task. | No |
-| [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) | Detailed implementation, verification, operator, commit, and PR workflow. Root `CLAUDE.md` wins if its snapshot conflicts. | Working guide | Any change or release handoff. | Yes; snapshot section only |
+| [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) | Stable human-readable execution, verification, operator, commit, and PR guide. Root `CLAUDE.md` owns the contract; the plan and audit own current state. | Operational guide | Any non-trivial change or release handoff. | No |
 | [`CLAUDE_IMPLEMENTATION_PLAN.md`](CLAUDE_IMPLEMENTATION_PLAN.md) | Current phase, locked decisions, open-item summary, and roadmap step definitions. | Current status + normative roadmap | Every roadmap task. | Yes |
 | [`AUDIT.md`](AUDIT.md) | Canonical OPEN/CLOSED/ACCEPTED security ledger and recurring failure modes. | Current security authority | Every task touching security or a cited finding. | Yes |
 | [`THREAT_MODEL.md`](THREAT_MODEL.md) | Adversaries, privacy positions, and standing prohibitions. | Normative security | Any design, protocol, data, logging, or dependency change. | Only explicit “today” snapshots |

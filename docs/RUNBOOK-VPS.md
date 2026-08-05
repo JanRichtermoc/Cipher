@@ -35,8 +35,9 @@ Executed 2026-07-29 against the OVH VPS. Every "Done when" below was observed, n
 ## 0. Before the first command
 
 **Ownership.** Stages A–G need shell access and are the operator's to run, or Claude's once the
-`cipher-staging` alias resolves. Stage H additionally needs a DNS record and an ACME email, which
-only the operator can supply. §H.0 is the one part of H that needs neither — do it first.
+`cipher-staging` alias resolves. Stage H additionally needs the DNS record in §H.1, which only the
+operator can create with the current registrar access. ACME registration intentionally uses no
+email (§H.3). §H.0 is the one part of H that needs neither — do it first.
 
 **Never paste into a chat transcript:** the OVH password, the contents of `~/.ssh/cipher_staging`,
 `server/.env`, or any TLS private key. The IP and hostname are public the moment DNS resolves and
