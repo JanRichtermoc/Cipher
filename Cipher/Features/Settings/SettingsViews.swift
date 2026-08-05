@@ -49,11 +49,9 @@ struct SettingsHubView: View {
                 }
 
                 Section {
-                    NavigationLink {
-                        InviteFriendsView()
-                    } label: {
-                        SettingsRow(title: "Invite Friends", systemImage: "person.badge.plus", tint: .blue)
-                    }
+                    // The relay can issue invites, but the client has no authenticated issuance
+                    // call yet. Do not expose a stub that fabricates codes or performs no action;
+                    // restore this entry only with the real server-backed flow (AUDIT 5.30).
                     NavigationLink {
                         LinkedDevicesView()
                     } label: {
@@ -172,59 +170,6 @@ struct EditProfileView: View {
             name = session.displayName
             username = session.username
         }
-    }
-}
-
-struct InviteFriendsView: View {
-    // Fixtures, not invitations. These are constants compiled into every copy of the app:
-    // identical for every user, reusable forever, and known to anyone who has the binary.
-    // Real codes are server-generated, single-use, expiring and rate-limited (P4.S03), and
-    // are redeemed against the server rather than compared on-device (P5.S09).
-    #if DEBUG
-    private let codes = ["CIPHER-7K2M", "CIPHER-9QPL", "CIPHER-4XAB"]
-    #else
-    private let codes: [String] = []
-    #endif
-
-    var body: some View {
-        List {
-            Section {
-                Text("Cipher is invite-only. No email or phone number is required to join — an identifier we never collect cannot be leaked, correlated, or seized.")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .listRowBackground(Color.clear)
-            }
-
-            if codes.isEmpty {
-                Section {
-                    UnimplementedNotice("Invite codes are not implemented yet. They have to be issued by the server so they can be single-use and expiring, and there is no server yet.")
-                        .listRowBackground(Color.clear)
-                }
-            }
-
-            Section("Your invite codes") {
-                ForEach(codes, id: \.self) { code in
-                    HStack {
-                        Text(code)
-                            .font(.body.monospaced().weight(.medium))
-                        Spacer()
-                        Button("Copy") {
-                            SecurePasteboard.copy(code)
-                            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-                        }
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(CipherTheme.accent)
-                    }
-                }
-            }
-
-            Section {
-                Button("Leave Cipher Circle", role: .destructive) {}
-            } footer: {
-                Text("Removes this device from the circle. Your friends keep their chats.")
-            }
-        }
-        .navigationTitle("Invite Friends")
     }
 }
 
