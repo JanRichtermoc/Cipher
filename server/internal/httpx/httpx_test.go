@@ -5,6 +5,7 @@ package httpx
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -401,5 +402,76 @@ func TestClientAddrNormalisesWithoutAProxy(t *testing.T) {
 	req.RemoteAddr = "[::ffff:203.0.113.9]:1234"
 	if got := ClientAddr(req); got != "203.0.113.9" {
 		t.Fatalf("got %q, want 203.0.113.9", got)
+	}
+}
+
+// --- DecodeJSON ------------------------------------------------------------
+//
+// AUDIT 5.27. json.Decoder is a stream decoder: Decode reads one value and
+// leaves the rest, so a body carrying two values decoded as the first and
+// discarded the second in silence.
+
+func TestDecodeJSONAcceptsOneValue(t *testing.T) {
+	// The positive control for every refusal below: an ordinary body must still
+	// decode, or the check is refusing everything.
+	var got struct {
+		Code string `json:"code"`
+	}
+	if err := DecodeJSON(strings.NewReader(`{"code":"A"}`), &got); err != nil {
+		t.Fatalf("a well-formed body was refused: %v", err)
+	}
+	if got.Code != "A" {
+		t.Fatalf("decoded %q, want %q", got.Code, "A")
+	}
+}
+
+func TestDecodeJSONAcceptsTrailingWhitespace(t *testing.T) {
+	// Whitespace is not a second value. Refusing it would fail bodies that any
+	// pretty-printer produces, which is a gate that cries wolf (AUDIT R2).
+	var got struct {
+		Code string `json:"code"`
+	}
+	if err := DecodeJSON(strings.NewReader("{\"code\":\"A\"}\n\t "), &got); err != nil {
+		t.Fatalf("trailing whitespace was refused: %v", err)
+	}
+}
+
+func TestDecodeJSONRefusesASecondValue(t *testing.T) {
+	// The defect: this decoded as {"code":"A"} and said nothing about the rest,
+	// so the request meant one thing to this decoder and another to any reader
+	// of the raw body.
+	var got struct {
+		Code string `json:"code"`
+	}
+	err := DecodeJSON(strings.NewReader(`{"code":"A"}{"code":"B"}`), &got)
+	if !errors.Is(err, ErrTrailingJSON) {
+		t.Fatalf("second value: err = %v, want ErrTrailingJSON", err)
+	}
+}
+
+func TestDecodeJSONRefusesTrailingGarbage(t *testing.T) {
+	var got struct {
+		Code string `json:"code"`
+	}
+	for _, body := range []string{
+		`{"code":"A"} 7`,
+		`{"code":"A"}]`,
+		`{"code":"A"}null`,
+	} {
+		if err := DecodeJSON(strings.NewReader(body), &got); !errors.Is(err, ErrTrailingJSON) {
+			t.Fatalf("body %q: err = %v, want ErrTrailingJSON", body, err)
+		}
+	}
+}
+
+func TestDecodeJSONRefusesAnUnknownField(t *testing.T) {
+	// Carried over from the per-route decoders this replaced: a client sending
+	// "registrationId" instead of "registration_id" would otherwise register
+	// with id 0 and fail much later.
+	var got struct {
+		Code string `json:"code"`
+	}
+	if err := DecodeJSON(strings.NewReader(`{"code":"A","extra":1}`), &got); err == nil {
+		t.Fatal("an unknown field was accepted")
 	}
 }

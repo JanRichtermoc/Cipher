@@ -27,7 +27,7 @@ deployment, and operator state from their executable or live sources before acti
 |---|---|
 | Phase | P5 in progress; P1–P4 complete. |
 | Completed P5 product steps | P5.S01, P5.S02, P5.S05, P5.S06, P5.S08, P5.S09, P5.S10, and P5.S11. |
-| Security-remediation queue | With AUDIT 5.26 closed, address the remaining recorded P5 findings one approved step at a time: AUDIT 5.27, then 1.14, then 6.14. Do not pull these into one change. |
+| Security-remediation queue | With AUDIT 5.26 and 5.27 closed, address the remaining recorded P5 findings one approved step at a time: AUDIT 1.14, then 6.14. Do not pull these into one change. |
 | Next planned feature | P5.S12 safety numbers, followed by P5.S13 two-device staging verification, after the approved remediation work above. |
 | Open and accepted risk | `AUDIT.md` is authoritative. Read every applicable OPEN and ACCEPTED row; this table never overrides it. |
 | Repository and PR state | Derive from Git and the current GitHub pull-request list. Never copy an “unmerged branch” into this plan. |

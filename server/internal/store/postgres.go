@@ -11,9 +11,12 @@ package store
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
+	"regexp"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -126,6 +129,11 @@ func (db *DB) Migrate(ctx context.Context) ([]string, error) {
 			_ = tx.Rollback(ctx)
 			return applied, fmt.Errorf("read %s: %w", name, err)
 		}
+		if statement, found := transactionControlIn(string(sqlBytes)); found {
+			_ = tx.Rollback(ctx)
+			return applied, fmt.Errorf(
+				"%s: %w: %q", name, ErrMigrationControlsTransaction, statement)
+		}
 		if _, err := tx.Exec(ctx, string(sqlBytes)); err != nil {
 			_ = tx.Rollback(ctx)
 			return applied, fmt.Errorf("apply %s: %w", name, err)
@@ -141,4 +149,75 @@ func (db *DB) Migrate(ctx context.Context) ([]string, error) {
 		applied = append(applied, name)
 	}
 	return applied, nil
+}
+
+// ErrMigrationControlsTransaction reports a migration that manages its own
+// transaction, which silently breaks the one Migrate wraps it in.
+var ErrMigrationControlsTransaction = errors.New(
+	"store: a migration must not contain transaction control")
+
+// transactionControlRE matches a statement-leading transaction-control keyword.
+//
+// Anchored to the start of a statement — beginning of file, or after a `;` —
+// rather than searched for anywhere, so a column called `begin_at` or a string
+// literal containing the word is not a match. No migration here defines a
+// PL/pgSQL body, where `BEGIN` is block structure rather than transaction
+// control; one that did would need this rule reconsidered rather than widened.
+var transactionControlRE = regexp.MustCompile(
+	`(?is)(?:\A|;)\s*(BEGIN|COMMIT|ROLLBACK|END|START\s+TRANSACTION|SAVEPOINT)\b`)
+
+// transactionControlIn reports the first transaction-control statement in sql.
+//
+// # Why the check exists at all
+//
+// PostgreSQL has no nested transactions. `BEGIN` inside an open transaction is a
+// warning and a no-op; the matching `COMMIT` therefore ends the transaction
+// *Migrate* opened, and everything after it — including the `schema_migrations`
+// row — runs outside any transaction. The atomicity this runner documents was
+// then a property of the runner and not of what actually executed, and the
+// failure was invisible: the schema applied, the bookkeeping row did not, and
+// the next boot reapplied the file against objects that already existed.
+//
+// # Comments are stripped first
+//
+// AUDIT **R3**: the prose explaining this rule names the very keywords it
+// forbids, and 0001_init.sql now carries a paragraph doing exactly that. A
+// scanner that read comments would fire on the documentation of the control it
+// enforces, which is a gate that cries wolf and therefore a gate that gets
+// deleted (**R2**).
+func transactionControlIn(sql string) (string, bool) {
+	match := transactionControlRE.FindStringSubmatch(stripSQLComments(sql))
+	if match == nil {
+		return "", false
+	}
+	return strings.ToUpper(strings.Join(strings.Fields(match[1]), " ")), true
+}
+
+// stripSQLComments replaces comment bytes with spaces, preserving every offset
+// so a reported position still names the same place in the file.
+func stripSQLComments(sql string) string {
+	out := []byte(sql)
+	for i := 0; i < len(out); {
+		switch {
+		case out[i] == '-' && i+1 < len(out) && out[i+1] == '-':
+			for i < len(out) && out[i] != '\n' {
+				out[i] = ' '
+				i++
+			}
+		case out[i] == '/' && i+1 < len(out) && out[i+1] == '*':
+			for i < len(out) {
+				closing := out[i] == '*' && i+1 < len(out) && out[i+1] == '/'
+				out[i] = ' '
+				i++
+				if closing {
+					out[i] = ' '
+					i++
+					break
+				}
+			}
+		default:
+			i++
+		}
+	}
+	return string(out)
 }

@@ -7,6 +7,8 @@ package httpx
 
 import (
 	"encoding/json"
+	"errors"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,6 +28,46 @@ func WriteJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
+}
+
+// ErrTrailingJSON reports a body carrying more than one JSON value.
+var ErrTrailingJSON = errors.New("httpx: trailing data after the JSON body")
+
+// DecodeJSON decodes exactly one JSON value from body into v.
+//
+// # Why every route must go through this
+//
+// `json.Decoder` is a *stream* decoder: `Decode` reads one value and stops, and
+// whatever follows is neither read nor reported. So `{"code":"A"}{"code":"B"}`
+// decoded as the first object and the second was discarded in silence — a
+// request that means two different things depending on which end of it you
+// read. That is the classic request-smuggling shape, and it matters most where
+// the relay's own decisions are single-use: an invite redemption, an
+// acknowledgement, a key publication. It also hid ordinary client bugs, since a
+// double-encoded body looked like a working request.
+//
+// `DisallowUnknownFields` is set here rather than per route for the same reason
+// it was set per route originally: a client sending `registrationId` instead of
+// `registration_id` would otherwise register with id 0, and the failure appears
+// much later as a session that cannot be established. Having one decoder means a
+// route added later cannot forget either half.
+func DecodeJSON(body io.Reader, v any) error {
+	dec := json.NewDecoder(body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(v); err != nil {
+		return err
+	}
+	// Trailing whitespace is fine; a second value, or any other non-space byte,
+	// is not. Attempting the next decode and requiring io.EOF rather than asking
+	// `dec.More()`: More is written for iterating the elements of an array or
+	// object and reports false for a `]` or `}`, so a body ending
+	// `{"code":"A"}]` passed it. That is the shape this check exists to refuse,
+	// and the first version of this function did not.
+	var trailing json.RawMessage
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return ErrTrailingJSON
+	}
+	return nil
 }
 
 // errorBody is the only error shape the relay emits.

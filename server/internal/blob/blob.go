@@ -133,7 +133,31 @@ func (s *Store) Put(id uuid.UUID, r io.Reader, maxBytes int64) (int64, error) {
 	if err := os.Rename(tmpName, final); err != nil {
 		return 0, fmt.Errorf("blob put: %w", err)
 	}
+	// fsync the *directory* as well as the file. The two are separate durability
+	// facts: `tmp.Sync` above makes the contents durable, and this makes the name
+	// pointing at them durable. Without it a crash after the rename can leave the
+	// bytes on disk with no directory entry — and by then the handler has written
+	// an attachment row, so the relay answers a download with a 500 for a blob it
+	// believes it has, forever, because nothing retries an upload that succeeded.
+	if err := syncDir(filepath.Dir(final)); err != nil {
+		return 0, fmt.Errorf("blob put: %w", err)
+	}
 	return written, nil
+}
+
+// syncDir flushes a directory's own entries to disk.
+func syncDir(dir string) error {
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	// Sync first, then close, and report the Sync error in preference: a close
+	// that succeeds says nothing about whether the entries reached the platter.
+	err = d.Sync()
+	if closeErr := d.Close(); err == nil {
+		err = closeErr
+	}
+	return err
 }
 
 // Open returns the blob's contents. The caller closes it.

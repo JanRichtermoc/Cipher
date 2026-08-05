@@ -5,7 +5,6 @@ package api
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -36,6 +35,19 @@ const (
 	// unbounded by anything except the body limit, and an account uploading
 	// hundreds of thousands of prekeys is not replenishing a pool.
 	maxPreKeysPerUpload = 200
+
+	// maxPreKeyID is the protocol's own ceiling: Signal keeps prekey ids inside
+	// 24 bits, and `CipherProtocolStore.maxPreKeyId` refuses to mint one above it,
+	// so this bound refuses nothing a real client sends.
+	//
+	// Two things went wrong without it. The field decodes as `uint32` while the
+	// column is `INTEGER`, so an id above 2147483647 reached PostgreSQL and came
+	// back as an out-of-range error — a 500 and a logged database failure for what
+	// is a malformed request. And an id between 2^24 and that limit stored
+	// successfully but is outside what the peer's libsignal will accept in a
+	// bundle, so the key sat in the pool waiting to be dispensed into a session
+	// that could never be established.
+	maxPreKeyID = 0xFF_FFFF
 )
 
 // Prekey-fetch limits (docs/BACKEND.md §5). Both apply; the burst limit stops a
@@ -125,6 +137,9 @@ func decodeKey(s string, minLen, maxLen int) ([]byte, bool) {
 }
 
 func decodeSigned(k signedKeyJSON, minKey, maxKey int) (store.SignedPreKey, bool) {
+	if k.KeyID > maxPreKeyID {
+		return store.SignedPreKey{}, false
+	}
 	pub, ok := decodeKey(k.PublicKey, minKey, maxKey)
 	if !ok {
 		return store.SignedPreKey{}, false
@@ -172,6 +187,9 @@ func (r publishRequest) validate() (store.PreKeyUpload, bool) {
 		up.KyberOneTime = append(up.KyberOneTime, decoded)
 	}
 	for _, k := range r.OneTimePreKeys {
+		if k.KeyID > maxPreKeyID {
+			return store.PreKeyUpload{}, false
+		}
 		pub, ok := decodeKey(k.PublicKey, minCurveKeyBytes, maxCurveKeyBytes)
 		if !ok {
 			return store.PreKeyUpload{}, false
@@ -201,9 +219,7 @@ func (h *KeysHandler) publish(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req publishRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := httpx.DecodeJSON(r.Body, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest)
 		return
 	}

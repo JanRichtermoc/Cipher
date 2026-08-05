@@ -175,7 +175,14 @@ func (h *BlobsHandler) upload(w http.ResponseWriter, r *http.Request) {
 	//
 	// A limiter error here fails closed: the bytes are removed and the upload is
 	// refused, because an unmeasurable quota is the same as no quota.
-	if megabytes := int(size >> 20); megabytes > 1 {
+	//
+	// Rounded **up**, which is the half that was wrong: `size >> 20` floors, so a
+	// 1.9 MiB blob charged the one megabyte taken up front and nothing more, and
+	// anything under a megabyte charged one for any size at all. Against a 500 MiB
+	// daily allowance a client uploading just under 2 MiB at a time spent half of
+	// what it used — the quota was systematically short by up to one megabyte per
+	// upload, in the direction that favours the caller.
+	if megabytes := int((size + (1 << 20) - 1) >> 20); megabytes > 1 {
 		if _, err := h.auth.limiter.Charge(
 			ctx, byteSubject, blobBytesLimit, megabytes-1,
 		); err != nil {
@@ -303,10 +310,17 @@ func (h *BlobsHandler) download(w http.ResponseWriter, r *http.Request) {
 // once it has been decrypted and stored locally, which is the early end of the
 // retention window rather than a change to it.
 //
-// The row goes first here, unlike upload. If the file removal then fails the
-// sweep cannot find it, so it is logged loudly — but a slot whose row is gone is
-// already unreachable through the API, whereas removing the file first would
-// leave a live row pointing at nothing.
+// The file goes first and the row second, which is the order the retention sweep
+// already uses and for its reason: the row is the only record that the bytes
+// exist. Removing it first and then failing to unlink leaves ciphertext on a
+// host the threat model assumes is seizable, with nothing that could ever find
+// it again — not the sweep, not an operator, not a query. Unreachable through
+// the API is not the same as gone (`THREAT_MODEL.md` §3.1), and this endpoint
+// exists precisely so a recipient can make it gone.
+//
+// So an unlink failure refuses the request with the row intact, and the sweep
+// retries at the TTL. The residual in the other direction is strictly smaller: a
+// row whose bytes are gone answers 404 on download and is removed at expiry.
 func (h *BlobsHandler) delete(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -328,15 +342,18 @@ func (h *BlobsHandler) delete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.db.DeleteAttachment(ctx, id); err != nil {
-		h.log.ErrorContext(ctx, "attachment delete failed",
+	if err := h.blobs.Delete(id); err != nil {
+		h.log.ErrorContext(ctx, "blob bytes could not be removed; "+
+			"its row is kept so the retention sweep retries",
 			slog.String("reason", err.Error()))
 		httpx.WriteError(w, http.StatusInternalServerError)
 		return
 	}
-	if err := h.blobs.Delete(id); err != nil {
-		h.log.ErrorContext(ctx, "blob bytes could not be removed after the row went",
+	if _, err := h.db.DeleteAttachment(ctx, id); err != nil {
+		h.log.ErrorContext(ctx, "attachment row could not be removed after its bytes went",
 			slog.String("reason", err.Error()))
+		httpx.WriteError(w, http.StatusInternalServerError)
+		return
 	}
 
 	// 204 whether or not anything was there. The caller holds the capability, so

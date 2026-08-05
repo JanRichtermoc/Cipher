@@ -94,13 +94,23 @@ a truncated file at the id the database is about to point at, and the recipient 
 corrupt attachment for what was a network error. Renaming without the `fsync` allows the opposite —
 a correctly-named empty file after a power loss, which is worse, because nothing will retry it.
 
-**Order matters in both directions and it is not the same order.** On upload the file is written
-before the row, and removed if the row fails: a row without a file is a download that 500s and is
-recoverable, whereas a file without a row is a blob nothing remembers, which no sweep can find and
-no query can see. On deletion the row goes first, because a slot whose row is gone is already
-unreachable. The sweep follows the deletion order — bytes, then row — and deliberately keeps the
-row when the file removal fails, so the next tick retries rather than orphaning it permanently.
-Negative-tested: skipping the file deletion left `row=false disk=true`.
+**Order matters in both directions, and it is the same rule at both ends: the file is never the
+thing left behind.** On upload the file is written before the row, and removed if the row fails: a
+row without a file is a download that 500s and is recoverable, whereas a file without a row is a
+blob nothing remembers, which no sweep can find and no query can see. On deletion the bytes go
+first and the row second, and a failed unlink **keeps the row and refuses**, so the sweep retries
+at the TTL rather than orphaning the bytes permanently.
+
+The explicit `DELETE /v1/blobs/{id}` used to do the opposite — row first, then a best-effort
+unlink whose failure was only logged — which left exactly the undiscoverable ciphertext the rule
+above exists to prevent, on a host §1 assumes is seizable (AUDIT 5.27). It now matches the sweep.
+Negative-tested in both directions: skipping the file deletion leaves `row=false disk=true`, and
+making the unlink fail under the old order removed the row anyway.
+
+Durability is the other half. The upload's rename is followed by an `fsync` of the **directory**,
+not only of the file: the two are separate facts, and without the second a crash can leave the
+bytes on disk with no name pointing at them while the row already exists — a slot the relay
+believes it has and can never serve, which nothing retries because the upload succeeded.
 
 There is deliberately **no seventh module**. See §8.
 
@@ -140,7 +150,7 @@ One row per installation. Created only by redeeming an invite.
 |---|---|---|---|
 | `aci` | `UUID PRIMARY KEY` | The routing address. `ServiceIdentifier` on the client; messages must be addressed to *something*. Server-generated (UUIDv4) at redemption and adopted by the client via `CryptoEngine.adoptLocalAddress`. | An opaque identifier with no link to a person, phone, email, or device. This is the whole point of §3.4. |
 | `identity_key` | `BYTEA NOT NULL` | The peer's long-term **public** identity key, required in every dispensed bundle. Stored on the account rather than repeated per prekey row, so there is exactly one copy to serve and rotation has one place to happen. | A public key. Public by construction; it is what safety numbers are computed from. |
-| `registration_id` | `INTEGER NOT NULL` | Required by libsignal's `PreKeyBundle`. Without it `processPreKeyBundle` cannot run. | A small integer, chosen randomly by the client. Correlatable across a reinstall only if it does not change — and it does. |
+| `registration_id` | `INTEGER NOT NULL` | Required by libsignal's `PreKeyBundle`. Without it `processPreKeyBundle` cannot run. Bounded by the handler to libsignal's own 14-bit range, 1 through `0x3FFF` (AUDIT 5.27): above it the value is unusable in a bundle, and above `INTEGER` it turned a malformed request into a 500. | A small integer, chosen randomly by the client. Correlatable across a reinstall only if it does not change — and it does. |
 | `last_seen` | `DATE NOT NULL` | The only input to the abandoned-account sweep (§4). Day resolution, not second. | That an account was active on a given day. This is a real cost, accepted for a real need, and reduced as far as it can be without losing the sweep. |
 
 **Absent on purpose:** `created_at` (nothing reads it; `last_seen` covers the sweep), `display_name`,
@@ -405,6 +415,11 @@ Two changes make it real, and both matter:
    `ratelimit.Charge` therefore takes whatever is left and reports that the subject is now over
    quota; `ratelimit.Allow` keeps the non-deducting behaviour, which is the right one for a request
    that was refused and therefore not served.
+3. **A partial megabyte counts as a whole one** (AUDIT 5.27). The size was converted with
+   `size >> 20`, which floors, so an upload of 1 MiB + 1 byte spent the one megabyte taken before
+   the write and nothing after it. A client uploading just under 2 MiB at a time therefore used
+   twice the allowance it was charged — the quota was short by up to a megabyte per upload, always
+   in the caller's favour. The conversion rounds up.
 
 A limiter error on either charge **refuses the upload and removes the bytes**. An unmeasurable
 quota is the same as no quota, and the limiter's stated policy is to fail closed (§5's whole
