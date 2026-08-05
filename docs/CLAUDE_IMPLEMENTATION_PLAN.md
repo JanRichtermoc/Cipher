@@ -3,13 +3,16 @@
 Chronological, agent-executable roadmap from the current prototype to a private-circle production
 E2E messenger.
 
-**Companions:** [`THREAT_MODEL.md`](THREAT_MODEL.md) (who we defend against),
-[`AUDIT.md`](AUDIT.md) (what is broken), [`ARCHITECTURE.md`](ARCHITECTURE.md),
-[`../Vendor/libsignal/DECISIONS.md`](../Vendor/libsignal/DECISIONS.md).
+**Companions:** [`README.md`](README.md) (document authority),
+[`THREAT_MODEL.md`](THREAT_MODEL.md) (who we defend against), [`AUDIT.md`](AUDIT.md) (what is
+broken), [`BACKEND.md`](BACKEND.md) (relay protocol), and
+[`../Vendor/libsignal/DECISIONS.md`](../Vendor/libsignal/DECISIONS.md) (dependency decisions).
 
-**Working here?** [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) is the contract for how a step is done —
-what to read, the gate, negative testing, the secret scan, and where to stop. This file stays the
-authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_NOTES/).
+**Working here?** The root [`CLAUDE.md`](../CLAUDE.md) is the permanent behavioral
+contract. [`README.md`](README.md) defines document authority and reading order, while
+[`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) is the stable human-readable execution guide. This file
+owns current product status and the normative roadmap; per-step evidence belongs in
+[`STEP_NOTES/`](STEP_NOTES/).
 
 **Priority order:** security > correctness > reliability > maintainability > features > UI polish.
 
@@ -17,264 +20,35 @@ authority on *what* each step is; per-step detail goes in [`STEP_NOTES/`](STEP_N
 
 ## STATUS
 
-```
-CURRENT PHASE:  P5 in progress. P1-P4 COMPLETE.
-                P5.S05/S06/S08/S09/S10/S11 done. P5.S11 IS NOW COMPLETE —
-                AUDIT 4.13 and 4.14 are both closed.
-                Invite-code-only identity is now LOCKED DECISION 7 (§0.2).
-UNMERGED:       P5.S11 erasure + storage-quota remediation, and the §0.2.7
-                identity lock on top of it, are on
-                `codex/p5-s11-erasure-remediation`; not merged. The user merges
-                PRs by hand — give them the link and stop.
-DONE:           P1-P4 all steps. P5.S01/S02 (VPS + domain, 2026-07-29).
-                *** P5.S05 COMPLETE — external full-port scan shows
-                22/80/443 and nothing else, on BOTH address families. ***
-                *** P5.S06 COMPLETE — pin set + rotation runbook in
-                BACKEND.md §9.1, guarded by Scripts/verify-pins.sh. ***
-                *** P5.S08 COMPLETE — RelayClient: HTTPS/TLS1.3 only, SPKI
-                pinned, fails closed. 13 tests, negative-tested 4 ways. ***
-                *** P5.S09 COMPLETE — invite redemption -> Keychain. C-01 IS
-                CLOSED: authentication is a server-issued token, not a
-                string-length check. 11 tests, negative-tested 5 ways. ***
-                *** P5.S10 COMPLETE — the real messaging path. C-02 IS CLOSED
-                and MockStore is GONE. Prekey publication, session setup from
-                a fetched bundle, encrypt-before-send, decrypt-after-fetch,
-                sealed local storage, and acknowledge-only-what-is-durable.
-                AUDIT 5.3 CLOSED; 4.10, 5.19, 5.20, 5.21 found and closed on
-                the way. ***
-                *** SECURITY AUDIT REMEDIATION 2026-07-30 — docs/SECURITY_AUDIT.md
-                was reviewed and every finding that could and should be fixed
-                now is. Fixed: AUDIT 1.11 (a reachable CVE in x/text sat in
-                go.mod for two phases; bumped, and a govulncheck gate added so
-                the next one is caught), 5.22 (the blob byte quota was charged
-                and never checked — the real ceiling was 10 GB/day/account),
-                5.23 (ack and blob-delete had no rate limit at all), 5.24
-                (every restart reset every rate-limit bucket), 1.5 (the
-                CocoaPods sandbox exemption is now scoped to the three targets
-                that provably need it). NOT pulled forward: safety numbers
-                (P5.S12), prekey rotation (P6.S01), sealed sender (P7.S01),
-                profile fields (P5.S11) — the reasons are in SECURITY_AUDIT.md
-                Appendix C. ***
-                *** CI FIX 2026-07-30 — the `verify` run on `p5/stage-h` failed gate 4
-                and the gate was RIGHT: all 21 reachable findings were in the Go
-                STANDARD LIBRARY, which comes from the toolchain, not from the
-                module graph. CI installs Go from server/go.mod, which declared
-                1.25.0. Now 1.25.12 (lowest release fixing all 21). The real
-                finding is AUDIT 1.13: verify-vulns.sh scanned whatever Go was
-                on PATH, so it passed locally under 1.26.5 and failed in CI —
-                green on the one machine where the fix would be written. It now
-                pins GOTOOLCHAIN to the declared version. Negative-tested twice. ***
-                *** P5.S11 COMPLETE — the encrypted local message DATABASE.
-                AUDIT 4.3 and 4.7 are CLOSED. SealedRecordDatabase: SQLite
-                from the SDK (no new dependency), in the crypto container, on
-                the crypto queue, every value AES-GCM sealed with the AAD
-                binding it to (namespace, group, ordinal). Keys are HKDF
-                subkeys of the EXISTING record key, so one Keychain item is
-                still the erase for everything. Peer ids are a KEYED BLIND
-                INDEX, never a column. ConversationArchive kept its interface,
-                lost its index record, and appends in one transaction. Old
-                records are migrated, not dropped. Profile fields left
-                UserDefaults. FOUND ON THE WAY: with a wrong key the keyed
-                index made every lookup MISS, so reads returned nil — an
-                empty history instead of a failure, which is what AUDIT 4.9
-                forbids. Caught by its own test before commit; fixed with a
-                key-check row, so the container refuses to open. New residual
-                recorded as AUDIT 4.11: an index lets whoever holds the file
-                count messages per conversation. 4.4 NARROWED, not closed —
-                libsignal's own records were still one file each. ***
-                *** P5.S10 RECEIVE-ATOMICITY REMEDIATION 2026-07-31 — a full
-                integrated P5 review found that decrypt advanced/persisted
-                libsignal state before the archive transaction. If archival
-                then failed, retry could not decrypt and the intentional
-                permanent-failure branch ACKed/dropped the only copy. CLOSED:
-                protocol records now use the same sealed SQLite connection as
-                the archive, and decrypt + payload decision + archive append
-                commit or roll back together. Existing file records migrate
-                lazily; sealed tombstones prevent resurrection after an
-                interrupted cleanup. MessageRepository serialises register,
-                send and receive across awaits; the FIFO gate is cancellation-
-                aware. The replacement retry test was negative-tested against
-                the split commit and failed by storing 0 instead of 1. The
-                concurrency, cancellation, migration-cleanup and tombstone
-                tests were each negative-tested against their defect, with
-                their names present in output. Corrupt/oversized/newer local
-                protocol state is now a storage failure, never a bad-envelope
-                ACK, and app-facing row namespaces cannot address internal
-                `proto-*` state; both guards were negative-tested by name.
-                AUDIT 4.12 CLOSED; 4.4 narrowed again. The rest of the integrated review is recorded OPEN in
-                AUDIT 1.14, 4.13-4.14, 5.25-5.30 and 6.13-6.15. ***
-                *** P5.S09 ACCOUNT-LIFECYCLE REMEDIATION 2026-07-31 —
-                AUDIT 5.25 CLOSED and 4.13's cross-account portion CLOSED.
-                Invite deletion + account + first token hash now commit in one
-                relay transaction. The versioned Keychain credential binds ACI,
-                issue time, server expiry and persisted lifecycle phase.
-                Registration and profile setup resume after a crash; only an
-                active, unexpired credential reaches main. Rotation is proactive,
-                single-flight and never retried. Every messaging operation checks
-                credential ACI == crypto ACI. Sign-out, expiry, rejection and an
-                unreadable legacy credential enter a persisted destructive gate;
-                another invite remains unreachable until crypto state, sealed
-                history/profile and in-memory conversations are erased. Hostile
-                token/ACI/expiry shapes are refused. A deadline task persists
-                destruction if expiry occurs while foregrounded, and cleanup
-                re-reads a temporarily unavailable `WhenUnlocked` item before
-                erasure. All new guards were
-                negative-tested with their names in the failing output. ***
-                *** P5.S11 ERASURE REMEDIATION 2026-08-01 — AUDIT 4.13 CLOSED.
-                Keychain keys are destroyed before ciphertext; interrupted
-                erasure resumes without opening or replacing the missing key.
-                SQLite secure deletion is verified, deleted/replaced WAL frames
-                are truncated, and a one-time VACUUM scrubs pre-fix residue.
-                Profile writes cannot reorder across edits or accounts, and
-                committed legacy-file cleanup retries on every open. All eleven
-                guards were independently negative-tested by name. ***
-                *** P5.S11 STORAGE QUOTA 2026-08-04 — AUDIT 4.14 CLOSED, and
-                P5.S11 is finished. Local storage is bounded three ways at once
-                (256 conversations, 5 000 messages each, 192 MiB logical
-                container measured as page_count - freelist_count so that
-                freeing pages actually lowers it). Retention raises the floor
-                and never rewinds the counter. Eviction takes from the LARGEST
-                conversation, so a flooding peer trims its own history first,
-                and never below a floor of 8, so it cannot delete the message
-                whose append triggered it. All of it commits inside the
-                append's own transaction, so "acknowledge only what is durable"
-                still holds. A first message from a new peer at the cap is
-                quotaExceeded: dropped and ACKed with the ratchet committed —
-                withholding the ack would leave the relay redelivering an
-                envelope that can never decrypt again and would stop every
-                message behind it. FOUND ON THE WAY: two of the new tests
-                passed with the check deleted, because they drove `append`
-                rather than the inbound path that carries the check — R2
-                exactly, caught by negative testing. Both were rewritten
-                against real envelopes in MessageRepositoryTests. New residual
-                recorded as AUDIT 4.15. All eleven guards negative-tested by
-                name. ***
-                *** §0.2.7 LOCKED — invite-code-only identity. Cipher already
-                collected no phone number, email, username or verification
-                code; it is now a REQUIREMENT that fails loudly rather than a
-                property that happens to hold. Confirmed from source first: the
-                `accounts` row is aci/identity_key/registration_id/last_seen
-                and nothing else, redeem takes {code, identity_key,
-                registration_id} and returns a server-minted opaque ACI, and
-                the client `username` never leaves the device. Two enforcers,
-                because one cannot reach both halves:
-                LockedDecisionsTests.testIdentityCarriesNoHumanIdentifier pins
-                the wire types by reflection, and the new gate 4,
-                Scripts/verify-identity-fields.py, refuses an identity-shaped
-                field across the whole relay, the wire format and
-                Cipher/Networking. It strips comments with a per-language lexer
-                first (R3 — the prose documenting this decision names every
-                string it forbids) and carries three positive controls (R2).
-                Negative-tested both ways: the script fires on all six
-                surfaces, stays silent on the same words in a comment, and
-                fails when blinded; the test fails BY NAME on a phone field, a
-                verification code, a widened identifier and a decoder that
-                stops rejecting one. Residual recorded as AUDIT 5.31. ***
-                114 integration tests + 269 iOS tests, verify-all.sh 13/13.
-                (269 = 162 CipherCrypto XCTest + 77 Cipher XCTest + 30 Swift
-                Testing cases, measured off the verify-all run, not derived.)
-                (257 = 158 CipherCrypto XCTest + 69 Cipher XCTest + 30 Swift
-                Testing cases, measured; earlier revisions undercounted.)
-STAGING BOX:    https://relay.mgchatman.app -> 51.83.235.254 (`ssh cipher-staging`).
-                Ubuntu 24.04, running main @ `3f4cf92` (DEPLOYED 2026-07-30;
-                it had been on `9a279a4`, four relay-affecting commits behind,
-                so it was serving without the 5.22 blob-quota check and with
-                5.23's two unmetered endpoints. RELAY_RATELIMIT_PEPPER is now
-                set — AUDIT 5.24, RUNBOOK-VPS.md H.0b, which was itself wrong
-                and is fixed). TLS 1.3 only, Let's Encrypt ECDSA,
-                cert expires 2026-10-27, renewal reuses the key.
-                Secrets exist only on the box. What was done and what was
-                OBSERVED per stage: docs/RUNBOOK-VPS.md. Re-runnable — P9.S01
-                buys production against the same bar.
-FOUND IN S05:   Three things that looked configured and were not. All CLOSED,
-                all in AUDIT.md, all worth reading before P9.S01 repeats this:
-                  4.8  OVH's daily snapshot CANNOT be disabled on this product.
-                       ACCEPTED residual: up to 24h of ciphertext + metadata
-                       survives deletion in a copy we do not control.
-                  5.15 A reverse proxy would have collapsed the only per-IP
-                       rate limit into one global bucket. Fixed by trusting an
-                       ADDRESS, never a header (BACKEND.md §9.2).
-                  5.16 nginx accepted TLS 1.2 while its config read as 1.3-only
-                       — ssl_protocols is taken from the DEFAULT server for the
-                       socket. Worse, the first probe reported a false pass:
-                       macOS `openssl` is LibreSSL and cannot drive -tls1_3.
-FOUND IN S07:   Mechanical half of the review done 2026-07-30; sign-off is the
-                operator's. Clean: no private key material in ANY blob in git
-                history (971 blobs scanned), no .env ever tracked, no tokens,
-                no 64-hex secrets. SSH is key-only, root refused, one
-                authorized key, fail2ban live (3 bans so far, unprompted).
-                One item outstanding (2); (1) is closed as a residual, (3) is done:
-                  1. CAA: CANNOT BE DONE on name.com — their DNS editor has
-                     no CAA type (operator confirmed 2026-07-30). Recorded as
-                     AUDIT 5.17, ACCEPTED: pinning refuses a mis-issued cert
-                     regardless of CA, and the host serves no browsers. CAA
-                     support is now a registrar criterion for P9.S01.
-                  2. The APEX mgchatman.app also A-records to the VPS. STILL
-                     OUTSTANDING — reported done 2026-07-30, but all four
-                     authoritative name.com nameservers still answer
-                     `mgchatman.app A 51.83.235.254`, so the deletion did not
-                     take. Not a cache: an authoritative server does not cache
-                     its own zone. LIKELY CAUSE: the apex carries BOTH an `A`
-                     and an `ANAME`, each -> 51.83.235.254, and name.com
-                     flattens ANAME into A answers at serve time — so deleting
-                     the A row alone leaves resolution unchanged. Both apex
-                     rows must go. Not needed (the relay is on the subdomain)
-                     and P5.S04 says no unnecessary records. nginx returns 444
-                     for it, so this is surface reduction, not an active hole.
-                  3. ubuntu's password: DONE 2026-07-30. The OVH-emailed
-                     value is no longer live at the console.
-FOUND IN S10:   Four things, all CLOSED, all in AUDIT.md:
-                  4.10 Actor isolation does NOT make a read-modify-write
-                       atomic. Two concurrent appends both read the same
-                       ordinal and one message vanishes with no error. With
-                       the fix bypassed, 25 appends store 1 message.
-                  5.19 A LibSignalClient error escaped through `throws`,
-                       which verify-api-boundary.sh cannot see — a thrown
-                       type is in no signature. 5.12 was half-closed.
-                  5.20 Redemption decoded the account's ACI and dropped it:
-                       a valid session with no address, discovered later as
-                       "messaging does not work".
-                  5.21 Six shipping affordances depicted capabilities that do
-                       not exist (calls, attachments, voice recording,
-                       delivery/read receipts, linked devices, storage).
-NEXT STEP:      P5.S11 is done. Continue the recorded P5 audit findings one
-                step at a time, in this order, before P5.S12 and P5.S13:
-                AUDIT 5.26 (the pinned client buffers an unbounded response
-                body, follows redirects by default, and misreports cancellation
-                during backoff as a TLS failure) — SECURITY-CRITICAL, it is the
-                remaining hostile-input surface on the transport and the one
-                place a hostile relay still has room. Then 5.27 (relay
-                transaction and input bounds weaker than their API contract),
-                then 1.14 (CI executes a mutable libsignal tag's build scripts
-                before proving which commit it names) — also security-critical,
-                it is a supply-chain ordering defect. 6.14 (gates that can skip
-                or under-prove their named property) should come before any
-                further reliance on those gates.
-STILL HUMAN:    ONE item. The apex A record (FOUND IN S07 item 2) was
-                reported dropped on 2026-07-30 but is STILL SERVED by all four
-                authoritative name.com nameservers — verify with
-                `dig +short mgchatman.app A`, which must return nothing.
-                Everything else is closed: item 1 is accepted as AUDIT 5.17,
-                item 3 is done, and `verify` is now a REQUIRED status check on
-                `main` (ruleset `main-protection`, requiring verify +
-                relay-integration), closing the last residual in AUDIT 1.6.
-DECIDED:        OVH daily backup — cannot be disabled; carried as AUDIT 4.8.
-                Re-argue at P9.S01, where "can snapshots be declined?" joins
-                jurisdiction as a provider selection criterion.
-REPO:           github.com/JanRichtermoc/Cipher (public, AGPL-3.0)
-HUMAN NEEDED:   Make `verify` a required status check on PRs — a repository setting,
-                not a file here. Settings → Branches → add a rule for `main` →
-                "Require status checks to pass" → select `verify`.
+This is the canonical product-roadmap snapshot. Verify mutable repository, CI, test, dependency,
+deployment, and operator state from their executable or live sources before acting.
+
+| Field | Current status |
+|---|---|
+| Phase | P5 in progress; P1–P4 complete. |
+| Completed P5 product steps | P5.S01, P5.S02, P5.S05, P5.S06, P5.S08, P5.S09, P5.S10, and P5.S11. |
+| Security-remediation queue | With P5.S11 complete, address the recorded P5 findings one approved step at a time: AUDIT 5.26, then 5.27, then 1.14, then 6.14. Do not pull these into one change. |
+| Next planned feature | P5.S12 safety numbers, followed by P5.S13 two-device staging verification, after the approved remediation work above. |
+| Open and accepted risk | `AUDIT.md` is authoritative. Read every applicable OPEN and ACCEPTED row; this table never overrides it. |
+| Repository and PR state | Derive from Git and the current GitHub pull-request list. Never copy an “unmerged branch” into this plan. |
+| Staging and operator state | `RUNBOOK-VPS.md` owns procedures and its state table; live read-only checks win. Do not duplicate host, certificate, DNS, or pending-operator snapshots here. |
+| Verification state | Derive gate count from `Scripts/verify-all.sh` and test totals from a fresh run. A copied total is not evidence. |
+
+Before selecting or creating a branch, inspect at least:
+
+```sh
+git status --short --branch
+git log --oneline --decorate -10
+git branch -vv
 ```
 
-Update this block when a step completes. One grep answers "where am I".
+Check relevant open pull requests through the authenticated GitHub surface currently available. The
+approved step determines whether to continue an existing branch or create a new focused `codex/`
+branch from current `main`.
 
-**Closed in P1 so far** — AUDIT 1.7, 5.4, 5.5, 5.6, 5.7, 5.9, 5.10, 5.11, 6.1. Each is guarded, not just
-fixed. `Scripts/verify-all.sh` gained `verify-localization.py` (orphan detection, DEBUG-only
-translation detection, and retired-claim matching anywhere in a string in any language) and a
-Release-*bundle* audit covering resources as well as the executable. Every gate was negative-tested
-by re-introducing the defect and confirming a non-zero exit; the localization gate carries that
-negative test as a `--self-test` that runs before its own verdict is believed.
+Do not append implementation narratives to this block. Record durable completion in the roadmap row,
+security invariants and finding status in `AUDIT.md`, operational evidence in the runbook, and
+detailed test/negative-test evidence in a step note or Git history.
 
 ---
 
@@ -300,22 +74,18 @@ negative test as a `--self-test` that runs before its own verdict is believed.
 
 ## 0.1 Project reality
 
-- **CipherCrypto:** solid key-custody + protocol-store foundation on LibSignalClient `v0.99.1`. No
-  custom crypto.
-- **App (`Cipher/`):** wired to `CryptoEngine` and the relay since P5.S10. `ConversationStore` →
-  `MessageRepository` → `ConversationArchive` (sealed, in the crypto container) + `RelayMailbox` /
-  `RelayKeyDirectory`. `MockStore` is gone; its fixtures are DEBUG-only previews.
-- **Backend / domain / VPS:** do not exist. **CI does** — `github.com/JanRichtermoc/Cipher`, green
-  on `main`, running the same `Scripts/verify-all.sh` a developer runs.
-- **Verified:** Release arm64 device build; both schemes' tests; supply-chain gate; app-target
-  manifest gate (tracks `.swift` / `.xcprivacy` / `.entitlements`).
-- **Tests:** **106 pass**. `testEveryStoreCallbackRunsOnTheCryptoQueue` proves the concurrency claim
-  during a **real decrypt**, not a vacuous assert.
-- **Production readiness:** ~10–15% of a minimal private-circle E2E messenger.
-  **NOT PRODUCTION-READY.**
-- **Re-verified 2026-07-28** against the working tree: `Cipher/` still contains no reference to
-  `CipherCrypto`/`CryptoEngine` and no `URLSession`/`Network` usage — the façade exists and is
-  tested, but no screen calls it (AUDIT 5.3, P5.S10); `PINS.env` still pins `v0.99.1`.
+- **CipherCrypto:** the sole cryptographic boundary, using the pinned LibSignalClient and CryptoKit;
+  no custom cryptography. Manifests and `Vendor/libsignal/PINS.env` own current versions.
+- **App (`Cipher/`):** authenticates with a relay-issued credential and routes messages through
+  `ConversationStore` → `MessageRepository` → `CryptoEngine`, pinned relay transport, and sealed
+  local persistence. Production `MockStore` paths are gone.
+- **Relay (`server/`):** a Go ciphertext-only store-and-forward service with PostgreSQL and Redis.
+  `BACKEND.md` owns its protocol; code and migrations own mechanics.
+- **Operations:** staging exists, but deployment, certificate, DNS, and operator state are mutable.
+  `RUNBOOK-VPS.md` plus live read-only checks are authoritative.
+- **Verification:** CI and local development execute `Scripts/verify-all.sh`. Derive the current
+  gates, tests, builds, and toolchain from scripts, fresh output, manifests, and lockfiles.
+- **Readiness:** Cipher is not production-ready while P5 and the OPEN findings in `AUDIT.md` remain.
 
 ## 0.2 Locked protocol decisions (do not "fix" these)
 
@@ -374,7 +144,7 @@ fails instead of reporting a clean tree it never read (AUDIT **R2**).
 | AUDIT | Item | Closes in |
 |-------|------|-----------|
 | 3.8 | First-contact address is relabellable by the relay | P5.S12 / P7 |
-| 4.4 | No transactional store for *libsignal's* records, so no NSE/App Group yet | P6 |
+| 4.4 | NSE/App Group sharing is not approved or cross-process tested; Keychain sharing still needs a migration and rollback design | P6 |
 | 2.4 | No key rotation / replenishment | P6.S01 |
 | 2.5 | No safety-number UI | **P5.S12** (moved from P6) |
 | 3.1 | Base-key witness FIFO eviction | P4.S06 + P6.S01, resolved P6.S02 |
@@ -447,7 +217,7 @@ fails instead of reporting a clean tree it never read (AUDIT **R2**).
 - [ ] Groups unreachable in Release
 - [ ] Nothing in the Release `.app` — code *or* resource — names a debug affordance
 - [ ] Every required-reason API in the shipped bundle is declared (AUDIT 6.1)
-- [ ] 89+ tests pass, including all four `LockedDecisionsTests`
+- [ ] The full current test suite passes, including every `LockedDecisionsTests` case
 
 ---
 
@@ -557,7 +327,7 @@ and an encrypted local database **from the first real message**.
 |----|------|-------|-----------|--------|
 | **P5.S01** | **Buy the domain.** Needed now for TLS certificates and to mint the pins the app ships. Registrar lock + WHOIS privacy. Prefer a boring, dedicated domain. | **HUMAN** | Domain registered and locked | Buy earlier (wasted renewal) |
 | **P5.S02** | **Buy the staging VPS**, same day or immediately after. Hetzner / OVH / DigitalOcean — jurisdiction is a real criterion (`THREAT_MODEL.md` §3.7). 1–2 vCPU, 2–4 GB is enough. | **HUMAN** | VPS provisioned | Buy before P4 exit; use it for production |
-| **P5.S03** | **Provide access material out of band** — never committed: registrar/DNS API token; VPS IP + SSH key (prefer: human creates a deploy user, pastes the host fingerprint); ACME email; chosen hostname. | **HUMAN** | Claude has what it needs | Paste secrets into the repo or chat history |
+| **P5.S03** | **Provide access material out of band** — never committed: VPS SSH access and the chosen hostname. DNS changes remain operator-owned while no registrar API credential exists. ACME registration intentionally uses no email (`RUNBOOK-VPS.md` §H.3). | **HUMAN** | Claude has the non-secret access and public hostname needed for approved work | Paste secrets into the repo or chat history; add an unused registration email |
 | **P5.S04** | DNS: A/AAAA for the API host; CAA restricting CAs; DNSSEC if supported; no unnecessary public records. | AI-after-access | `dig` shows the expected records | Create wildcards |
 | **P5.S05** | VPS hardening + staging deploy: Ubuntu LTS, key-only SSH, no password auth, firewall (22/80/443 only — **no Postgres/Redis exposed**), unattended security updates, minimal packages, non-root Docker, Nginx + **TLS 1.3** + ACME, HSTS (carefully on staging), fail2ban. Secrets via env/files **not in git**. Procedure and observed results: [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md). **DONE 2026-07-29, all stages.** Exit criterion met on both address families. Three latent misconfigurations found and closed on the way: AUDIT 4.8, 5.15, 5.16. | AI-after-access | External port scan shows only 22/80/443 | Expose the database |
 | **P5.S06** | Document the pin set: extract SPKI/pin hashes for the staging leaf/intermediate; write the pin-rotation runbook stub in `docs/BACKEND.md` (created in P4.S01). **DONE 2026-07-29.** All five chain SPKIs extracted and recorded in `BACKEND.md` §9.1, but only the **leaf and the backup key are pinned** — the intermediate is recorded and deliberately *not* pinned, because a pin set is only as strong as its weakest accepted pin and accepting the LE intermediate accepts any certificate LE issues for the host, which an attacker passing ACME validation can obtain. Runbook now covers routine renewal, planned rotation (two releases), key compromise, both-keys-lost, and host moves. `Scripts/verify-pins.sh` checks the served SPKI against the recorded pins and that `reuse_key` is still set; negative-tested three ways. | AI-after-access | Pins recorded with a rotation procedure | Ship a pin with no rotation plan |

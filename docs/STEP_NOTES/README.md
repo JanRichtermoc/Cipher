@@ -10,4 +10,5 @@ question that needs the operator.
 Nothing here may renumber a step, add a step, or change what a step means. If the plan looks wrong,
 that is a conversation with the operator, not an edit here.
 
-The working contract for the agent writing these is `docs/AGENT_HANDOFF.md`.
+The root `CLAUDE.md` is the working contract. `docs/AGENT_HANDOFF.md` explains the detailed execution
+workflow without duplicating current status.
