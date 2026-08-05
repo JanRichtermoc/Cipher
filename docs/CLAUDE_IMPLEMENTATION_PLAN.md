@@ -134,7 +134,7 @@ passing vacuously.
 
 Decision 7 needs a second enforcer, because most of its surface is outside `CipherCrypto` and no
 Swift unit test can reach it: the account model, the auth API and the relay schema are Go and SQL.
-`Scripts/verify-identity-fields.py` (gate 4 of `verify-all.sh`) is that half — it refuses an
+[`Scripts/verify-identity-fields.py`](../Scripts/verify-identity-fields.py) is that half — it refuses an
 identity-shaped field name in those four surfaces, strips comments first so it does not fire on the
 prose describing the decision (AUDIT **R3**), and carries positive controls so a blinded scanner
 fails instead of reporting a clean tree it never read (AUDIT **R2**).

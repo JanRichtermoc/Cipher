@@ -2,7 +2,8 @@
 
 **Closes:** AUDIT 6.1 · **Plan step:** P1.S11 (finishes in P8.S05)
 **Verified:** 2026-07-28, against libsignal `v0.99.1` / `97801d22dcf9f5bf714f7b8fa3212cdc973ae1c8`
-**Enforced by:** `Scripts/verify-privacy-manifest.sh`, step 9 of `Scripts/verify-all.sh`
+**Enforced by:** [`Scripts/verify-privacy-manifest.sh`](../Scripts/verify-privacy-manifest.sh),
+invoked by [`Scripts/verify-all.sh`](../Scripts/verify-all.sh)
 
 Apple requires a declared reason for five API categories. The requirement attaches to what is
 **in the shipped bundle**, not to what the app calls — and libsignal is a *dynamic* framework, so
