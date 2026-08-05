@@ -95,8 +95,8 @@ The full fast gate — build, vet, gofmt, race tests, and the compose invariants
 ../Scripts/verify-relay.sh
 ```
 
-It also runs as gate 4 of `Scripts/verify-all.sh`, before anything that invokes `xcodebuild`,
-so a relay defect surfaces in seconds rather than after a half-hour simulator build.
+It also runs near the start of [`Scripts/verify-all.sh`](../Scripts/verify-all.sh), before anything
+that invokes `xcodebuild`, so a relay defect surfaces before a simulator build.
 
 ### Integration tests
 
