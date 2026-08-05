@@ -406,16 +406,6 @@
         }
       }
     },
-    "Cipher is invite-only. No email or phone number is required to join — an identifier we never collect cannot be leaked, correlated, or seized.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Cipher je jen na pozvání. K připojení není potřeba e-mail ani telefonní číslo — identifikátor, který nikdy nesbíráme, nemůže uniknout, být spárován ani zabaven."
-          }
-        }
-      }
-    },
     "Cipher is single-device by design. The message format carries no device identifier, so a second device cannot be linked and there is nothing here to revoke.": {
       "localizations": {
         "cs": {
@@ -825,32 +815,12 @@
         }
       }
     },
-    "Invite Friends": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Pozvat přátele"
-          }
-        }
-      }
-    },
     "Invite code": {
       "localizations": {
         "cs": {
           "stringUnit": {
             "state": "translated",
             "value": "Pozvánkový kód"
-          }
-        }
-      }
-    },
-    "Invite codes are not implemented yet. They have to be issued by the server so they can be single-use and expiring, and there is no server yet.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Zvací kódy zatím nejsou hotové. Musí je vydávat server, aby byly jednorázové a s omezenou platností, a server zatím neexistuje."
           }
         }
       }
@@ -876,16 +846,6 @@
       }
     },
     "Leave": {},
-    "Leave Cipher Circle": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Opustit kruh Cipher"
-          }
-        }
-      }
-    },
     "Leave Group": {},
     "Leave this group?": {},
     "Linked Devices": {
@@ -1284,16 +1244,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "PIN zámku registrace"
-          }
-        }
-      }
-    },
-    "Removes this device from the circle. Your friends keep their chats.": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Odebere toto zařízení z kruhu. Přátelům chaty zůstanou."
           }
         }
       }
@@ -1917,16 +1867,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Váš identitní klíč se vytvoří na vašem iPhonu a uloží se do Klíčenky iOS s označením, které brání jeho synchronizaci na iCloud i jeho zahrnutí do zálohy."
-          }
-        }
-      }
-    },
-    "Your invite codes": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vaše pozvánkové kódy"
           }
         }
       }

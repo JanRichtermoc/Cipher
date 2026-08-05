@@ -56,6 +56,10 @@ DENY = [
     ("spojení je bezpečn", "Czech rendering of the connection claim"),
     ("Mark as Verified", "no fingerprint comparison exists behind it until P5.S12"),
     ("Označit jako ověřen", "Czech rendering of the verification claim"),
+    ("Invite codes are not implemented yet", "the relay issues real invite codes (AUDIT 5.30)"),
+    ("Zvací kódy zatím nejsou hotové", "Czech rendering of the retired invite claim"),
+    ("there is no server yet", "the relay exists and authenticated invite issuance is implemented"),
+    ("server zatím neexistuje", "Czech rendering of the retired no-server claim"),
 ]
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
@@ -404,6 +408,42 @@ SELF_TESTS = [
             }
         },
         "'spojení je bezpečn'",
+    ),
+    (
+        "C: retired invite implementation claim",
+        {"Invite codes are not implemented yet.": (False, "X.swift:1")},
+        {"Invite codes are not implemented yet.": {}},
+        "'Invite codes are not implemented yet'",
+    ),
+    (
+        "C: retired Czech invite implementation claim",
+        {"Invite issuance is unavailable in the client.": (False, "X.swift:1")},
+        {
+            "Invite issuance is unavailable in the client.": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Zvací kódy zatím nejsou hotové."}}
+                }
+            }
+        },
+        "'Zvací kódy zatím nejsou hotové'",
+    ),
+    (
+        "C: retired no-server claim",
+        {"There is no server yet.": (False, "X.swift:1")},
+        {"There is no server yet.": {}},
+        "'there is no server yet'",
+    ),
+    (
+        "C: retired Czech no-server claim",
+        {"Invite issuance is unavailable in the client.": (False, "X.swift:1")},
+        {
+            "Invite issuance is unavailable in the client.": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Server zatím neexistuje."}}
+                }
+            }
+        },
+        "'server zatím neexistuje'",
     ),
     (
         "D: guarded term in an unregistered string",
