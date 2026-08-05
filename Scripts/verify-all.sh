@@ -272,6 +272,19 @@ if [ "$FAST" -eq 0 ]; then
     fi
   }
 
+  email_address_pattern='[[:alnum:]._%+-]+@[[:alnum:].-]+\.[[:alpha:]]{2,}'
+  bundle_email_hits() {
+    # This is a product-copy rule, not a dependency-byte rule. Opaque libsignal bytes can
+    # resemble an address but the framework renders no UI. Scan Cipher's executable and
+    # first-party resources, pruning Frameworks; the security-symbol denylist above still
+    # audits the complete bundle.
+    find "$APP" -path "$APP/Frameworks" -prune -o -type f \
+      -exec grep -laE "$email_address_pattern" {} + 2>/dev/null || true
+    if printf '%s' "$localized_bundle_text" | grep -Eq "$email_address_pattern"; then
+      echo "compiled localization tables"
+    fi
+  }
+
   # Two positive controls, first. Every check below is "found nothing", and "found nothing"
   # is also what a broken search looks like. The symbol proves raw bundle search works; the
   # Czech Settings translation proves binary localization decoding works. See AUDIT R2.
@@ -280,6 +293,9 @@ if [ "$FAST" -eq 0 ]; then
   fi
   if ! bundle_hits "Nastavení" >/dev/null; then
     fail "the Release bundle audit found no Czech Settings translation — compiled-localization search is broken"
+  fi
+  if ! printf '%s%s%s\n' "probe" "@" "example.invalid" | grep -Eq "$email_address_pattern"; then
+    fail "the Release bundle email-address detector is broken"
   fi
 
   leaked=0
@@ -294,12 +310,18 @@ if [ "$FAST" -eq 0 ]; then
     "Your identity key is generated on your iPhone" "Váš identitní klíč se vytvoří na vašem iPhonu" \
     "The relay only sees ciphertext" "Relay vidí jen šifrovaný text" \
     "never plaintext, never your keys" "nikdy otevřený text, nikdy vaše klíče" \
-    "Keys never leave your devices" "Klíče neopouštějí vaše zařízení"; do
+    "Keys never leave your devices" "Klíče neopouštějí vaše zařízení" \
+    "Choose Photo" "Vybrat fotku" \
+    "Contact support" "Kontaktovat podporu"; do
     if hits="$(bundle_hits "$sym")" && [ -n "$hits" ]; then
       echo "  !     '$sym' is present in: $(printf '%s\n' "$hits" | sed "s|$APP/||" | tr '\n' ' ')"
       leaked=1
     fi
   done
+  if hits="$(bundle_email_hits)" && [ -n "$hits" ]; then
+    echo "  !     an email address is present in: $(printf '%s\n' "$hits" | sed "s|$APP/||" | tr '\n' ' ')"
+    leaked=1
+  fi
   [ "$leaked" -eq 0 ] || fail "a debug affordance or retired claim ships in Release (AUDIT 5.6, 5.11, 5.19, 5.30)"
   echo "  ok    no debug affordance or retired claim anywhere in the Release bundle"
 

@@ -323,16 +323,6 @@
         }
       }
     },
-    "Choose Photo": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Vybrat fotku"
-          }
-        }
-      }
-    },
     "Cipher": {
       "extractionState": "manual",
       "localizations": {
@@ -503,16 +493,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Kontakt nenalezen."
-          }
-        }
-      }
-    },
-    "Contact support": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "Kontaktovat podporu"
           }
         }
       }
@@ -1887,16 +1867,6 @@
           "stringUnit": {
             "state": "translated",
             "value": "Vaše přihlášení už není platné. Použijte novou pozvánku a přihlaste se znovu."
-          }
-        }
-      }
-    },
-    "support@cipher.app (placeholder)": {
-      "localizations": {
-        "cs": {
-          "stringUnit": {
-            "state": "translated",
-            "value": "support@cipher.app (placeholder)"
           }
         }
       }

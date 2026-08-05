@@ -139,14 +139,14 @@ struct EditProfileView: View {
     var body: some View {
         Form {
             Section {
+                // Initials are the only supported avatar. The former photo control had no
+                // picker, storage or delivery path and therefore performed no action.
                 HStack {
                     Spacer()
                     AvatarView(initials: String(name.prefix(2)).uppercased(), color: CipherTheme.accent, size: CipherTheme.avatarXL)
                     Spacer()
                 }
                 .listRowBackground(Color.clear)
-                Button("Choose Photo") {}
-                    .frame(maxWidth: .infinity)
             }
             Section {
                 TextField("Name", text: $name)
@@ -383,10 +383,6 @@ struct HelpView: View {
                 // Public identity and prekey material is published to the relay. Only the
                 // private halves stay local; collapsing both into "keys" is a false claim.
                 Text("Cipher uses the Signal Protocol. Your device retains all private key material. The server receives public keys needed to establish encrypted sessions and relays ciphertext it cannot decrypt.")
-                    .padding()
-            }
-            NavigationLink("Contact support") {
-                Text("support@cipher.app (placeholder)")
                     .padding()
             }
             Link(destination: URL(string: "https://developer.apple.com/design/resources/")!) {
