@@ -1,11 +1,13 @@
 # Cipher — threat model
 
-Who this is defended against, what each adversary sees, and what they still see after the plan is
-finished. Every privacy position below is a **decision with a date**, not an omission.
+Who this is defended against, what each adversary can see at the boundary, and which residuals the
+design accepts. Every privacy position below is a **decision with a date**, not an omission.
 
 Written 2026-07-28. Companion to [`AUDIT.md`](AUDIT.md) (what is broken) and
 [`CLAUDE_IMPLEMENTATION_PLAN.md`](CLAUDE_IMPLEMENTATION_PLAN.md) (when it gets fixed). AUDIT records
 findings; this file records *who they matter to*. A finding with no adversary is not a finding.
+Mutable implementation and deployment status belongs to the plan `STATUS`, `AUDIT.md`, and
+[`RUNBOOK-VPS.md`](RUNBOOK-VPS.md); dated baselines below are history, not current-state evidence.
 
 **Scope:** a private circle — a handful of people who know each other and can compare safety numbers
 in person. That assumption does real work below and is called out wherever it changes an answer.
@@ -41,9 +43,9 @@ The defining adversary. Has the disk, the memory, the database, and can compel f
 
 | | |
 |---|---|
-| **Today** | Nothing — there is no server. |
-| **After the plan** | Undelivered ciphertext still in flight; recipient identifiers for those; push tokens; account existence and creation times. |
-| **Residual** | Coarse timing and volume of *undelivered* traffic. Delivered messages are gone (§3.1), and after sealed sender the sender of an undelivered message is not visible (§3.2). |
+| **Pre-relay baseline (2026-07-28)** | Nothing — no server had been deployed. Historical, not current state. |
+| **Required exposure bound** | Undelivered ciphertext still in flight; recipient identifiers for those; push tokens; account existence and creation times. |
+| **Residual / accepted exception** | Coarse timing and volume of *undelivered* traffic. The live database deletes delivered messages (§3.1), but the accepted provider-snapshot residual means this is not host-wide deletion (AUDIT 4.8). After sealed sender lands (AUDIT 3.4), the sender of an undelivered message is not visible (§3.2). |
 
 Compelled *future* cooperation is the case that no amount of deletion fixes: a seized-but-running
 box can be made to log going forward. The controls are pinning (a substituted server cannot
@@ -62,9 +64,9 @@ The relay is untrusted by construction; this is the adversary `Envelope` was des
 - Cannot read or forge message content: authenticity comes from the Double Ratchet.
 - Cannot force a session reset — `PlaintextContent`/`DecryptionErrorMessage` is refused at the wire
   boundary (AUDIT 3.5), which otherwise hands a relay a repeatable prekey-burning primitive.
-- **Can** currently drive base-key witness eviction by fetching prekey bundles (AUDIT 3.1). The
-  mitigation is server-side rate limiting plus prekey rotation, both scheduled before staging is
-  exposed.
+- **Can** drive base-key witness eviction by fetching prekey bundles. `AUDIT.md` 3.1 owns the
+  current mitigation status and residual: rate limiting alone is not complete; prekey rotation and
+  replenishment must also be live before the finding closes.
 
 ### 1.3 Network attacker
 
@@ -112,10 +114,12 @@ The adversary with the widest reach: a malicious libsignal build, a moved tag, o
 runs *our* code on *every* device, with our entitlements and our keys. Encryption does not help —
 this attacker is inside the trust boundary.
 
+The 2026-07-28 baseline predated the CI and committed-Pod controls. That is historical;
+`AUDIT.md` §1 owns their implementation and finding status. The standing threat requirement is:
+
 | | |
 |---|---|
-| **Today** | One dependency (libsignal), pinned to a commit, with an independently re-verified SHA-256 over the prebuilt FFI archive. |
-| **After the plan** | Same, plus CI running the supply-chain gate on every build (AUDIT 1.6) and a committed, diffable pod snapshot (AUDIT 1.7). |
+| **Required control set** | One dependency (libsignal), pinned to a commit, with an independently re-verified SHA-256 over the prebuilt FFI archive; the supply-chain gate runs in CI and the Pod snapshot stays committed and diffable (AUDIT 1.2–1.7). |
 | **Residual** | The iOS FFI binary is **unsigned and unattested** (AUDIT 1.1) — a hash pins bytes, not origin. If Signal's build infrastructure were compromised and it published the matching hash, the pin would faithfully reproduce the malicious build. |
 
 This is why `AUDIT.md` §1 is as long as it is, why the dependency count is exactly one, and why
