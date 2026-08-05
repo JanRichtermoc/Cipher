@@ -28,10 +28,23 @@ platform :ios, '26.5'
 use_frameworks!
 
 # LibSignalClient is a Swift pod, so it cannot be a static library.
+#
+# --- Resolved by commit, never by tag (AUDIT 1.14) ---------------------------
+# `tag:` made CocoaPods ask the remote what `v0.99.1` points at, *now*, and then
+# check out and run whatever came back — the podspec, and its script phase that
+# fetches the FFI archive. `Scripts/verify-supply-chain.sh` compared the tag to
+# the audited commit only afterwards, so a moved tag bought build-time execution
+# before the gate could reject it, in a job holding a repository token.
+#
+# `commit:` removes the question rather than answering it earlier: there is no
+# resolution step for an attacker to influence, and the bytes CocoaPods checks
+# out are the bytes recorded in PINS.env. The tag is still verified against that
+# commit by the gate — as an alarm that upstream changed, not as the thing
+# standing between a moved tag and code execution here.
 def libsignal
   pod 'LibSignalClient',
       git: PINS['LIBSIGNAL_GIT_URL'],
-      tag: PINS['LIBSIGNAL_TAG']
+      commit: PINS['LIBSIGNAL_COMMIT']
 end
 
 # The app embeds the framework; CipherCrypto compiles and links against it;

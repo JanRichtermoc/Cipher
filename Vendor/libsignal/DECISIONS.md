@@ -6,7 +6,7 @@
 |---|---|
 | Library | `LibSignalClient` |
 | Source | `https://github.com/signalapp/libsignal.git` |
-| Pin | tag `v0.99.1` (released 2026-07-23T21:05:42Z) |
+| Pin | commit `97801d22dcf9f5bf714f7b8fa3212cdc973ae1c8`, which tag `v0.99.1` named when it was reviewed (released 2026-07-23T21:05:42Z). **The Podfile resolves the commit, never the tag** — see residual 3. |
 | License | **AGPL-3.0-only** — Cipher is therefore AGPL-3.0 |
 | Integration | **CocoaPods** |
 | Prebuilt FFI archive | `libsignal-client-ios-build-v0.99.1.tar.gz` from `build-artifacts.signal.org` |
@@ -99,7 +99,14 @@ prekeys itself, and fingerprint generation/comparison works.
 1. The iOS FFI binary is **not signed and not attested**. A SHA-256 pins bytes, not provenance.
 2. `bin/fetch_archive.py` enforces the checksum with a bare Python `assert`, which `python -O`
    strips. We therefore verify independently rather than trusting the pod's own check.
-3. `Podfile.lock` records the **tag**, not the resolved commit SHA. A tag is mutable upstream.
-   Pin the commit explicitly (see `PINS.env`).
+3. ~~`Podfile.lock` records the **tag**, not the resolved commit SHA.~~ **Resolved 2026-08-06
+   (AUDIT 1.14).** The Podfile now declares `commit: PINS['LIBSIGNAL_COMMIT']`, so CocoaPods
+   checks out the audited commit and never asks the remote what the tag points at today; the
+   lockfile records `:commit:` accordingly. This mattered for ordering as much as for mutability:
+   `pod install` runs the podspec and its archive-fetching script phase, and the supply-chain gate
+   ran only afterwards, so a moved tag would have executed upstream code in CI before anything
+   compared it to `PINS.env`. `Scripts/verify-supply-chain.sh --pre-install` now refuses before
+   CocoaPods runs if the pin is loosened, and the tag→commit check remains as an upstream-change
+   alarm.
 4. libsignal is deliberately `0.x`: Signal does not promise stability between releases, and the
    cadence is rapid (8 releases in the 13 days before v0.99.1).

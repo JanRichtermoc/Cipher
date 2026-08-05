@@ -2,21 +2,21 @@ PODS:
   - LibSignalClient (0.99.1)
 
 DEPENDENCIES:
-  - LibSignalClient (from `https://github.com/signalapp/libsignal.git`, tag `v0.99.1`)
+  - LibSignalClient (from `https://github.com/signalapp/libsignal.git`, commit `97801d22dcf9f5bf714f7b8fa3212cdc973ae1c8`)
 
 EXTERNAL SOURCES:
   LibSignalClient:
+    :commit: 97801d22dcf9f5bf714f7b8fa3212cdc973ae1c8
     :git: https://github.com/signalapp/libsignal.git
-    :tag: v0.99.1
 
 CHECKOUT OPTIONS:
   LibSignalClient:
+    :commit: 97801d22dcf9f5bf714f7b8fa3212cdc973ae1c8
     :git: https://github.com/signalapp/libsignal.git
-    :tag: v0.99.1
 
 SPEC CHECKSUMS:
   LibSignalClient: a88d367aaa8702f5691bb1fcf2c9cb35f0e5fa36
 
-PODFILE CHECKSUM: 6f94adbf88bee3fcb10d1855f6f7bc1505754028
+PODFILE CHECKSUM: 2013061f54c94bfcd252e845c1b2db60c3eef9f9
 
 COCOAPODS: 1.17.0
