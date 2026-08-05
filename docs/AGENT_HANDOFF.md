@@ -21,11 +21,21 @@ count, dependency version, deployment snapshot, or next-step claim.
    configuration, scripts, CI, and history needed to establish a baseline.
 7. Confirm the operator approved exactly one step, its paths do not overlap other work, and no pull
    request already covers it.
+8. Classify the step before implementation and report the recommended current model alias and effort
+   under root `CLAUDE.md`. If the active model is weaker, stop before editing and give the operator
+   the exact model-switch commands.
 
 The plan defines what a product step means. `AUDIT.md` owns security status. Executable sources and
 fresh command output own mutable mechanics. If they disagree, stop and resolve the authority conflict
 before implementation. Never invent a hash, version, pin, CVE identifier, or repository fact; verify
 it from its canonical source or ask.
+
+Optional plugins and memory may reduce output or recover leads from an earlier session, but they are
+never evidence of current state. Use only enabled capabilities whose declared scope matches the task;
+do not guess commands or change plugin configuration. Never store secrets, private messages, personal
+identifiers, or mutable repository/operation status in agent memory. Delegate only an independently
+bounded task when separate context or independent review materially improves correctness or security,
+not merely to finish faster; verify the result in the main session.
 
 ## 2. Repository map
 
