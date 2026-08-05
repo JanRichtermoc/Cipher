@@ -18,6 +18,20 @@
 
 name: verify
 
+# Least privilege, stated rather than inherited (AUDIT 1.14).
+#
+# Without this block the token's scopes come from a repository or organisation
+# setting — a value not visible in this file, changeable without a commit, and
+# defaulting to read/write for repositories created before GitHub changed it.
+# Nothing in this workflow writes to the repository: it checks out, builds, runs
+# tests, and uploads an artifact on failure. Artifact upload authenticates with
+# the runtime's own token and is unaffected by this.
+#
+# Declared at the top level so it applies to every job, including any added
+# later — a per-job block is a rule the next job has to remember.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main]
@@ -132,6 +146,21 @@ jobs:
           # so there is nothing else for setup-ruby to read. Gemfile.lock also carries
           # per-gem checksums, which need a modern bundler to verify rather than ignore.
           bundler-cache: true
+
+      - name: Verify the dependency pin before CocoaPods resolves anything
+        # Deliberately immediately before `pod install`, because that is the step
+        # it exists to gate (AUDIT 1.14). `pod install` checks out the dependency
+        # and runs its podspec — the point at which upstream bytes first execute
+        # here — and the full supply-chain gate ran only later, inside
+        # verify-all.sh. While the Podfile named a mutable tag, a moved tag
+        # therefore got build-time execution in this job before anything checked
+        # it. The Podfile now names the audited commit; this refuses to let
+        # CocoaPods run at all if that has been loosened back to a tag or points
+        # at a commit PINS.env did not authorise.
+        #
+        # Offline by construction, so it cannot fail for a network reason and
+        # teach anyone to re-run it.
+        run: ./Scripts/verify-supply-chain.sh --pre-install
 
       - name: pod install
         run: bundle exec pod install

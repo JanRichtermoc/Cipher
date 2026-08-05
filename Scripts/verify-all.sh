@@ -64,8 +64,15 @@ fail() {
 # First because a moved tag or a changed checksum invalidates everything after it:
 # there is no point testing a binary whose provenance is in question.
 step "supply chain"
+# The self-test first, and it runs even offline: the pin checks are greps, and a
+# grep that matches nothing reads exactly like a grep that found nothing wrong.
+./Scripts/verify-supply-chain.sh --self-test || fail "supply chain self-test"
 if [ "$OFFLINE" -eq 1 ]; then
-  echo "  skipped (--offline); this check MUST run before any release"
+  # --offline used to skip this gate entirely. The half that needs no network —
+  # is the dependency pinned to the audited commit — has no reason to be skipped,
+  # and it is the half AUDIT 1.14 is about.
+  ./Scripts/verify-supply-chain.sh --pre-install || fail "supply chain pin"
+  echo "  skipped the upstream checks (--offline); they MUST run before any release"
 else
   ./Scripts/verify-supply-chain.sh || fail "supply chain"
 fi
