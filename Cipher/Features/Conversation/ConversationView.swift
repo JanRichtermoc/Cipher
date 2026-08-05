@@ -10,7 +10,6 @@ struct ConversationView: View {
     let chatID: UUID
 
     @State private var draft = ""
-    @State private var replyTo: Message?
     @State private var showAttach = false
     @State private var showInfo = false
     @State private var showForward = false
@@ -60,8 +59,6 @@ struct ConversationView: View {
                             ForEach(group.messages) { message in
                                 MessageBubbleView(
                                     message: message,
-                                    replyPreview: replyText(for: message),
-                                    onReply: { replyTo = message },
                                     onReact: { _ in
                                         // Reactions have no wire representation; the picker that
                                         // calls this is DEBUG-only. See MessageBubbleView.
@@ -103,8 +100,6 @@ struct ConversationView: View {
 
                 ComposerBar(
                     text: $draft,
-                    replyPreview: replyTo.flatMap { preview(for: $0) },
-                    onClearReply: { replyTo = nil },
                     onSend: send,
                     onAttach: { showAttach = true }
                 )
@@ -115,16 +110,9 @@ struct ConversationView: View {
         .toolbar(.hidden, for: .tabBar)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                VStack(spacing: 2) {
-                    HStack(spacing: 4) {
-                        Text(chat.title).font(.headline)
-                        if chat.isVerified { VerifiedBadge(compact: true) }
-                    }
-                    // No presence: nothing on the wire reports whether a peer is online, so
-                    // there is nothing here but the disappearing-message timer when it is set.
-                    if let seconds = chat.disappearingSeconds {
-                        DisappearingTimerBadge(seconds: seconds)
-                    }
+                HStack(spacing: 4) {
+                    Text(chat.title).font(.headline)
+                    if chat.isVerified { VerifiedBadge(compact: true) }
                 }
             }
             ToolbarItemGroup(placement: .topBarTrailing) {
@@ -201,27 +189,8 @@ struct ConversationView: View {
         // Cleared before the await, so the composer empties immediately and a second tap cannot
         // send the same text twice while the first attempt is in flight.
         draft = ""
-        replyTo = nil
         UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         Task { await store.send(outgoing, to: chatID) }
-    }
-
-    private func preview(for message: Message) -> String {
-        switch message.kind {
-        case .text(let t): return t
-        case .emoji(let e): return e
-        case .image(_, let c): return c ?? String(localized: "Photo")
-        case .voice: return String(localized: "Voice message")
-        case .file(let n, _): return n
-        case .link(_, let title, _): return title
-        case .system(let s): return s
-        }
-    }
-
-    private func replyText(for message: Message) -> String? {
-        guard let replyID = message.replyToID,
-              let original = store.message(id: replyID, in: chatID) else { return nil }
-        return preview(for: original)
     }
 
     private struct DayGroup {

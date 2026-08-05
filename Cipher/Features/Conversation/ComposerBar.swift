@@ -7,8 +7,6 @@ import SwiftUI
 
 struct ComposerBar: View {
     @Binding var text: String
-    var replyPreview: String?
-    var onClearReply: () -> Void
     var onSend: () -> Void
     var onAttach: () -> Void
 
@@ -19,26 +17,6 @@ struct ComposerBar: View {
 
     var body: some View {
         VStack(spacing: 10) {
-            if let replyPreview {
-                HStack {
-                    Label(replyPreview, systemImage: "arrowshape.turn.up.left")
-                        .font(.caption)
-                        .lineLimit(1)
-                        .foregroundStyle(.primary)
-                    Spacer(minLength: 8)
-                    Button(action: onClearReply) {
-                        Image(systemName: "xmark.circle.fill")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-                .padding(.horizontal, 14)
-                .padding(.vertical, 10)
-                .glassEffect(.regular, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-                .padding(.horizontal, CipherTheme.spacingM)
-            }
-
             // Voice messages, like attachments, have no client path and no payload type. The
             // recording affordance was a button with an empty action next to an animated
             // "Recording…" line — the most convincing kind of control that does nothing — so it

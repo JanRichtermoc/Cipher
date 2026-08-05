@@ -32,7 +32,6 @@ struct Chat: Identifiable, Hashable {
     var isPinned: Bool
     var isMuted: Bool
     var isVerified: Bool
-    var disappearingSeconds: Int?
     var avatarInitials: String
     var accentHue: Double
 
@@ -75,7 +74,6 @@ struct Message: Identifiable, Hashable {
     var date: Date
     var status: MessageStatus
     var isFromCurrentUser: Bool
-    var replyToID: UUID?
     var reactions: [String: Int]
 }
 

@@ -36,7 +36,6 @@ struct UICatalogView: View {
                     AvatarView(initials: "AC", color: .teal, size: 48, isOnline: true, isVerified: true)
                     UnreadBadge(count: 3)
                     VerifiedBadge()
-                    DisappearingTimerBadge(seconds: 3600)
                 }
                 PrimaryGlassButton(title: "Glass Button") {}
                 SecondaryGlassButton(title: "Secondary Glass") {}

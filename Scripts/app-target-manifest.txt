@@ -5,7 +5,6 @@ Cipher/App/RootView.swift
 Cipher/CipherApp.swift
 Cipher/Components/MessagingFailureBanner.swift
 Cipher/Components/SharedComponents.swift
-Cipher/Components/UnimplementedNotice.swift
 Cipher/ContentView.swift
 Cipher/DesignSystem/CipherTheme.swift
 Cipher/DesignSystem/DateFormatting.swift

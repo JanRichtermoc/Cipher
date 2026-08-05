@@ -233,25 +233,6 @@ struct PrivacySecurityView: View {
                     }
                 }
             }
-
-            Section("Identity") {
-                NavigationLink("Safety Numbers Explained") {
-                    ScrollView {
-                        Text("Safety numbers let you verify that the key you see for a contact matches what they see for you. Scan the QR code or compare the digit groups in person.")
-                            .padding()
-                    }
-                    .navigationTitle("Safety Numbers")
-                }
-                NavigationLink("Registration Lock PIN") {
-                    Form {
-                        SecureField("PIN", text: .constant(""))
-                        Text("UI stub — no PIN is stored.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                    .navigationTitle("Registration Lock")
-                }
-            }
         }
         .navigationTitle("Privacy & Security")
     }

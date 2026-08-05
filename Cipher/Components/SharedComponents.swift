@@ -111,27 +111,6 @@ struct VerifiedBadge: View {
     }
 }
 
-struct DisappearingTimerBadge: View {
-    var seconds: Int?
-
-    var body: some View {
-        if let seconds, seconds > 0 {
-            let timerLabel = Self.label(for: seconds)
-            Label(timerLabel, systemImage: "timer")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel(String(localized: "Disappearing messages \(timerLabel)"))
-        }
-    }
-
-    static func label(for seconds: Int) -> String {
-        if seconds < 60 { return "\(seconds)s" }
-        if seconds < 3600 { return "\(seconds / 60)m" }
-        if seconds < 86_400 { return "\(seconds / 3600)h" }
-        return "\(seconds / 86_400)d"
-    }
-}
-
 struct EmptyStateView: View {
     var systemImage: String
     var title: LocalizedStringKey

@@ -10,20 +10,20 @@ struct ChatsListView: View {
     @State private var filter: ChatFilter = .all
     @State private var path = NavigationPath()
     @State private var showNewMessage = false
+    #if DEBUG
     @State private var showNewGroup = false
+    #endif
     @State private var showGlobalSearch = false
 
     enum ChatFilter: CaseIterable, Identifiable {
         case all
         case unread
-        case groups
         var id: Self { self }
 
         var title: LocalizedStringKey {
             switch self {
             case .all: "All"
             case .unread: "Unread"
-            case .groups: "Groups"
             }
         }
     }
@@ -158,7 +158,6 @@ struct ChatsListView: View {
             switch filter {
             case .all: break
             case .unread: if chat.unreadCount == 0 { return false }
-            case .groups: if !chat.isGroup { return false }
             }
             return true
         }
@@ -168,7 +167,6 @@ struct ChatsListView: View {
         switch filter {
         case .all: "No Chats Yet"
         case .unread: "No Unread Chats"
-        case .groups: "No Groups"
         }
     }
 
@@ -176,7 +174,6 @@ struct ChatsListView: View {
         switch filter {
         case .all: "Start a private conversation with someone you trust."
         case .unread: "You're all caught up."
-        case .groups: "Create a group for your circle."
         }
     }
 }
@@ -205,11 +202,6 @@ struct ChatRowView: View {
                     }
                     if chat.isMuted {
                         Image(systemName: "bell.slash.fill")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-                    if chat.disappearingSeconds != nil {
-                        Image(systemName: "timer")
                             .font(.caption2)
                             .foregroundStyle(.secondary)
                     }
