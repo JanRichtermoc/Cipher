@@ -1,7 +1,9 @@
 # Cipher relay — backend design
 
-**Status:** design only (P4.S01). Nothing here is built yet; P4.S02 scaffolds it on Docker Compose,
-and nothing is purchased before P5.
+**Implementation:** The relay described here exists under [`server/`](../server/). Its code and
+migrations own mechanics, while [`server/README.md`](../server/README.md) owns the executable
+endpoint and local-operation reference. The implementation plan `STATUS` owns roadmap state;
+[`RUNBOOK-VPS.md`](RUNBOOK-VPS.md) and live read-only checks own deployment state.
 
 **Read first:** [`THREAT_MODEL.md`](THREAT_MODEL.md) in full — this document is an application of it.
 [`Envelope.swift`](../CipherCrypto/Sources/Wire/Envelope.swift) defines the only payload the relay
@@ -588,13 +590,16 @@ where there is nothing to abuse.
 
 ---
 
-## 9. Deployment shape (P4.S02 target)
+## 9. Deployment shape
 
-Docker Compose, three services on an internal network: `api`, `postgres`, `redis`. Only `api`
-publishes a port, and in P4 only to `localhost`. Postgres and Redis are unreachable from the host
-network — the P4.S02 anti-goal, and the most common way a development relay ends up exposed.
+Docker Compose runs three services on an internal network: `api`, `postgres`, `redis`. The committed
+Compose configuration publishes only `api`, and only on loopback; Postgres and Redis remain
+unreachable from the host network. P4.S02 established that boundary because exposing a datastore is
+the most common way a development relay becomes an internet-facing one.
 
-TLS terminates at a reverse proxy in P5, not in P4. Nothing is purchased before P5.
+P5 added a public TLS reverse proxy in front of the same loopback-bound API without widening the
+datastore boundary. [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md) owns the host procedure and staging state;
+live read-only checks win for mutable deployment facts.
 
 ### 9.1 Certificate pinning: the pin set and the rotation runbook (P5.S06)
 
