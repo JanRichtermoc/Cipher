@@ -125,17 +125,19 @@ fi
 step "relay: build, vet, tests, compose invariants"
 ./Scripts/verify-relay.sh || fail "relay (see docs/BACKEND.md)"
 
-# --- 7. UI honesty and localization drift -----------------------------------
-# Cipher must not present a control implying protection it does not provide, in any
-# language. See Scripts/verify-localization.py for what it checks and why.
+# --- 7. Product and documentation honesty -----------------------------------
+# Cipher must not present a control or security boundary it does not provide, in any
+# language or canonical document. See the two focused scripts for what they check and why.
 #
 # The self-test runs first, every time. The check this replaced was a shell grep that
 # reported "ok" for a while with a live claim in the tree — a broken command substitution
 # meant it searched nothing, and passing is exactly what a broken check looks like. So the
 # gate demonstrates it can still fail before its pass is believed.
-step "UI honesty and localization drift"
+step "product and documentation honesty"
 ./Scripts/verify-localization.py --self-test || fail "the localization gate cannot be trusted"
 ./Scripts/verify-localization.py || fail "a retired claim is rendered, or the string catalog has drifted (docs/AUDIT.md 5.4, 5.11)"
+./Scripts/verify-doc-key-boundary.py --self-test || fail "the documentation key-boundary gate cannot be trusted"
+./Scripts/verify-doc-key-boundary.py || fail "documentation collapsed public, private E2E, or operational server keys"
 
 # --- 8. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests

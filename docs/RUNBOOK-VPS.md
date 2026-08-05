@@ -819,8 +819,9 @@ Final checklist, each backed by a command above:
 `INFRASTRUCTURE.md` closes on an open decision, and the control panel is open at Stage A, so
 decide it here. OVH's included daily snapshot images the whole disk, Postgres volume included, so
 a message deleted on delivery at 14:00 survives in a 03:00 snapshot for up to 24 hours after the
-relay has forgotten it. Ciphertext only — keys never touch the server — so what it extends is
-*metadata*: who had mail waiting.
+relay has forgotten it. Message and attachment content remains ciphertext, and private E2E keys
+remain on-device, but the image also contains public identity/prekey material, account and routing
+metadata, server configuration/secrets, and TLS private keys.
 
 Preference is to **disable it** in the panel: delete-on-delivery is the strongest server-side
 control there is, and a 24-hour hole in it should be a decision rather than a default. If it

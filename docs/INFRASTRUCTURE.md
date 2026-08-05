@@ -128,10 +128,12 @@ statement is that "acknowledged means gone" is true of the database and not of t
 to 24 hours.
 
 **Why this is tolerable at staging and must be re-argued for production.** The snapshot holds
-ciphertext — keys never touch the server — so what it extends is metadata: who had mail waiting.
-It does not widen the adversary set, because OVH already holds the live disk and the same legal
-process reaches both; it widens the window. Encrypting the volume would not help, since a
-hypervisor snapshot of a running system captures a filesystem whose key is already in memory.
+message and attachment ciphertext, public identity/prekey material, account and routing metadata,
+server configuration/secrets, and TLS private keys. It does not hold plaintext message content or
+private E2E keys. This does not widen the adversary set, because OVH already holds the live disk and
+the same legal process reaches both; it widens the retention window. Encrypting the volume would not
+help, since a hypervisor snapshot of a running system captures a filesystem whose key is already in
+memory.
 
 **This becomes a selection criterion at P9.S01.** Jurisdiction was the criterion that chose OVH
 (§3.7). "Can provider snapshots be declined?" is now a second one, and it is worth asking *before*
@@ -150,9 +152,10 @@ A provider snapshot images the whole disk, including the Postgres volume. A mess
 delivery at 14:00 can therefore still exist in a snapshot taken at 03:00, for up to 24 hours
 after the relay has forgotten it.
 
-**How much this matters:** the snapshot holds **ciphertext only** — keys never touch the server,
-so OVH holds unreadable blobs. What it extends is *metadata*: who had mail waiting. Bounded at
-24 hours.
+**How much this matters:** message bodies and attachments remain encrypted, and private E2E keys
+remain on-device. The image is still not “ciphertext only”: it also contains public key material,
+metadata, TLS private keys, and service configuration/secrets. OVH already has those on the live
+host; the snapshot extends their retention by up to 24 hours.
 
 Two options were on the table:
 

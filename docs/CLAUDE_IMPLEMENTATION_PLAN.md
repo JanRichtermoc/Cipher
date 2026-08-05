@@ -79,8 +79,9 @@ detailed test/negative-test evidence in a step note or Git history.
 - **App (`Cipher/`):** authenticates with a relay-issued credential and routes messages through
   `ConversationStore` → `MessageRepository` → `CryptoEngine`, pinned relay transport, and sealed
   local persistence. Production `MockStore` paths are gone.
-- **Relay (`server/`):** a Go ciphertext-only store-and-forward service with PostgreSQL and Redis.
-  `BACKEND.md` owns its protocol; code and migrations own mechanics.
+- **Relay (`server/`):** a Go store-and-forward service whose message content is ciphertext-only;
+  its authenticated directory also stores public identity and prekey material. `BACKEND.md` owns
+  its protocol; code and migrations own mechanics.
 - **Operations:** staging exists, but deployment, certificate, DNS, and operator state are mutable.
   `RUNBOOK-VPS.md` plus live read-only checks are authoritative.
 - **Verification:** CI and local development execute `Scripts/verify-all.sh`. Derive the current
@@ -174,8 +175,10 @@ fails instead of reporting a clean tree it never read (AUDIT **R2**).
 ## 0.6 Non-negotiable engineering rules
 
 - Do **not** invent cryptography. LibSignalClient + CryptoKit only.
-- Server stores/relays **ciphertext only** — never keys, never plaintext, in any column, ever.
-- Private keys never leave the device. Never log secrets, tokens, invite codes, safety numbers, raw
+- Server stores/relays message content **only as ciphertext**, never plaintext. It intentionally
+  stores public identity and prekey material; private E2E identity, prekey, session, and ratchet
+  keys never leave the device. Server-side TLS private keys and service secrets are a separate
+  operational custody domain. Never log secrets, tokens, invite codes, safety numbers, raw
   `ProtocolAddress`, or message content.
 - Prefer fixing deceptive UI over adding features.
 - Keep `AUDIT.md` honest.
@@ -286,7 +289,7 @@ spending money.
 
 | ID | Step | Owner | Closes | Done when | Do not |
 |----|------|-------|--------|-----------|--------|
-| **P4.S01** | Write `docs/BACKEND.md`: Go service modules (invite auth, session tokens, prekey directory, message inbox, attachment blob metadata, health); PostgreSQL **ciphertext-only** schema; Redis TTLs for ephemeral delivery only; threat model vs compromised VPS citing `THREAT_MODEL.md`; **retention policy (§3.1)**; **rate limits, especially prekey fetch**; no admin API by default. | AI | — | `docs/BACKEND.md` exists and every table column has a stated justification | Design an admin backdoor |
+| **P4.S01** | Write `docs/BACKEND.md`: Go service modules (invite auth, session tokens, prekey directory, message inbox, attachment blob metadata, health); PostgreSQL schema with ciphertext-only message content and an explicit public-key directory; Redis TTLs for ephemeral delivery only; threat model vs compromised VPS citing `THREAT_MODEL.md`; **retention policy (§3.1)**; **rate limits, especially prekey fetch**; no admin API by default. | AI | — | `docs/BACKEND.md` exists and every table column has a stated justification | Design an admin backdoor |
 | **P4.S02** | Scaffold the Go module + Docker Compose (Postgres + Redis + API) runnable on a dev machine. | AI | — | `docker compose up` serves `/health` | Expose Postgres/Redis to the host network |
 | **P4.S03** | Invite codes: server-generated, single-use, expiring, rate-limited. | AI | C-01 (part) | Integration test: reuse rejected, expiry enforced, brute force throttled | Hardcode codes |
 | **P4.S04** | Opaque session tokens: random, hashed at rest, rotatable, revocable. | AI | — | Token never stored in plaintext; revocation test green | Use a JWT holding claims we cannot revoke |
@@ -434,7 +437,7 @@ the hostile/seizable-server model (`THREAT_MODEL.md` §0) makes this load-bearin
 | **P9.S02** | Production deploy mirroring staging: separate secrets, separate DB, firewall, backups. | AI-after-access | Deployed and reachable | Share secrets with staging |
 | **P9.S03** | Point production DNS; configure TLS and a **new pin set**; ship a client update trusting the prod pins, with a rotation strategy. | **HUMAN** + AI | Prod pins live; rotation documented | Reuse staging pins |
 | **P9.S04** | Monitoring: metrics and alerts **without message content** — cert expiry, disk, auth anomalies, error rates. | AI | Alerts fire in a drill | Log message metadata |
-| **P9.S05** | Encrypted server backups (ciphertext only) + a restore drill. Define RPO/RTO. Backups inherit the §3.1 retention rules. | AI | Restore drill completed | Back up what should have been deleted |
+| **P9.S05** | Encrypted server backups + a restore drill. Define RPO/RTO and account for message ciphertext, public key material, metadata, and operational server secrets separately. Backups inherit the §3.1 retention rules. | AI | Restore drill completed | Back up what should have been deleted |
 | **P9.S06** | Incident response runbook: compromise, pin rotation, mass revoke, key rotation. | AI | Runbook exists and is walkable | — |
 | **P9.S07** | **Internal pen-test checklist** (inlined here — the cited RTF §15.1 does not exist): `UserDefaults` bypass attempts; MITM with the wrong pin; relay rewriting `Envelope.sender`; relay replaying a captured prekey message; prekey pool exhaustion; invite brute force; base-key witness flooding; post-first-unlock device extraction; verifying delivered messages are actually gone from the server. | AI | Every item executed and recorded | Skip an item as "obviously fine" |
 | **P9.S08** | External pen-test engagement; Claude tracks findings into `AUDIT.md` until CLOSED. | **HUMAN** | Report received; findings filed | — |

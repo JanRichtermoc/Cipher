@@ -66,9 +66,12 @@ The implementation plan §0.2 and threat model are authoritative. In particular:
 
 Do not invent cryptography. Use the pinned LibSignalClient and CryptoKit only. Do not add a
 dependency; updating an existing dependency requires explicit scope and supply-chain review.
-Private keys never leave the device.
-The relay stores and relays ciphertext only, never plaintext or keys. Preserve every standing
-prohibition in `docs/THREAT_MODEL.md` §4.
+Private E2E identity, prekey, session, and ratchet keys never leave the device. The relay
+intentionally receives and stores public identity and prekey material needed to establish sessions,
+and relays message content only as ciphertext; it never receives message plaintext or private E2E
+key material. Server-side TLS private keys and service secrets are a separate operational custody
+domain.
+Preserve every standing prohibition in `docs/THREAT_MODEL.md` §4.
 
 ## One approved step
 
