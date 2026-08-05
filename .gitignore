@@ -50,8 +50,12 @@ __pycache__/
 # project source, and it differs per machine and per tool. Ignored rather than
 # left untracked because `git add -A` is a step in the pre-commit secret scan
 # (AGENT_HANDOFF.md §7), so anything untracked gets staged by whoever runs it
-# next. The contract an agent works to IS committed: docs/AGENT_HANDOFF.md.
+# next. The permanent contract an agent works to IS committed: root CLAUDE.md.
 .codex/
+
+# Claude Code's project instructions and shared settings are tracked. Personal overrides are not.
+/CLAUDE.local.md
+/.claude/settings.local.json
 
 # Same reasoning, other tool. `.cursor/` was left out when `.codex/` was added, and
 # the omission was not theoretical: the P5.S11 quota commit's `git add -A` staged a
