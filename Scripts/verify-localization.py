@@ -70,6 +70,10 @@ DENY = [
     ("nikdy otevřený text, nikdy vaše klíče", "Czech rendering of the undifferentiated relay-key claim"),
     ("Keys never leave your devices", "public keys leave the device; private keys do not"),
     ("Klíče neopouštějí vaše zařízení", "Czech rendering of the undifferentiated key-custody claim"),
+    ("Choose Photo", "profile photos have no picker, storage, or delivery mechanism (AUDIT 5.30)"),
+    ("Vybrat fotku", "Czech rendering of the retired no-op profile-photo control"),
+    ("Contact support", "Cipher has no configured support channel (AUDIT 5.30)"),
+    ("Kontaktovat podporu", "Czech rendering of the retired placeholder support control"),
 ]
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
@@ -131,6 +135,9 @@ WARNING_MARKERS = [
 WILD = "\x00"
 SPECIFIER = re.compile(r"%(?:\d+\$)?(?:@|lld|llu|ld|lu|lf|[dufs])")
 DIRECTIVE = re.compile(r"#(if|elseif|else|endif)\b([^\n]*)")
+EMAIL_ADDRESS = re.compile(
+    r"(?i)(?<![a-z0-9._%+-])[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}(?![a-z0-9.-])"
+)
 
 
 def scan_literals(text, path):
@@ -332,6 +339,12 @@ def analyse(literals, catalog):
                     f"{where} [{lang}]: {value!r}\n"
                     f"          claims {phrase!r} — {why}"
                 )
+        if EMAIL_ADDRESS.search(value):
+            findings.append(
+                f"{where} [{lang}]: contains an email address\n"
+                f"          Cipher has no configured support mailbox and does not use email "
+                f"for identity (AUDIT 5.30; plan §0.2.7)"
+            )
         if value in ACKNOWLEDGED:
             continue
         for term, why in GUARD:
@@ -544,6 +557,48 @@ SELF_TESTS = [
             }
         },
         "'Klíče neopouštějí vaše zařízení'",
+    ),
+    (
+        "C: retired no-op profile-photo control",
+        {"Choose Photo": (False, "X.swift:1")},
+        {"Choose Photo": {}},
+        "'Choose Photo'",
+    ),
+    (
+        "C: retired Czech no-op profile-photo control",
+        {"Profile": (False, "X.swift:1")},
+        {
+            "Profile": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Vybrat fotku"}}
+                }
+            }
+        },
+        "'Vybrat fotku'",
+    ),
+    (
+        "C: retired placeholder support control",
+        {"Contact support": (False, "X.swift:1")},
+        {"Contact support": {}},
+        "'Contact support'",
+    ),
+    (
+        "C: retired Czech placeholder support control",
+        {"Help": (False, "X.swift:1")},
+        {
+            "Help": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Kontaktovat podporu"}}
+                }
+            }
+        },
+        "'Kontaktovat podporu'",
+    ),
+    (
+        "C: retired placeholder support address",
+        {"person" + "@" + "example.invalid": (False, "X.swift:1")},
+        {"person" + "@" + "example.invalid": {}},
+        "contains an email address",
     ),
     (
         "D: guarded term in an unregistered string",

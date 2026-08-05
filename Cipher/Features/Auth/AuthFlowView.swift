@@ -158,6 +158,8 @@ struct ProfileSetupView: View {
     var body: some View {
         Form {
             Section {
+                // Initials are the only supported avatar. Do not expose photo selection until
+                // a picker, sealed local storage and the intended sharing boundary all exist.
                 HStack {
                     Spacer()
                     AvatarView(
@@ -168,9 +170,6 @@ struct ProfileSetupView: View {
                     Spacer()
                 }
                 .listRowBackground(Color.clear)
-
-                Button("Choose Photo") {}
-                    .frame(maxWidth: .infinity)
             }
 
             Section {
