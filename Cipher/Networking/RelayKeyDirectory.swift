@@ -75,7 +75,7 @@ nonisolated struct RelayKeyDirectory: Sendable {
 
         switch response.status {
         case 200:
-            return
+            break
         case 401:
             throw Failure.unauthenticated
         case 429:
@@ -83,7 +83,54 @@ nonisolated struct RelayKeyDirectory: Sendable {
         default:
             throw Failure.malformedResponse
         }
+
+        let decoded: PublishResponse
+        do {
+            decoded = try JSONDecoder().decode(PublishResponse.self, from: response.body)
+        } catch {
+            throw Failure.malformedResponse
+        }
+        try Self.checkPublication(decoded, against: payload)
     }
+
+    /// Bounds what a publication result may say, given what was uploaded.
+    ///
+    /// ## Why the caller cares about a number it does not use
+    ///
+    /// The app records that it has published and does not publish again on every launch
+    /// (`BACKEND.md` §5: 6 per day). A relay that answers 200 and stores nothing therefore
+    /// leaves this installation believing its keys are up, while every peer's bundle fetch
+    /// 404s — an account nobody can start a session with, and no signal anywhere. The
+    /// reported pool sizes are the only evidence in the response that the upload landed.
+    ///
+    /// ## Why "at least one", and not "at least as many as I sent"
+    ///
+    /// The relay counts the pool *after* `PublishPreKeys` commits, in a separate query — so a
+    /// peer fetching a bundle in between legitimately consumes one and the count comes back
+    /// one short. A gate that fired on that would fail correct publications occasionally and
+    /// be deleted for crying wolf (AUDIT **R2**). The bound that holds without a race is that
+    /// uploading keys cannot leave an empty pool.
+    ///
+    /// This is a sanity bound on a number the relay chooses, not a proof: a hostile relay can
+    /// report anything. It catches the broken and the misrouted, which is what a client-side
+    /// check of a server-reported count can honestly claim.
+    private static func checkPublication(
+        _ decoded: PublishResponse, against payload: PublishRequest
+    ) throws {
+        guard decoded.oneTimePreKeys >= 0,
+              decoded.kyberPreKeys >= 0,
+              decoded.oneTimePreKeys <= maxReportedPoolSize,
+              decoded.kyberPreKeys <= maxReportedPoolSize,
+              payload.oneTimePreKeys.isEmpty || decoded.oneTimePreKeys > 0,
+              payload.kyberPreKeys.isEmpty || decoded.kyberPreKeys > 0 else {
+            throw Failure.malformedResponse
+        }
+    }
+
+    /// A pool this size is not a pool. The relay accepts at most 200 keys of each kind per
+    /// upload (`api.maxPreKeysPerUpload`) and publication is capped at 6 per day, so nothing
+    /// legitimate approaches this; it exists so an absurd count is refused rather than carried.
+    private static let maxReportedPoolSize = 100_000
 
     // MARK: - Fetching
 
@@ -138,6 +185,11 @@ nonisolated struct RelayKeyDirectory: Sendable {
             return try await client.send(request)
         } catch RelayClient.TransportError.exhaustedRetries(let lastStatus) {
             throw lastStatus == 429 ? Failure.rateLimited : Failure.serverUnavailable
+        } catch RelayClient.TransportError.responseTooLarge {
+            // See `RelayMailbox.perform`: the relay answered, so this is not the network.
+            throw Failure.malformedResponse
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }
@@ -191,6 +243,17 @@ nonisolated struct RelayKeyDirectory: Sendable {
             case kyberLastResort = "kyber_last_resort"
             case kyberPreKeys = "kyber_prekeys"
             case oneTimePreKeys = "one_time_prekeys"
+        }
+    }
+
+    /// The relay reports the pool sizes it holds after the upload committed.
+    private struct PublishResponse: Decodable {
+        let oneTimePreKeys: Int
+        let kyberPreKeys: Int
+
+        enum CodingKeys: String, CodingKey {
+            case oneTimePreKeys = "one_time_prekeys"
+            case kyberPreKeys = "kyber_prekeys"
         }
     }
 

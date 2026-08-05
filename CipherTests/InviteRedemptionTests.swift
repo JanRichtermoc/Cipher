@@ -80,6 +80,13 @@ struct InviteRedemptionTests {
 
     private static let redemptionNow = Date(timeIntervalSince1970: 1_785_499_200)
 
+    /// A code of the shape the relay actually issues: 26 Crockford base32 symbols, grouped in
+    /// fives for transcription. These tests are about what happens *after* a code is presented,
+    /// so it has to be one the client will present — `InviteCode` refuses anything else before
+    /// the request is built, and `RelayTransportTests` is where that refusal is tested.
+    private static let validCode = "ABCDE-FGHJK-MNPQR-STVWX-YZ234-5"
+    private static let canonicalCode = "ABCDEFGHJKMNPQRSTVWXYZ2345"
+
     private func redemption() -> InviteRedemption {
         let now = Self.redemptionNow
         return InviteRedemption(client: stubbedClient(), now: { now })
@@ -104,7 +111,7 @@ struct InviteRedemptionTests {
         StubRelay.reset([.init(status: 201, json: Self.goodBody)])
 
         let redeemed = try await redemption()
-            .redeem(code: "GOOD-CODE", using: try await engine())
+            .redeem(code: Self.validCode, using: try await engine())
 
         // `.serverIssued` is the only origin a Release build reads back, so this is the
         // assertion that separates a real session from the DEBUG development credential.
@@ -123,7 +130,7 @@ struct InviteRedemptionTests {
         let expectedKey = try await engine.localIdentityKey
         let expectedRegistration = try await engine.localRegistrationId
 
-        _ = try await redemption().redeem(code: "GOOD", using: engine)
+        _ = try await redemption().redeem(code: Self.validCode, using: engine)
 
         let request = try #require(StubRelay.received.first)
         #expect(request.httpMethod == "POST")
@@ -144,7 +151,10 @@ struct InviteRedemptionTests {
 
         // snake_case, because the relay refuses unknown fields rather than defaulting them:
         // "registrationId" would register the account with id 0 and fail much later.
-        #expect(json["code"] as? String == "GOOD")
+        // The canonical form, not what was typed: hyphens are transcription and the relay
+        // strips them, so sending the grouped string would make the wire shape depend on how
+        // the user happened to space the code out.
+        #expect(json["code"] as? String == Self.canonicalCode)
         #expect(json["identity_key"] as? String == expectedKey.base64EncodedString())
         #expect(json["registration_id"] as? UInt32 == expectedRegistration)
     }
@@ -157,7 +167,7 @@ struct InviteRedemptionTests {
 
         await #expect(throws: InviteRedemption.Failure.refused) {
             try await redemption()
-                .redeem(code: "WRONG", using: try await engine())
+                .redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -167,7 +177,7 @@ struct InviteRedemptionTests {
 
         await #expect(throws: InviteRedemption.Failure.rateLimited) {
             try await redemption()
-                .redeem(code: "ANY", using: try await engine())
+                .redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -198,7 +208,7 @@ struct InviteRedemptionTests {
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
             try await redemption()
-                .redeem(code: "GOOD", using: try await engine())
+                .redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -213,7 +223,7 @@ struct InviteRedemptionTests {
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await redemption().redeem(code: "GOOD", using: try await engine())
+            try await redemption().redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -226,7 +236,7 @@ struct InviteRedemptionTests {
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
             try await redemption()
-                .redeem(code: "GOOD", using: try await engine())
+                .redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -243,7 +253,7 @@ struct InviteRedemptionTests {
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
             try await redemption()
-                .redeem(code: "GOOD", using: try await engine())
+                .redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -256,7 +266,7 @@ struct InviteRedemptionTests {
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await redemption().redeem(code: "GOOD", using: try await engine())
+            try await redemption().redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -270,7 +280,7 @@ struct InviteRedemptionTests {
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
             try await redemption()
-                .redeem(code: "GOOD", using: try await engine())
+                .redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -283,7 +293,7 @@ struct InviteRedemptionTests {
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await redemption().redeem(code: "GOOD", using: try await engine())
+            try await redemption().redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -296,7 +306,7 @@ struct InviteRedemptionTests {
         """)])
 
         await #expect(throws: InviteRedemption.Failure.malformedResponse) {
-            try await redemption().redeem(code: "GOOD", using: try await engine())
+            try await redemption().redeem(code: Self.validCode, using: try await engine())
         }
     }
 
@@ -311,7 +321,7 @@ struct InviteRedemptionTests {
 
         await #expect(throws: InviteRedemption.Failure.self) {
             try await redemption()
-                .redeem(code: "GOOD", using: try await engine())
+                .redeem(code: Self.validCode, using: try await engine())
         }
 
         #expect(StubRelay.received.count == 1,

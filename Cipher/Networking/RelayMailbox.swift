@@ -121,7 +121,8 @@ nonisolated struct RelayMailbox: Sendable {
         let response = try await perform(
             RelayRequest(
                 method: "GET", path: "/v1/messages", body: nil, contentType: nil,
-                bearerToken: token, isIdempotent: true))
+                bearerToken: token, isIdempotent: true,
+                maxResponseBytes: Self.maxFetchResponseBytes))
 
         switch response.status {
         case 200:
@@ -141,12 +142,30 @@ nonisolated struct RelayMailbox: Sendable {
             throw Failure.malformedResponse
         }
 
+        // The relay caps a batch at `api.maxFetchBatch` and says so in `BACKEND.md` §2.7, so a
+        // longer one is not this relay answering. Bounded here rather than trusted because the
+        // caller loops on `more` and stores every entry: an unbounded batch is unbounded work
+        // and unbounded rows behind the quota that AUDIT 4.14 exists to keep meaningful.
+        guard decoded.messages.count <= Self.maxFetchBatch else {
+            throw Failure.malformedResponse
+        }
+
         var pending: [Pending] = []
+        var seen = Set<UUID>()
         pending.reserveCapacity(decoded.messages.count)
         for message in decoded.messages {
             guard let id = UUID(uuidString: message.id),
+                  // Duplicate ids in one batch would be acknowledged once and stored twice —
+                  // the same ciphertext decrypting a second time is a replay the ratchet
+                  // refuses, but the count returned to the caller would already be wrong, and
+                  // a relay repeating an id is not a relay this client should keep parsing.
+                  seen.insert(id).inserted,
                   let envelope = Data(base64Encoded: message.envelope),
-                  !envelope.isEmpty
+                  // The relay refuses anything outside `store.MinEnvelopeBytes ...
+                  // store.MaxEnvelopeBytes` on the way in, so anything outside it on the way
+                  // out did not come through the documented path.
+                  envelope.count >= Self.minEnvelopeBytes,
+                  envelope.count <= Self.maxEnvelopeBytes
             else {
                 // One malformed entry invalidates the batch rather than being skipped. A skip
                 // would leave an un-acknowledgeable message on the relay forever *and* hide
@@ -173,6 +192,11 @@ nonisolated struct RelayMailbox: Sendable {
     @discardableResult
     func acknowledge(ids: [UUID], token: String) async throws -> Int {
         guard !ids.isEmpty else { return 0 }
+        // The relay 400s a longer list, and a request that is certain to be refused still
+        // spends one of this account's 120/minute acknowledgement tokens (AUDIT 5.23) and
+        // leaves the messages unacknowledged on a box assumed seizable. `MessageRepository`
+        // chunks by `maxAcknowledgeBatch`; this refuses a caller that forgets to.
+        guard ids.count <= Self.maxAcknowledgeBatch else { throw Failure.rejected }
 
         let body: Data
         do {
@@ -200,16 +224,52 @@ nonisolated struct RelayMailbox: Sendable {
             throw Failure.malformedResponse
         }
 
+        let acknowledged: Int
         do {
-            return try JSONDecoder().decode(AckResponse.self, from: response.body).acknowledged
+            acknowledged = try JSONDecoder()
+                .decode(AckResponse.self, from: response.body).acknowledged
         } catch {
             throw Failure.malformedResponse
         }
+
+        // Fewer than asked for is normal; more than asked for is not arithmetic this relay can
+        // do. Negative is not a count at all. Neither is load-bearing today — the caller
+        // discards the number — which is exactly why it is bounded here: an unchecked value
+        // that nobody reads is the one that becomes a loop bound in a later step.
+        guard acknowledged >= 0, acknowledged <= ids.count else {
+            throw Failure.malformedResponse
+        }
+        return acknowledged
     }
+
+    // MARK: - The relay's limits, mirrored
+
+    // These four are the relay's, not ours: `api.maxFetchBatch`, `api.maxAckBatch`,
+    // `store.MinEnvelopeBytes` and `store.MaxEnvelopeBytes`. They are copied here because the
+    // client must bound a hostile answer before parsing it, and a bound cannot be fetched from
+    // the party it constrains. Changing one of them on the relay means changing it here in the
+    // same step; `BACKEND.md` §2.7 is the shared authority for all four.
 
     /// The relay's own ceiling on one acknowledgement (`api.maxAckBatch`). Exceeding it is a
     /// 400, so the caller chunks rather than discovering it in production.
     static let maxAcknowledgeBatch = 200
+
+    /// The relay's own ceiling on one fetch response (`api.maxFetchBatch`).
+    static let maxFetchBatch = 100
+
+    /// `store.MinEnvelopeBytes` — below this there is no envelope, only a header.
+    static let minEnvelopeBytes = 32
+
+    /// `store.MaxEnvelopeBytes`.
+    static let maxEnvelopeBytes = 65_567
+
+    /// Ceiling on the bytes one fetch response may occupy.
+    ///
+    /// Derived rather than picked: a full batch is ``maxFetchBatch`` entries, each carrying a
+    /// base64 envelope of at most `4 * ceil(maxEnvelopeBytes / 3)` characters plus a 36-character
+    /// id and its JSON punctuation. That is a little under 8.8 MB, and 10 MiB leaves room for
+    /// whitespace and a longer key set without leaving room for an attack.
+    static let maxFetchResponseBytes = 10 * 1024 * 1024
 
     // MARK: - Transport
 
@@ -220,6 +280,15 @@ nonisolated struct RelayMailbox: Sendable {
             // The relay answered every time; it just kept failing. 429 here means the limiter
             // held across every attempt, which is a rate limit and not an outage.
             throw lastStatus == 429 ? Failure.rateLimited : Failure.serverUnavailable
+        } catch RelayClient.TransportError.responseTooLarge {
+            // Not an outage: the relay answered, with more than an answer. Reporting this as
+            // unreachable would send the user to look at their connection.
+            throw Failure.malformedResponse
+        } catch is CancellationError {
+            // Rethrown rather than folded into a `Failure`. The caller stopped asking; the
+            // relay did nothing wrong, and `MessageRepository` must not log a network fault
+            // for a cancelled receive cycle.
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }

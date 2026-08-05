@@ -36,8 +36,44 @@ nonisolated enum RelayEndpoint {
     /// The API host. Also the name the pinner requires the challenge to be for.
     static let host = "relay.mgchatman.app"
 
-    /// Base URL. `https` is not a preference — see ``baseURL`` and ``AllowedScheme``.
+    /// Base URL. `https` is not a preference — see ``baseURL`` and ``isBareOrigin(_:)``.
     static let baseURL = URL(string: "https://\(host)")!
+
+    /// Whether `url` is a bare `https` origin: a scheme, a host, and nothing else.
+    ///
+    /// Every request path is resolved against this value, so anything the base carries is
+    /// carried into every call. Each rejected component is a way for a base URL to mean
+    /// something other than "the pinned relay":
+    ///
+    /// - **Credentials.** `https://user:secret@host` makes `URLSession` send an
+    ///   `Authorization: Basic` header the relay never asked for, putting a secret on the wire
+    ///   and into any proxy's logs. The relay authenticates with a bearer token and has no
+    ///   other scheme.
+    /// - **A port.** The pin is keyed by host, so `host:8443` passes ``CertificatePinner``
+    ///   while talking to a different service on the same machine. The relay is on 443 and
+    ///   nothing else is reachable (`RUNBOOK-VPS.md`: only 22/80/443 are open).
+    /// - **A path.** `URL(string:relativeTo:)` resolves a relative path against the base's
+    ///   *directory*, so a base path silently re-roots every endpoint — and an absolute path
+    ///   silently discards it, which is worse, because the base would then be lying about
+    ///   where requests go.
+    /// - **A query or fragment.** Neither survives resolution against an absolute path, so a
+    ///   base carrying one is a base whose author expected it to apply and it does not.
+    ///
+    /// Checked rather than assumed because `baseURL` is injectable: `RelayClient(baseURL:)`
+    /// exists so a test can point at a stub, and an injection point is exactly where a
+    /// malformed origin arrives.
+    static func isBareOrigin(_ url: URL) -> Bool {
+        guard url.scheme?.lowercased() == "https",
+              let host = url.host, !host.isEmpty,
+              url.user == nil,
+              url.password == nil,
+              url.port == nil,
+              url.path.isEmpty || url.path == "/",
+              url.query == nil,
+              url.fragment == nil
+        else { return false }
+        return true
+    }
 
     /// SHA-256 of the DER `SubjectPublicKeyInfo`, base64 — the same value
     /// `openssl x509 -pubkey -noout | openssl pkey -pubin -outform der | openssl dgst -sha256`

@@ -29,6 +29,7 @@ Cipher/Messaging/ConversationStore.swift
 Cipher/Messaging/MessageRepository.swift
 Cipher/Messaging/SerialGate.swift
 Cipher/Models/Models.swift
+Cipher/Networking/BoundedRelayLoader.swift
 Cipher/Networking/CertificatePinner.swift
 Cipher/Networking/InviteRedemption.swift
 Cipher/Networking/RelayClient.swift

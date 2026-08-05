@@ -85,8 +85,11 @@ nonisolated struct InviteRedemption: Sendable {
     ///   this account. Injected rather than opened here so a test can drive the whole flow
     ///   against a temporary container.
     func redeem(code: String, using engine: CryptoEngine) async throws -> Redeemed {
-        let trimmed = code.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { throw Failure.refused }
+        // Refused here, as ``Failure/refused`` and not a distinct case, because the whole
+        // point of that error is that it says nothing: a locally-refused code and a code the
+        // relay has never heard of must look identical to the caller, or the UI copy becomes
+        // the oracle the uniform 401 exists to deny.
+        guard let canonical = InviteCode.canonical(code) else { throw Failure.refused }
 
         let identityKey: Data
         let registrationId: UInt32
@@ -103,7 +106,7 @@ nonisolated struct InviteRedemption: Sendable {
             throw Failure.malformedResponse
         }
 
-        let payload = RedeemRequest(code: trimmed,
+        let payload = RedeemRequest(code: canonical,
                                     identityKey: identityKey.base64EncodedString(),
                                     registrationId: registrationId)
 
@@ -124,6 +127,12 @@ nonisolated struct InviteRedemption: Sendable {
         let response: RelayClient.Response
         do {
             response = try await client.send(request)
+        } catch is CancellationError {
+            // Rethrown, not reported as a network failure: the user backed out of the screen.
+            // Telling them the relay could not be reached would be a false claim about a
+            // server that was never asked, and — since redemption is never retried — the
+            // wrong thing to have on screen next to a code they may still be able to spend.
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }
@@ -249,6 +258,8 @@ nonisolated struct SessionLifecycle: Sendable {
             response = try await client.send(RelayRequest(
                 method: "POST", path: "/v1/auth/rotate", bearerToken: token,
                 isIdempotent: false))
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }
@@ -313,6 +324,71 @@ nonisolated struct SessionLifecycle: Sendable {
             }
             expiresAt = parsed
         }
+    }
+}
+
+/// The invite-code format, checked before a code is spent.
+///
+/// ## Why the client validates at all
+///
+/// An invite code is the only thing that creates an account (`THREAT_MODEL.md` §3.4), and
+/// `POST /v1/invite/redeem` is the relay's **only per-IP rate limit** — 5 per hour, and the one
+/// AUDIT 5.15 exists about. A code that cannot possibly be valid still spends one of those five
+/// when it is sent, so a user mistyping a 26-symbol string four times locks themselves out of
+/// the one flow they were trying to complete, for an hour, on a device that has no other way in.
+/// Refusing locally costs nothing and is not a security check on the code — the relay's atomic
+/// `DELETE … RETURNING` is the only thing that decides whether a code is real.
+///
+/// ## Why the transcription rules are copied and not simplified
+///
+/// This mirrors `server/internal/invite/code.go`. Both sides accept lowercase, hyphens and
+/// spaces, and both apply Crockford's substitutions — `I` and `L` mean `1`, `O` means `0` — so
+/// that a code read off another screen is accepted as written. A client that normalised *less*
+/// than the relay would refuse codes the relay would take, which is the same lockout by another
+/// route. The alphabet, the symbol count and the substitutions must change on both sides in one
+/// step; `invite.EntropyBits` is the reason the count is 26 and is the value that governs.
+nonisolated enum InviteCode {
+
+    /// `codeLen` on the relay: `ceil(EntropyBits / 5)` symbols of a 32-symbol alphabet.
+    static let symbolCount = 26
+
+    /// Crockford base32 — digits and uppercase letters without `I`, `L`, `O` and `U`.
+    private static let alphabet = Set("0123456789ABCDEFGHJKMNPQRSTVWXYZ")
+
+    /// The canonical (ungrouped, uppercase) form of `raw`, or `nil` if it is not a code.
+    static func canonical(_ raw: String) -> String? {
+        var symbols = ""
+        symbols.reserveCapacity(symbolCount)
+
+        for character in raw.trimmingCharacters(in: .whitespacesAndNewlines) {
+            // Grouping is for transcription only and is stripped, exactly as `invite.Parse`
+            // strips it — a code is read aloud and typed back with whatever separators the
+            // reader used.
+            if character == "-" || character == " " { continue }
+
+            // ASCII a–z only, which is what `invite.Parse` uppercases. `Character.uppercased()`
+            // would be wrong twice over: it returns a `String` that is not always one character
+            // (ß uppercases to SS), so building a `Character` from it can trap on input a
+            // hostile or careless paste controls.
+            var symbol = character
+            if let ascii = symbol.asciiValue, ascii >= 97, ascii <= 122 {
+                symbol = Character(UnicodeScalar(ascii - 32))
+            }
+
+            switch symbol {
+            case "I", "L": symbol = "1"
+            case "O": symbol = "0"
+            default: break
+            }
+
+            guard alphabet.contains(symbol) else { return nil }
+            symbols.append(symbol)
+            // Bounded as it goes: a pasted megabyte would otherwise be normalised in full
+            // before its length was found to be wrong.
+            guard symbols.count <= symbolCount else { return nil }
+        }
+
+        return symbols.count == symbolCount ? symbols : nil
     }
 }
 
