@@ -465,7 +465,13 @@ final class MessageRepositoryTests: XCTestCase {
             firstDidBlock,
             "the first receive never reached the deliberate suspension point")
         let second = Task { try await repository.receive() }
-        try await Task.sleep(for: .milliseconds(100))
+        // Wait for the second call to actually queue behind the first, rather than sleeping
+        // and hoping it has. A sleep that ends too early makes the assertion below true
+        // because nothing has started yet — a pass that proves nothing (AUDIT R2).
+        let secondQueued = await RoutedStubRelay.waitUntil {
+            repository.queuedOperationWaiters == 1
+        }
+        XCTAssertTrue(secondQueued, "the second receive never queued behind the first")
 
         XCTAssertEqual(
             RoutedStubRelay.count("GET /v1/messages"), 1,
@@ -489,7 +495,13 @@ final class MessageRepositoryTests: XCTestCase {
         }.value
         XCTAssertTrue(holderDidBlock)
         let waiter = Task { try await repository.receive() }
-        try await Task.sleep(for: .milliseconds(50))
+        // The point of this test is cancelling a waiter that is *queued*. Cancelling one that
+        // has not reached the gate yet exercises a different path and would pass regardless,
+        // so the queued state is waited for rather than assumed.
+        let waiterQueued = await RoutedStubRelay.waitUntil {
+            repository.queuedOperationWaiters == 1
+        }
+        XCTAssertTrue(waiterQueued, "the waiter never queued, so its cancellation proves nothing")
         XCTAssertEqual(RoutedStubRelay.count("GET /v1/messages"), 1)
         waiter.cancel()
         RoutedStubRelay.releaseBlockedRequest()

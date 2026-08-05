@@ -81,11 +81,62 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
         }
     }
 
-    static func waitForBlockedRequest(timeout: TimeInterval = 2) -> Bool {
+    /// Waits for the blocked route to be reached.
+    ///
+    /// The ceiling is generous on purpose, and raising it weakens nothing: the semaphore is
+    /// signalled the instant the request arrives, so a healthy run never spends any of it.
+    /// It bounds only how long a *broken* run waits before failing.
+    ///
+    /// Two seconds was not enough. The first `receive()` in a fresh process opens the crypto
+    /// engine, reads the Keychain, opens SQLite and performs its first libsignal call before it
+    /// ever reaches the relay, and `testACancelledRepositoryWaiterNeverRunsAfterTheGateOpens`
+    /// sorts first among these tests, so it pays that cold start. On a loaded CI runner — where
+    /// the surrounding suites ran three to four times slower than on a developer machine — that
+    /// exceeded two seconds and failed the *precondition*, not the property under test.
+    static func waitForBlockedRequest(timeout: TimeInterval = observationCeiling) -> Bool {
         routeStarted.wait(timeout: .now() + timeout) == .success
     }
 
     static func releaseBlockedRequest() { routeRelease.signal() }
+
+    // --- Timing budgets, and the order between them -----------------------------
+    //
+    // Every wait a test performs must be shorter than `blockEscapeHatch`, because when the
+    // hatch fires the blocked response is delivered, the app's gate releases, and the queued
+    // call proceeds — so a wait that outlives it stops observing "the second call is held
+    // out" and starts observing "the block expired". That is not a slower test; it is a
+    // different test, silently.
+    //
+    // It was 5 seconds against sleeps of 50–100 ms, so the ordering held by a wide margin and
+    // by accident. Raising the waits to survive a slow CI runner inverted it, and the failure
+    // was visible only because a negative test showed the relay receiving a second request it
+    // should never have seen. The relationship is named here so the next change to either
+    // number has to consider the other.
+
+    /// Deadlock escape hatch. Never a timing participant: no test should ever reach it.
+    static let blockEscapeHatch: TimeInterval = 60
+
+    /// Ceiling for waiting on an observable condition. Well under ``blockEscapeHatch``.
+    static let observationCeiling: TimeInterval = 20
+
+    /// Polls until `condition` holds, or the ceiling expires.
+    ///
+    /// The replacement for `try await Task.sleep(for: .milliseconds(50))` followed by an
+    /// assertion. A fixed sleep encodes a guess about machine speed in two directions at once:
+    /// too short and the test fails on a slow machine, too short *in the other sense* and the
+    /// assertion is true because the thing being waited for has not happened yet — which is a
+    /// pass for the wrong reason, and the failure mode a gate must not have (AUDIT **R2**).
+    static func waitUntil(
+        timeout: TimeInterval = observationCeiling,
+        _ condition: @Sendable () -> Bool
+    ) async -> Bool {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(timeout))
+        while ContinuousClock.now < deadline {
+            if condition() { return true }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        return condition()
+    }
 
     private static func matches(_ route: String, _ pattern: String) -> Bool {
         pattern.hasSuffix("/") ? route.hasPrefix(pattern) : route == pattern
@@ -131,7 +182,7 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
             // request in the session and makes the concurrency test green without the app's
             // gate. Only response delivery waits; another request can start meanwhile.
             DispatchQueue.global().async {
-                _ = Self.routeRelease.wait(timeout: .now() + 5)
+                _ = Self.routeRelease.wait(timeout: .now() + Self.blockEscapeHatch)
                 deliver()
             }
         } else {

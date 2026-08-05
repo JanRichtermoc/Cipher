@@ -49,6 +49,14 @@ nonisolated final class SerialGate: Sendable {
 
     private let state = Mutex(State())
 
+    /// How many callers are queued behind the one holding the gate.
+    ///
+    /// Read-only, and it exists so a test can wait for an *observable* fact instead of
+    /// sleeping for a guessed interval: "the second call has queued" is a state this type
+    /// knows and nothing else can see. Nothing in production reads it, and reading it
+    /// cannot change what the gate does.
+    var queuedWaiterCount: Int { state.withLock { $0.waiting.count } }
+
     /// Runs `body` with exclusive access, releasing the gate even if it throws.
     func withExclusiveAccess<T>(_ body: () async throws -> T) async throws -> T {
         try await acquire()

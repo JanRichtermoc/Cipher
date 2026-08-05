@@ -51,6 +51,16 @@ actor MessageRepository {
     /// alone permits another call to interleave at each `await`.
     private let operationGate = SerialGate()
 
+    /// How many operations are queued behind the one currently running.
+    ///
+    /// `nonisolated` so a reader does not have to enter this actor — which a test observing a
+    /// *blocked* operation cannot rely on being able to do promptly. See
+    /// ``SerialGate/queuedWaiterCount`` for why it exists: the serialisation tests asserted
+    /// "the second call has not reached the relay" after a fixed sleep, which on a slow machine
+    /// is also true when the second call has not started yet, so the assertion held without
+    /// exercising the path it names.
+    nonisolated var queuedOperationWaiters: Int { operationGate.queuedWaiterCount }
+
     /// Ceiling on how many pages one `receive()` will drain.
     ///
     /// The relay caps a batch at 100 and reports `more`, so without a bound a device returning
