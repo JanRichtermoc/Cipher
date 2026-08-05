@@ -27,6 +27,9 @@ nonisolated struct RelayClient: Sendable {
         case unreachable
         /// The server answered with something that is not an HTTP response.
         case malformedResponse
+        /// The body exceeded the ceiling for this request and the transfer was cancelled.
+        /// Never retried: a relay that answers with too much answers with too much again.
+        case responseTooLarge
         /// Retries were exhausted while the server kept returning a retryable status.
         case exhaustedRetries(lastStatus: Int)
     }
@@ -34,7 +37,15 @@ nonisolated struct RelayClient: Sendable {
     struct Response: Sendable {
         let status: Int
         let body: Data
+        /// Keys are **lowercased**. `HTTPURLResponse` canonicalises header names today, so
+        /// this is defence against a platform behaviour this code does not control rather
+        /// than a break anyone has observed — but a case-sensitive lookup for `Retry-After`
+        /// is a rate limit silently ignored, which is the shape of failure that turns a
+        /// limiter into a stampede.
         let headers: [String: String]
+
+        /// Case-insensitive by construction; see ``headers``.
+        func header(_ name: String) -> String? { headers[name.lowercased()] }
     }
 
     /// How long any single attempt may take before it is abandoned.
@@ -45,10 +56,38 @@ nonisolated struct RelayClient: Sendable {
     static let requestTimeout: TimeInterval = 30
 
     /// Ceiling on a whole call including retries.
+    ///
+    /// `URLSessionConfiguration.timeoutIntervalForResource` bounds **one task**, and a call
+    /// here is up to ``maxAttempts`` tasks with backoff between them — so on its own that
+    /// setting named a bound the code did not have. ``send(_:)`` enforces this one against
+    /// `ContinuousClock`, which is monotonic: a clock correction cannot extend or collapse a
+    /// call already in flight.
     static let resourceTimeout: TimeInterval = 120
 
     /// Attempts, not retries: 1 means "try once, never retry".
     static let maxAttempts = 3
+
+    /// Bytes a relay response may occupy before the transfer is cancelled.
+    ///
+    /// Every endpoint but the fetch answers with a small JSON object — a session token, a
+    /// prekey bundle, two counts — so 64 KiB is generous by two orders of magnitude and is
+    /// still a bound. See ``BoundedResponseLoader``.
+    static let defaultResponseCeiling = 64 * 1024
+
+    /// The fetch ceiling, **derived from the relay's own limits rather than picked**: one
+    /// batch is at most `api.maxFetchBatch` messages, each a base64 envelope of at most
+    /// `store.MaxEnvelopeBytes`, plus the id and JSON punctuation around it.
+    ///
+    /// Deriving it means a relay-side limit change makes this wrong loudly (the arithmetic no
+    /// longer matches the constants it cites) rather than quietly refusing legitimate batches.
+    static let fetchResponseCeiling: Int = {
+        let base64EnvelopeBytes = 4 * ((RelayMailbox.maxEnvelopeBytes + 2) / 3)
+        // id, field names, quotes, commas, and room for the `more` flag and object braces.
+        // Generous on purpose: a margin costs memory only in the worst case, while a margin
+        // that is too thin refuses a legitimate full batch.
+        let perMessageOverhead = 256
+        return RelayMailbox.maxFetchBatch * (base64EnvelopeBytes + perMessageOverhead) + 1024
+    }()
 
     private let session: URLSession
     private let baseURL: URL
@@ -56,11 +95,18 @@ nonisolated struct RelayClient: Sendable {
     /// Injectable so tests can drive the retry logic without sleeping. Returns seconds.
     private let jitter: @Sendable (ClosedRange<Double>) -> Double
 
+    /// The whole-call ceiling this instance enforces. Injectable for the same reason as
+    /// ``jitter``: a test that proves the deadline is one budget across attempts should not
+    /// take ``resourceTimeout`` seconds to say so.
+    private let callDeadline: TimeInterval
+
     init(baseURL: URL = RelayEndpoint.baseURL,
          session: URLSession? = nil,
+         callDeadline: TimeInterval = RelayClient.resourceTimeout,
          jitter: @escaping @Sendable (ClosedRange<Double>) -> Double = { Double.random(in: $0) }) {
         self.baseURL = baseURL
         self.jitter = jitter
+        self.callDeadline = callDeadline
         self.session = session ?? Self.makeSession()
     }
 
@@ -114,18 +160,28 @@ nonisolated struct RelayClient: Sendable {
     /// entire circle retries in the same instant, which is how a brief outage becomes a longer
     /// one. Full jitter spreads them across the whole window.
     func send(_ request: RelayRequest) async throws -> Response {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(callDeadline))
         var lastStatus = 0
 
         for attempt in 0..<Self.maxAttempts {
             if attempt > 0 {
                 // 0.5s, 1s, 2s ceilings; the actual wait is uniform within each.
                 let ceiling = 0.5 * pow(2.0, Double(attempt - 1))
-                let delay = jitter(0...ceiling)
-                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                try await Self.sleep(jitter(0...ceiling), notPast: deadline)
+            }
+
+            // The deadline is checked before each attempt rather than only between them, so a
+            // call cannot start a fresh 30-second request one second before its own ceiling.
+            let remaining = Self.secondsRemaining(until: deadline)
+            guard remaining > 0 else {
+                throw lastStatus == 0
+                    ? TransportError.unreachable
+                    : TransportError.exhaustedRetries(lastStatus: lastStatus)
             }
 
             do {
-                let response = try await perform(request)
+                let response = try await perform(request,
+                                                 timeout: min(Self.requestTimeout, remaining))
 
                 guard Self.isRetryable(status: response.status), request.isIdempotent else {
                     return response
@@ -134,16 +190,18 @@ nonisolated struct RelayClient: Sendable {
 
                 // Respect Retry-After when the server sends one: it knows more than our
                 // backoff curve does, and ignoring it is how a rate limit becomes a stampede.
-                if let after = response.headers["Retry-After"].flatMap(Double.init),
+                // Looked up case-insensitively — see ``Response/headers``.
+                if let after = response.header("Retry-After").flatMap(Double.init),
                    after > 0, attempt < Self.maxAttempts - 1 {
-                    let capped = min(after, Self.resourceTimeout / Double(Self.maxAttempts))
-                    try? await Task.sleep(nanoseconds: UInt64(capped * 1_000_000_000))
+                    let capped = min(after, callDeadline / Double(Self.maxAttempts))
+                    try await Self.sleep(capped, notPast: deadline)
                 }
             } catch let error as TransportError {
                 // A TLS failure is not transient in any useful sense — the pin does not start
                 // matching on the second attempt, and retrying an attacker's endpoint three
-                // times is three chances rather than one.
-                if error == .secureConnectionFailed { throw error }
+                // times is three chances rather than one. An oversized body is equally settled:
+                // the relay will answer the same way again, at the same cost to this device.
+                if error == .secureConnectionFailed || error == .responseTooLarge { throw error }
 
                 // Retry a transport failure only when the request is idempotent or is known
                 // not to have been received.
@@ -154,26 +212,59 @@ nonisolated struct RelayClient: Sendable {
         throw TransportError.exhaustedRetries(lastStatus: lastStatus)
     }
 
-    private func perform(_ request: RelayRequest) async throws -> Response {
-        let urlRequest = try request.urlRequest(relativeTo: baseURL)
+    /// Sleeps for `seconds`, never past `deadline`, and lets cancellation through.
+    ///
+    /// The `try?` this replaces was a real defect, not a tidy-up: it swallowed the
+    /// `CancellationError`, the loop continued, and the cancelled `URLSessionTask` then
+    /// surfaced as `URLError.cancelled` — which ``classify(_:)`` maps to
+    /// ``TransportError/secureConnectionFailed`` because that is also how a refused pin
+    /// arrives. A user leaving a screen was told the connection had been attacked.
+    private static func sleep(_ seconds: Double, notPast deadline: ContinuousClock.Instant) async throws {
+        let bounded = min(seconds, secondsRemaining(until: deadline))
+        guard bounded > 0 else { return }
+        try await Task.sleep(nanoseconds: UInt64(bounded * 1_000_000_000))
+    }
 
+    private static func secondsRemaining(until deadline: ContinuousClock.Instant) -> Double {
+        let components = ContinuousClock.now.duration(to: deadline).components
+        return max(0, Double(components.seconds) + Double(components.attoseconds) / 1e18)
+    }
+
+    private func perform(_ request: RelayRequest, timeout: TimeInterval) async throws -> Response {
+        var urlRequest = try request.urlRequest(relativeTo: baseURL)
+        urlRequest.timeoutInterval = timeout
+
+        // One loader per attempt: it is the task's delegate and holds that task's state.
+        let loader = BoundedResponseLoader(byteCeiling: request.responseByteCeiling)
+
+        let http: HTTPURLResponse
         let data: Data
-        let response: URLResponse
         do {
-            (data, response) = try await session.data(for: urlRequest)
+            (http, data) = try await loader.load(urlRequest, on: session)
+        } catch let error as BoundedResponseLoader.Failure {
+            switch error {
+            case .responseTooLarge: throw TransportError.responseTooLarge
+            case .notHTTP: throw TransportError.malformedResponse
+            }
         } catch let error as URLError {
+            // Cancelling *this* task is how the caller leaves; cancelling *the challenge* is
+            // how the pinner refuses. Both arrive as `URLError.cancelled`, so the difference
+            // has to be read from our own task, and it is read first. Everything else keeps
+            // the deliberate conflation `classify` documents.
+            if Task.isCancelled { throw CancellationError() }
             throw Self.classify(error)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
+            if Task.isCancelled { throw CancellationError() }
             throw TransportError.unreachable
-        }
-
-        guard let http = response as? HTTPURLResponse else {
-            throw TransportError.malformedResponse
         }
 
         var headers: [String: String] = [:]
         for (key, value) in http.allHeaderFields {
-            if let key = key as? String, let value = value as? String { headers[key] = value }
+            if let key = key as? String, let value = value as? String {
+                headers[key.lowercased()] = value
+            }
         }
 
         return Response(status: http.statusCode, body: data, headers: headers)
@@ -219,30 +310,49 @@ nonisolated struct RelayRequest: Sendable {
     let contentType: String?
     let bearerToken: String?
     let isIdempotent: Bool
+    /// Bytes this request's response may occupy. See ``BoundedResponseLoader``.
+    let responseByteCeiling: Int
 
     init(method: String,
          path: String,
          body: Data? = nil,
          contentType: String? = "application/json",
          bearerToken: String? = nil,
-         isIdempotent: Bool) {
+         isIdempotent: Bool,
+         responseByteCeiling: Int = RelayClient.defaultResponseCeiling) {
         self.method = method
         self.path = path
         self.body = body
         self.contentType = contentType
         self.bearerToken = bearerToken
         self.isIdempotent = isIdempotent
+        self.responseByteCeiling = responseByteCeiling
     }
 
     enum BuildError: Error, Equatable {
-        /// The composed URL was not `https`, or the path escaped the base URL's host.
+        /// The composed URL was not `https`, or the path escaped the base URL's origin.
         case insecureOrMalformedURL
+        /// The base URL is not a bare `https://host` origin — see ``requireBareOrigin(_:)``.
+        case malformedBaseURL
     }
 
     func urlRequest(relativeTo base: URL) throws -> URLRequest {
+        try Self.requireBareOrigin(base)
+
+        // A relative path would resolve against the base's own path and a `..` would climb out
+        // of it. Neither can reach another host, but both can reach an endpoint other than the
+        // one this request says it is calling.
+        guard path.hasPrefix("/"), !path.contains("..") else {
+            throw BuildError.insecureOrMalformedURL
+        }
+
         guard let url = URL(string: path, relativeTo: base)?.absoluteURL,
-              url.scheme?.lowercased() == "https",
-              url.host == base.host else {
+              let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "https",
+              components.host == base.host,
+              components.port == nil,
+              components.user == nil,
+              components.password == nil else {
             // Belt and braces against a path like "//evil.example" or "http://…", which
             // `URL(string:relativeTo:)` will happily resolve into a different origin — taking
             // the request outside the pinned host, where these pins say nothing.
@@ -263,5 +373,33 @@ nonisolated struct RelayRequest: Sendable {
         // cheaper than trusting the server not to log it.
         request.setValue("", forHTTPHeaderField: "User-Agent")
         return request
+    }
+
+    /// Requires `base` to be nothing but `https://host`.
+    ///
+    /// Each rejected part is a way the request could stay syntactically valid while ceasing to
+    /// be the request this code believes it is making:
+    ///
+    /// - **Credentials.** `URLSession` turns `https://user:pass@host` into an
+    ///   `Authorization: Basic` header, which *displaces* the bearer token set below — the
+    ///   request would then be unauthenticated, and a 401 is the good outcome.
+    /// - **A port.** `CertificatePinner` matches on host, so `host:8443` stays pinned while
+    ///   reaching a different service on the same machine.
+    /// - **A path.** Every caller passes an absolute path, so a base path is silently dropped
+    ///   rather than prefixed — a base of `https://host/v2` would keep calling `/v1`.
+    /// - **A query or fragment.** Resolving an absolute path against them discards both, so a
+    ///   base carrying either is a statement about the request that is not true of it.
+    static func requireBareOrigin(_ base: URL) throws {
+        guard let components = URLComponents(url: base, resolvingAgainstBaseURL: false),
+              components.scheme?.lowercased() == "https",
+              let host = components.host, !host.isEmpty,
+              components.user == nil,
+              components.password == nil,
+              components.port == nil,
+              components.path.isEmpty || components.path == "/",
+              components.query == nil,
+              components.fragment == nil else {
+            throw BuildError.malformedBaseURL
+        }
     }
 }

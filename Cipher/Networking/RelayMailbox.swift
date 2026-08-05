@@ -121,7 +121,8 @@ nonisolated struct RelayMailbox: Sendable {
         let response = try await perform(
             RelayRequest(
                 method: "GET", path: "/v1/messages", body: nil, contentType: nil,
-                bearerToken: token, isIdempotent: true))
+                bearerToken: token, isIdempotent: true,
+                responseByteCeiling: RelayClient.fetchResponseCeiling))
 
         switch response.status {
         case 200:
@@ -141,12 +142,26 @@ nonisolated struct RelayMailbox: Sendable {
             throw Failure.malformedResponse
         }
 
+        // The relay's own cap on one batch. A larger batch is not a bigger answer to the same
+        // question — it is a relay this client does not recognise, and the bytes have already
+        // been bounded (`RelayClient.fetchResponseCeiling`) on the assumption that this holds.
+        guard decoded.messages.count <= Self.maxFetchBatch else {
+            throw Failure.malformedResponse
+        }
+
         var pending: [Pending] = []
+        var seen = Set<UUID>()
         pending.reserveCapacity(decoded.messages.count)
         for message in decoded.messages {
             guard let id = UUID(uuidString: message.id),
                   let envelope = Data(base64Encoded: message.envelope),
-                  !envelope.isEmpty
+                  // The relay refuses to *store* an envelope outside this range, so one
+                  // outside it did not come from the path this client's peers use.
+                  (Self.minEnvelopeBytes...Self.maxEnvelopeBytes).contains(envelope.count),
+                  // A repeated id is not a duplicate message: the pair (id, envelope) is what
+                  // acknowledgement addresses, so two entries under one id mean acknowledging
+                  // one silently discards the other.
+                  seen.insert(id).inserted
             else {
                 // One malformed entry invalidates the batch rather than being skipped. A skip
                 // would leave an un-acknowledgeable message on the relay forever *and* hide
@@ -158,6 +173,13 @@ nonisolated struct RelayMailbox: Sendable {
 
         return Batch(messages: pending, more: decoded.more)
     }
+
+    /// The relay's own ceiling on one fetch (`api.maxFetchBatch`).
+    static let maxFetchBatch = 100
+
+    /// The range the relay will store an envelope in (`store.Min/MaxEnvelopeBytes`).
+    static let minEnvelopeBytes = 32
+    static let maxEnvelopeBytes = 65_567
 
     // MARK: - Acknowledging
 
@@ -173,6 +195,13 @@ nonisolated struct RelayMailbox: Sendable {
     @discardableResult
     func acknowledge(ids: [UUID], token: String) async throws -> Int {
         guard !ids.isEmpty else { return 0 }
+
+        // Over the relay's cap the answer is a 400, and this request is the one that must not
+        // fail: an unacknowledged batch is ciphertext left on a box assumed seizable. Refusing
+        // here is a caller bug caught on the device rather than a round trip spent learning it.
+        guard ids.count <= Self.maxAcknowledgeBatch else {
+            throw Failure.rejected
+        }
 
         let body: Data
         do {
@@ -200,11 +229,20 @@ nonisolated struct RelayMailbox: Sendable {
             throw Failure.malformedResponse
         }
 
+        let acknowledged: Int
         do {
-            return try JSONDecoder().decode(AckResponse.self, from: response.body).acknowledged
+            acknowledged = try JSONDecoder().decode(AckResponse.self, from: response.body).acknowledged
         } catch {
             throw Failure.malformedResponse
         }
+
+        // Fewer than asked for is normal and documented above. *More* than asked for is not a
+        // generous relay — it is a count that does not describe this request, and the caller
+        // uses it to decide what has been removed from the box.
+        guard (0...ids.count).contains(acknowledged) else {
+            throw Failure.malformedResponse
+        }
+        return acknowledged
     }
 
     /// The relay's own ceiling on one acknowledgement (`api.maxAckBatch`). Exceeding it is a
@@ -220,6 +258,13 @@ nonisolated struct RelayMailbox: Sendable {
             // The relay answered every time; it just kept failing. 429 here means the limiter
             // held across every attempt, which is a rate limit and not an outage.
             throw lastStatus == 429 ? Failure.rateLimited : Failure.serverUnavailable
+        } catch RelayClient.TransportError.responseTooLarge {
+            throw Failure.malformedResponse
+        } catch is CancellationError {
+            // The caller went away. Reporting that as a network fault would put a failure
+            // banner on a screen the user has already left, and reporting it as a transport
+            // error would eventually reach the pin-failure copy.
+            throw CancellationError()
         } catch {
             throw Failure.unreachable
         }
