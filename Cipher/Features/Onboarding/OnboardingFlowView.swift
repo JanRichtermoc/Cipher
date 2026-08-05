@@ -98,10 +98,10 @@ struct PrivacyCarouselView: View {
     var onContinue: () -> Void
     @State private var page = 0
 
-    // These three pillars are Cipher's design, and they are stated as design — not as
-    // things that already work. The previous copy asserted all three in the present tense
-    // on the first screen a user ever sees, while the app has no encryption in its
-    // messaging path and no relay at all.
+    // Keep private-key custody distinct from public-key publication. Cipher publishes the
+    // public identity key and PQXDH prekeys to the relay so peers can establish sessions;
+    // only the private halves remain on-device. The relay also sees routing metadata, so
+    // "only ciphertext" would be false even though it cannot decrypt message content.
     //
     // The middle page also claimed the Secure Enclave. It is not, and it will not be: a
     // libsignal identity key is an exportable software key held in the data-protection
@@ -110,8 +110,8 @@ struct PrivacyCarouselView: View {
     private var pages: [(String, String, String)] {
         [
             ("lock.fill", String(localized: "Designed for end-to-end encryption"), String(localized: "Built so that only you and the people you chat with can read messages, and Cipher never holds your decryption keys.")),
-            ("key.fill", String(localized: "Keys stay on your device"), String(localized: "Your identity key is generated on your iPhone and stored in the iOS Keychain, marked so it never syncs to iCloud and never appears in a backup.")),
-            ("server.rack", String(localized: "The relay only sees ciphertext"), String(localized: "The server is designed to forward encrypted blobs and delete them once delivered — never plaintext, never your keys.")),
+            ("key.fill", String(localized: "Private keys remain on this iPhone"), String(localized: "Your private identity key is generated on this iPhone and stored in the iOS Keychain so it never syncs to iCloud or appears in a backup.")),
+            ("server.rack", String(localized: "The relay cannot decrypt messages"), String(localized: "The relay receives public keys needed to establish encrypted sessions, but never private keys or plaintext. It deletes ciphertext after your device confirms delivery.")),
         ]
     }
 

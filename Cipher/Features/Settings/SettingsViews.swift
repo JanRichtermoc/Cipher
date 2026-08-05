@@ -380,7 +380,9 @@ struct HelpView: View {
     var body: some View {
         List {
             NavigationLink("How encryption works") {
-                Text("Cipher uses the Signal Protocol. Keys never leave your devices. The server only relays ciphertext.")
+                // Public identity and prekey material is published to the relay. Only the
+                // private halves stay local; collapsing both into "keys" is a false claim.
+                Text("Cipher uses the Signal Protocol. Your device retains all private key material. The server receives public keys needed to establish encrypted sessions and relays ciphertext it cannot decrypt.")
                     .padding()
             }
             NavigationLink("Contact support") {

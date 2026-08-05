@@ -60,6 +60,16 @@ DENY = [
     ("Zvací kódy zatím nejsou hotové", "Czech rendering of the retired invite claim"),
     ("there is no server yet", "the relay exists and authenticated invite issuance is implemented"),
     ("server zatím neexistuje", "Czech rendering of the retired no-server claim"),
+    ("Keys stay on your device", "public identity and prekey material is published to the relay"),
+    ("Klíče zůstávají na zařízení", "Czech rendering of the undifferentiated key-custody claim"),
+    ("Your identity key is generated on your iPhone", "only the private identity key stays local"),
+    ("Váš identitní klíč se vytvoří na vašem iPhonu", "Czech rendering of the undifferentiated identity-key claim"),
+    ("The relay only sees ciphertext", "the relay also receives public keys and routing metadata"),
+    ("Relay vidí jen šifrovaný text", "Czech rendering of the ciphertext-only visibility claim"),
+    ("never plaintext, never your keys", "the relay receives public keys, but never private keys or plaintext"),
+    ("nikdy otevřený text, nikdy vaše klíče", "Czech rendering of the undifferentiated relay-key claim"),
+    ("Keys never leave your devices", "public keys leave the device; private keys do not"),
+    ("Klíče neopouštějí vaše zařízení", "Czech rendering of the undifferentiated key-custody claim"),
 ]
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
@@ -444,6 +454,96 @@ SELF_TESTS = [
             }
         },
         "'server zatím neexistuje'",
+    ),
+    (
+        "C: retired local-key claim",
+        {"Keys stay on your device": (False, "X.swift:1")},
+        {"Keys stay on your device": {}},
+        "'Keys stay on your device'",
+    ),
+    (
+        "C: retired Czech local-key claim",
+        {"Private keys stay local.": (False, "X.swift:1")},
+        {
+            "Private keys stay local.": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Klíče zůstávají na zařízení"}}
+                }
+            }
+        },
+        "'Klíče zůstávají na zařízení'",
+    ),
+    (
+        "C: retired identity-key claim",
+        {"Your identity key is generated on your iPhone.": (False, "X.swift:1")},
+        {"Your identity key is generated on your iPhone.": {}},
+        "'Your identity key is generated on your iPhone'",
+    ),
+    (
+        "C: retired Czech identity-key claim",
+        {"The private identity key stays local.": (False, "X.swift:1")},
+        {
+            "The private identity key stays local.": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Váš identitní klíč se vytvoří na vašem iPhonu."}}
+                }
+            }
+        },
+        "'Váš identitní klíč se vytvoří na vašem iPhonu'",
+    ),
+    (
+        "C: retired relay-ciphertext-only claim",
+        {"The relay only sees ciphertext": (False, "X.swift:1")},
+        {"The relay only sees ciphertext": {}},
+        "'The relay only sees ciphertext'",
+    ),
+    (
+        "C: retired Czech relay-ciphertext-only claim",
+        {"The relay cannot decrypt messages.": (False, "X.swift:1")},
+        {
+            "The relay cannot decrypt messages.": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Relay vidí jen šifrovaný text"}}
+                }
+            }
+        },
+        "'Relay vidí jen šifrovaný text'",
+    ),
+    (
+        "C: retired relay-key claim",
+        {"Never plaintext, never your keys.": (False, "X.swift:1")},
+        {"Never plaintext, never your keys.": {}},
+        "'never plaintext, never your keys'",
+    ),
+    (
+        "C: retired Czech relay-key claim",
+        {"The relay never receives private keys.": (False, "X.swift:1")},
+        {
+            "The relay never receives private keys.": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Nikdy otevřený text, nikdy vaše klíče."}}
+                }
+            }
+        },
+        "'nikdy otevřený text, nikdy vaše klíče'",
+    ),
+    (
+        "C: retired keys-never-leave claim",
+        {"Keys never leave your devices.": (False, "X.swift:1")},
+        {"Keys never leave your devices.": {}},
+        "'Keys never leave your devices'",
+    ),
+    (
+        "C: retired Czech keys-never-leave claim",
+        {"Private keys stay local.": (False, "X.swift:1")},
+        {
+            "Private keys stay local.": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Klíče neopouštějí vaše zařízení."}}
+                }
+            }
+        },
+        "'Klíče neopouštějí vaše zařízení'",
     ),
     (
         "D: guarded term in an unregistered string",
