@@ -119,6 +119,17 @@ final class SessionCredentialTests: XCTestCase {
                      "an inert preference must not survive as apparently meaningful state")
     }
 
+    func testTheRetiredDefaultDisappearingPreferenceIsCleared() {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+
+        defaults.set(86_400, forKey: "cipher.defaultDisappearing")
+        _ = AppSession(sessions: store, defaults: defaults)
+        XCTAssertNil(defaults.object(forKey: "cipher.defaultDisappearing"),
+                     "a write-only timer must not survive as apparently meaningful state")
+    }
+
     // MARK: - Presence is the state
 
     func testCredentialPresenceIsTheAuthenticationState() throws {

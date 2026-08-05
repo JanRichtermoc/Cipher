@@ -92,6 +92,26 @@ DENY = [
         "Ať víte, když vám kamarád napíše",
         "Czech rendering of the premature notification promise",
     ),
+    ("Match System Appearance", "appearance has no user-selectable behavior (AUDIT 5.30)"),
+    ("Podle systému", "Czech rendering of the inert appearance control"),
+    ("Enter Key Sends", "the composer has no keyboard-send preference (AUDIT 5.30)"),
+    ("Enter odesílá", "Czech rendering of the inert keyboard-send control"),
+    ("Archived Chats", "Cipher has no archive state or archive actions (AUDIT 5.30)"),
+    ("Archivované chaty", "Czech rendering of the empty archive surface"),
+    ("Export Chat History", "the former export button performed no action (AUDIT 5.30)"),
+    ("Exportovat historii chatů", "Czech rendering of the no-op export control"),
+    ("Default Timer", "no message deletion mechanism reads this preference (AUDIT 5.30)"),
+    ("Výchozí časovač", "Czech rendering of the write-only disappearing default"),
+    ("Manage Sessions", "Cipher is single-device and has no sessions to manage (AUDIT 5.30)"),
+    ("Spravovat relace", "Czech rendering of the redundant sessions control"),
+    (
+        "Storage reporting is not implemented yet",
+        "a placeholder is not a storage-reporting feature (AUDIT 5.30)",
+    ),
+    (
+        "Přehled úložiště zatím není implementován",
+        "Czech rendering of the storage placeholder",
+    ),
 ]
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
@@ -671,6 +691,126 @@ SELF_TESTS = [
             }
         },
         "'Ať víte, když vám kamarád napíše'",
+    ),
+    (
+        "C: retired appearance control",
+        {"Match System Appearance": (False, "X.swift:1")},
+        {"Match System Appearance": {}},
+        "'Match System Appearance'",
+    ),
+    (
+        "C: retired Czech appearance control",
+        {"Appearance follows the device.": (False, "X.swift:1")},
+        {
+            "Appearance follows the device.": {
+                "localizations": {"cs": {"stringUnit": {"value": "Podle systému"}}}
+            }
+        },
+        "'Podle systému'",
+    ),
+    (
+        "C: retired keyboard-send control",
+        {"Enter Key Sends": (False, "X.swift:1")},
+        {"Enter Key Sends": {}},
+        "'Enter Key Sends'",
+    ),
+    (
+        "C: retired Czech keyboard-send control",
+        {"Keyboard behavior": (False, "X.swift:1")},
+        {
+            "Keyboard behavior": {
+                "localizations": {"cs": {"stringUnit": {"value": "Enter odesílá"}}}
+            }
+        },
+        "'Enter odesílá'",
+    ),
+    (
+        "C: retired archive surface",
+        {"Archived Chats": (False, "X.swift:1")},
+        {"Archived Chats": {}},
+        "'Archived Chats'",
+    ),
+    (
+        "C: retired Czech archive surface",
+        {"Archive": (False, "X.swift:1")},
+        {
+            "Archive": {
+                "localizations": {"cs": {"stringUnit": {"value": "Archivované chaty"}}}
+            }
+        },
+        "'Archivované chaty'",
+    ),
+    (
+        "C: retired no-op export control",
+        {"Export Chat History": (False, "X.swift:1")},
+        {"Export Chat History": {}},
+        "'Export Chat History'",
+    ),
+    (
+        "C: retired Czech no-op export control",
+        {"Export": (False, "X.swift:1")},
+        {
+            "Export": {
+                "localizations": {
+                    "cs": {"stringUnit": {"value": "Exportovat historii chatů"}}
+                }
+            }
+        },
+        "'Exportovat historii chatů'",
+    ),
+    (
+        "C: retired write-only default timer",
+        {"Default Timer": (False, "X.swift:1")},
+        {"Default Timer": {}},
+        "'Default Timer'",
+    ),
+    (
+        "C: retired Czech write-only default timer",
+        {"Default duration": (False, "X.swift:1")},
+        {
+            "Default duration": {
+                "localizations": {"cs": {"stringUnit": {"value": "Výchozí časovač"}}}
+            }
+        },
+        "'Výchozí časovač'",
+    ),
+    (
+        "C: retired redundant sessions control",
+        {"Manage Sessions": (False, "X.swift:1")},
+        {"Manage Sessions": {}},
+        "'Manage Sessions'",
+    ),
+    (
+        "C: retired Czech redundant sessions control",
+        {"Session management": (False, "X.swift:1")},
+        {
+            "Session management": {
+                "localizations": {"cs": {"stringUnit": {"value": "Spravovat relace"}}}
+            }
+        },
+        "'Spravovat relace'",
+    ),
+    (
+        "C: retired storage placeholder",
+        {"Storage reporting is not implemented yet.": (False, "X.swift:1")},
+        {"Storage reporting is not implemented yet.": {}},
+        "'Storage reporting is not implemented yet'",
+    ),
+    (
+        "C: retired Czech storage placeholder",
+        {"Storage is unavailable.": (False, "X.swift:1")},
+        {
+            "Storage is unavailable.": {
+                "localizations": {
+                    "cs": {
+                        "stringUnit": {
+                            "value": "Přehled úložiště zatím není implementován."
+                        }
+                    }
+                }
+            }
+        },
+        "'Přehled úložiště zatím není implementován'",
     ),
     (
         "C: retired placeholder support address",
