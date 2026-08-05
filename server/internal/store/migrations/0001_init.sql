@@ -23,7 +23,14 @@
 -- that only catches nonsense. Where a size IS derivable from our own wire format —
 -- envelopes — the constraint is exact.
 
-BEGIN;
+-- No BEGIN/COMMIT here, deliberately. store.Migrate already runs each file in a
+-- transaction with its schema_migrations row written inside it, and PostgreSQL
+-- has no nested transactions: a BEGIN inside an open one is a warning and a
+-- no-op, while the matching COMMIT ends the *runner's* transaction. The
+-- bookkeeping INSERT then ran outside any transaction, so a failure between the
+-- two left a fully applied schema with no row recording it — and the next boot
+-- reapplied the file against objects that already existed. The runner refuses a
+-- migration containing transaction control for this reason.
 
 -- ---------------------------------------------------------------------------
 -- accounts (BACKEND.md §2.1)
@@ -236,5 +243,3 @@ CREATE TABLE push_tokens (
     token_nonce      BYTEA NOT NULL CHECK (octet_length(token_nonce) = 24),
     rotated_at       DATE  NOT NULL DEFAULT CURRENT_DATE
 );
-
-COMMIT;

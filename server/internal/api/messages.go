@@ -5,7 +5,6 @@ package api
 
 import (
 	"encoding/base64"
-	"encoding/json"
 	"log/slog"
 	"net/http"
 	"time"
@@ -140,9 +139,7 @@ func (h *MessagesHandler) send(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req sendRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := httpx.DecodeJSON(r.Body, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest)
 		return
 	}
@@ -245,9 +242,7 @@ func (h *MessagesHandler) acknowledge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req ackRequest
-	dec := json.NewDecoder(r.Body)
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	if err := httpx.DecodeJSON(r.Body, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest)
 		return
 	}

@@ -7,7 +7,6 @@ package api
 import (
 	"context"
 	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -31,6 +30,20 @@ import (
 const (
 	minIdentityKeyBytes = 32
 	maxIdentityKeyBytes = 64
+
+	// A libsignal registration id is 14 bits: 1 through 0x3FFF. The client mints
+	// its own inside exactly that range (`DeviceIdentity.registrationIdRange`), so
+	// this refuses nothing a real client sends.
+	//
+	// The bound is not cosmetic. The column is `INTEGER`, and the field decodes as
+	// `uint32` — so an id above 2147483647 was accepted by the handler and then
+	// refused by PostgreSQL, turning a malformed request into a 500 and a logged
+	// database error. Anything between 0x4000 and that limit was worse: stored
+	// happily, and unusable, because a peer's libsignal refuses a registration id
+	// that does not fit the field it has to serialise it into. The account would
+	// authenticate and never be able to establish a session.
+	minRegistrationID = 1
+	maxRegistrationID = 0x3FFF
 )
 
 // InviteTTL is how long a freshly issued invite remains redeemable.
@@ -181,13 +194,9 @@ func (h *InviteHandler) redeem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req redeemRequest
-	dec := json.NewDecoder(r.Body)
-	// Unknown fields are refused rather than ignored: a client sending
-	// "registrationId" instead of "registration_id" would otherwise silently
-	// register with id 0, and the failure would appear much later as a session
-	// that cannot be established.
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&req); err != nil {
+	// httpx.DecodeJSON refuses unknown fields and a trailing second value; see
+	// its comment for why both matter on a single-use endpoint.
+	if err := httpx.DecodeJSON(r.Body, &req); err != nil {
 		httpx.WriteError(w, http.StatusBadRequest)
 		return
 	}
@@ -205,7 +214,7 @@ func (h *InviteHandler) redeem(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteError(w, http.StatusBadRequest)
 		return
 	}
-	if req.RegistrationID == 0 {
+	if req.RegistrationID < minRegistrationID || req.RegistrationID > maxRegistrationID {
 		httpx.WriteError(w, http.StatusBadRequest)
 		return
 	}
