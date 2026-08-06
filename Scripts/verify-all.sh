@@ -47,8 +47,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=14
-[ "$FAST" -eq 1 ] && TOTAL=11
+TOTAL=15
+[ "$FAST" -eq 1 ] && TOTAL=12
 
 step() {
   STEP=$((STEP + 1))
@@ -93,7 +93,18 @@ step "TLS pin gate logic (the live probe needs the staging host)"
 step "app target manifest"
 ./Scripts/verify-app-target-manifest.sh || fail "app target manifest"
 
-# --- 4. No plaintext logging ------------------------------------------------
+# --- 4. iPhone-only ----------------------------------------------------------
+# Early, and before anything is compiled, because the answer is a property of the
+# resolved build settings rather than of the artifact — and a twenty-minute Release
+# build is a poor place to discover it. `TARGETED_DEVICE_FAMILY = 1` in the project
+# text is not the property (AUDIT 6.13): Xcode defaults the two Designed-for-iPhone
+# settings to YES, so the shipping binary ran on Apple silicon Macs and on visionOS
+# while every document said iPhone.
+step "the Release build is iPhone-only (AUDIT 6.13)"
+./Scripts/verify-iphone-only.sh --self-test || fail "the iPhone-only gate cannot be trusted"
+./Scripts/verify-iphone-only.sh || fail "the Release build is not iPhone-only"
+
+# --- 5. No plaintext logging ------------------------------------------------
 # A grep, not a proof. It catches the accidental `print(message)` during development, which
 # is the realistic failure — not a determined attempt to exfiltrate. The crypto module has
 # no business calling print/NSLog at all: it logs through CipherLog, which is redacted.
@@ -104,7 +115,7 @@ if grep -rnE '(^|[^A-Za-z_.])(print|NSLog|debugPrint|dump)[[:space:]]*\(' \
 fi
 echo "  ok    no direct print/NSLog in the crypto module"
 
-# --- 5. Invite-code-only identity -------------------------------------------
+# --- 6. Invite-code-only identity -------------------------------------------
 # Locked decision §0.2.7. Cipher collects no phone number, email address, server-side
 # username or verification code, and that has to be a requirement rather than a property
 # that happens to hold — every other messenger has the field, and "sign in with email"
@@ -119,7 +130,7 @@ step "invite-code-only identity (no phone, email, username or verification code)
 ./Scripts/verify-identity-fields.py ||
   fail "an identity-shaped field reached the account model, auth API, wire format or relay schema (plan §0.2.7)"
 
-# --- 6. Dependency vulnerabilities ------------------------------------------
+# --- 7. Dependency vulnerabilities ------------------------------------------
 # Next to the supply chain, because it answers the other half of that question:
 # step 1 proves the dependencies are the ones we pinned, this one proves that
 # what we pinned has no known reachable hole. `golang.org/x/text` sat here with a
@@ -131,7 +142,7 @@ else
   ./Scripts/verify-vulns.sh || fail "a reachable dependency vulnerability (see the output above)"
 fi
 
-# --- 7. Relay ---------------------------------------------------------------
+# --- 8. Relay ---------------------------------------------------------------
 # Placed here, before anything that invokes xcodebuild, because it takes seconds
 # and the iOS gates take half an hour. A relay defect discovered after a full
 # simulator build is the same defect discovered thirty minutes later.
@@ -142,7 +153,7 @@ fi
 step "relay: build, vet, tests, compose invariants"
 ./Scripts/verify-relay.sh || fail "relay (see docs/BACKEND.md)"
 
-# --- 8. Product and documentation honesty -----------------------------------
+# --- 9. Product and documentation honesty -----------------------------------
 # Cipher must not present a control or security boundary it does not provide, in any
 # language or canonical document. See the two focused scripts for what they check and why.
 #
@@ -156,14 +167,14 @@ step "product and documentation honesty"
 ./Scripts/verify-doc-key-boundary.py --self-test || fail "the documentation key-boundary gate cannot be trusted"
 ./Scripts/verify-doc-key-boundary.py || fail "documentation collapsed public, private E2E, or operational server keys"
 
-# --- 9. Module boundary -----------------------------------------------------
+# --- 10. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
 ./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
 
-# --- 10. Crypto tests --------------------------------------------------------
+# --- 11. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -287,7 +298,7 @@ grep -q "SessionCredentialTests" "$LOG" ||
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
-# --- 11. App builds ----------------------------------------------------------
+# --- 12. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -300,7 +311,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 12. Release device build ------------------------------------------------
+# --- 13. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then
@@ -316,7 +327,7 @@ if [ "$FAST" -eq 0 ]; then
     fail "Release device build"
   echo "  ok    release arm64 builds"
 
-  # --- 13. No debug affordance or retired claim survives into Release --------
+  # --- 14. No debug affordance or retired claim survives into Release --------
   # Fencing the *buttons* that drive a debug switch is not the same as fencing the switch:
   # `debugSkipToMain` was a live authentication bypass in Release for exactly that reason
   # (AUDIT 5.6). This asserts against the built artifact, which is the only place the
@@ -405,7 +416,7 @@ if [ "$FAST" -eq 0 ]; then
   [ "$leaked" -eq 0 ] || fail "a debug affordance or retired claim ships in Release (AUDIT 5.6, 5.11, 5.19, 5.30)"
   echo "  ok    no debug affordance or retired claim anywhere in the Release bundle"
 
-  # --- 14. Required-reason APIs are declared ---------------------------------
+  # --- 15. Required-reason APIs are declared ---------------------------------
   # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol
   # surface ships whether Cipher calls it or not — a required-reason API can appear with no
   # source change on our side, and the first sign would otherwise be App Review.

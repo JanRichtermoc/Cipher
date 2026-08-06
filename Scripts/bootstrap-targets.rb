@@ -401,9 +401,30 @@ end
 # ---------------------------------------------------------------------------
 # iPhone-only for the app (PLAN decision: TARGETED_DEVICE_FAMILY = 1)
 # ---------------------------------------------------------------------------
+# TARGETED_DEVICE_FAMILY alone does NOT make a build iPhone-only, which is what
+# AUDIT 6.13 recorded: it excludes iPad, and Xcode separately defaults the two
+# "run this iPhone app somewhere else" settings to YES. Release therefore resolved
+# to a binary that Apple silicon Macs — and visionOS — could run, while the
+# project text said iPhone.
+#
+# That is a threat-model boundary, not a packaging preference. Every storage
+# decision this project has argued is about an iPhone: the Keychain accessibility
+# class (AUDIT 2.1), the app-switcher redaction (4.5), the local-only pasteboard
+# (4.6), and an app lock built on device-owner authentication. None of those were
+# reasoned about on macOS, where the container, the keychain and the window
+# server behave differently — so a build that runs there ships controls nobody
+# analysed for it.
+#
+# Written explicitly rather than left to the default, for the reason the settings
+# table above gives: this generator overwrites named keys and never removes them,
+# so a default that changes upstream would be adopted silently.
 app.build_configurations.each do |config|
   config.build_settings['TARGETED_DEVICE_FAMILY'] = '1'
+  config.build_settings['SUPPORTS_MACCATALYST'] = 'NO'
+  config.build_settings['SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD'] = 'NO'
+  config.build_settings['SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD'] = 'NO'
 end
+puts 'Cipher: iPhone-only (no Catalyst, no Designed-for-iPhone on Mac or XR)'
 
 # ---------------------------------------------------------------------------
 # Project-level script sandboxing
@@ -414,8 +435,13 @@ end
 # default is the one a new target starts from.
 project.build_configurations.each do |config|
   config.build_settings['ENABLE_USER_SCRIPT_SANDBOXING'] = 'YES'
+  # Same argument as the app block above, applied to what a *new* target inherits.
+  # A target added later would otherwise start with Xcode's defaults, which are YES.
+  config.build_settings['SUPPORTS_MACCATALYST'] = 'NO'
+  config.build_settings['SUPPORTS_MAC_DESIGNED_FOR_IPHONE_IPAD'] = 'NO'
+  config.build_settings['SUPPORTS_XR_DESIGNED_FOR_IPHONE_IPAD'] = 'NO'
 end
-puts 'project: user script sandboxing on (pods keep their own exemption)'
+puts 'project: user script sandboxing on (pods keep their own exemption); iPhone-only defaults'
 
 project.save
 puts "saved #{PROJECT_PATH}"
