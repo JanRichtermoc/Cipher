@@ -47,8 +47,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=13
-[ "$FAST" -eq 1 ] && TOTAL=10
+TOTAL=14
+[ "$FAST" -eq 1 ] && TOTAL=11
 
 step() {
   STEP=$((STEP + 1))
@@ -77,13 +77,23 @@ else
   ./Scripts/verify-supply-chain.sh || fail "supply chain"
 fi
 
-# --- 2. App target manifest -------------------------------------------------
+# --- 2. TLS pin gate ---------------------------------------------------------
+# `verify-pins.sh` cannot run in full here: its live half needs the network and the
+# staging host, and its `reuse_key` half needs SSH. That is why it is not a step of this
+# script — but "cannot run in full" is not a reason to leave its *logic* unproven, which
+# is what AUDIT 6.14 found. The self-test is offline and deterministic, so the checks that
+# stand between a rotated leaf key and every installed client failing closed are exercised
+# on every run, whoever runs it.
+step "TLS pin gate logic (the live probe needs the staging host)"
+./Scripts/verify-pins.sh --self-test || fail "the TLS pin gate cannot be trusted"
+
+# --- 3. App target manifest -------------------------------------------------
 # The app target uses synchronized folders, so a file can join the shipping bundle with no
 # project-file edit. Cheap, so it runs before anything is compiled.
 step "app target manifest"
 ./Scripts/verify-app-target-manifest.sh || fail "app target manifest"
 
-# --- 3. No plaintext logging ------------------------------------------------
+# --- 4. No plaintext logging ------------------------------------------------
 # A grep, not a proof. It catches the accidental `print(message)` during development, which
 # is the realistic failure — not a determined attempt to exfiltrate. The crypto module has
 # no business calling print/NSLog at all: it logs through CipherLog, which is redacted.
@@ -94,7 +104,7 @@ if grep -rnE '(^|[^A-Za-z_.])(print|NSLog|debugPrint|dump)[[:space:]]*\(' \
 fi
 echo "  ok    no direct print/NSLog in the crypto module"
 
-# --- 4. Invite-code-only identity -------------------------------------------
+# --- 5. Invite-code-only identity -------------------------------------------
 # Locked decision §0.2.7. Cipher collects no phone number, email address, server-side
 # username or verification code, and that has to be a requirement rather than a property
 # that happens to hold — every other messenger has the field, and "sign in with email"
@@ -109,7 +119,7 @@ step "invite-code-only identity (no phone, email, username or verification code)
 ./Scripts/verify-identity-fields.py ||
   fail "an identity-shaped field reached the account model, auth API, wire format or relay schema (plan §0.2.7)"
 
-# --- 5. Dependency vulnerabilities ------------------------------------------
+# --- 6. Dependency vulnerabilities ------------------------------------------
 # Next to the supply chain, because it answers the other half of that question:
 # step 1 proves the dependencies are the ones we pinned, this one proves that
 # what we pinned has no known reachable hole. `golang.org/x/text` sat here with a
@@ -121,7 +131,7 @@ else
   ./Scripts/verify-vulns.sh || fail "a reachable dependency vulnerability (see the output above)"
 fi
 
-# --- 6. Relay ---------------------------------------------------------------
+# --- 7. Relay ---------------------------------------------------------------
 # Placed here, before anything that invokes xcodebuild, because it takes seconds
 # and the iOS gates take half an hour. A relay defect discovered after a full
 # simulator build is the same defect discovered thirty minutes later.
@@ -132,7 +142,7 @@ fi
 step "relay: build, vet, tests, compose invariants"
 ./Scripts/verify-relay.sh || fail "relay (see docs/BACKEND.md)"
 
-# --- 7. Product and documentation honesty -----------------------------------
+# --- 8. Product and documentation honesty -----------------------------------
 # Cipher must not present a control or security boundary it does not provide, in any
 # language or canonical document. See the two focused scripts for what they check and why.
 #
@@ -146,14 +156,14 @@ step "product and documentation honesty"
 ./Scripts/verify-doc-key-boundary.py --self-test || fail "the documentation key-boundary gate cannot be trusted"
 ./Scripts/verify-doc-key-boundary.py || fail "documentation collapsed public, private E2E, or operational server keys"
 
-# --- 8. Module boundary -----------------------------------------------------
+# --- 9. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
 ./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
 
-# --- 9. Crypto tests --------------------------------------------------------
+# --- 10. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -175,9 +185,68 @@ run_tests() {
 #
 # Retried exactly once, and only when the log shows a launch failure AND no test actually
 # failed. A real failure is never retried: that would be how a flaky test hides.
+#
+# The pattern list is the gate. It was written from the failures seen at the time and
+# missed one that has since been observed: "cannot be located on disk", which CoreSimulator
+# reports when the freshly installed app is not yet visible to the launch. That is the same
+# class of fault — the simulator, not the code — but it fell through to the retry's `else`,
+# so an infrastructure failure was reported as a test failure and, worse, was not retried.
+# A missing pattern here is silent by construction: it looks exactly like a real failure.
+simulator_infrastructure_patterns='Application failed preflight checks|Simulator device failed to launch|RequestDenied|cannot be located on disk|Unable to boot device|Failed to install the requested application|The request was denied by service delegate'
+
 simulator_was_busy() {
-  grep -qE "Application failed preflight checks|Simulator device failed to launch|RequestDenied" "$LOG" &&
-    ! grep -q "^Test Case.*failed" "$LOG"
+  local log="${1:-$LOG}"
+  grep -qE "$simulator_infrastructure_patterns" "$log" &&
+    ! grep -q "^Test Case.*failed" "$log"
+}
+
+# The classifier decides whether a red run is retried, so a broken one either hides a real
+# failure behind a retry or reports an infrastructure fault as a test failure. It has never
+# been exercised — every pattern in it was added from a log someone happened to read.
+# Proved here, on every run, before it is trusted (AUDIT R2).
+selftest_simulator_classifier() {
+  local probe cases=0
+  probe="$(mktemp)"
+
+  # Faults observed from real runs, written out as literals rather than derived from the
+  # pattern list. Deriving them from the list is the trap: the loop would then test
+  # whatever the list happens to contain, so *deleting* a pattern also deletes its own
+  # test and the suite stays green — which is the exact defect 6.14 is about, reproduced
+  # inside its own fix. The first version of this self-test did that.
+  local fault
+  for fault in \
+    "2026-01-01 Application failed preflight checks for ... Busy" \
+    "Simulator device failed to launch com.cipher.app" \
+    "RequestDenied: The request was denied by service delegate" \
+    "The application ... cannot be located on disk" \
+    "Unable to boot device in current state: Booted" \
+    "Failed to install the requested application"; do
+    printf '%s\n' "$fault" >"$probe"
+    simulator_was_busy "$probe" ||
+      fail "the simulator-fault classifier no longer recognises an observed fault: $fault"
+    cases=$((cases + 1))
+  done
+
+  # And a real test failure must never be retried, even when the log also carries an
+  # infrastructure line: retrying a genuine failure is how a flaky test hides.
+  printf 'Test Case failed\n' >"$probe"
+  ! simulator_was_busy "$probe" ||
+    fail "the classifier treats a test failure as an infrastructure fault"
+  cases=$((cases + 1))
+
+  printf 'Application failed preflight checks\nTest Case failed\n' >"$probe"
+  ! simulator_was_busy "$probe" ||
+    fail "the classifier would retry a run that contains a real test failure"
+  cases=$((cases + 1))
+
+  # A clean log is not an infrastructure fault either.
+  printf 'Executed 10 tests, with 0 failures\n' >"$probe"
+  ! simulator_was_busy "$probe" ||
+    fail "the classifier fires on a log with no fault in it"
+  cases=$((cases + 1))
+
+  rm -f "$probe"
+  echo "  ok    self-test: $cases cases — the simulator-fault classifier still fires, and only when it should"
 }
 
 # Settle the simulator deterministically rather than hoping. `simctl shutdown` returns
@@ -190,6 +259,8 @@ settle_simulator() {
   # Blocks until the device reports booted; bounded by the step's own runtime.
   xcrun simctl bootstatus "$SIMULATOR" -b >/dev/null 2>&1 || true
 }
+
+selftest_simulator_classifier
 
 run_tests
 attempt=1
@@ -216,7 +287,7 @@ grep -q "SessionCredentialTests" "$LOG" ||
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
-# --- 10. App builds ----------------------------------------------------------
+# --- 11. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -229,7 +300,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 11. Release device build ------------------------------------------------
+# --- 12. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then
@@ -245,7 +316,7 @@ if [ "$FAST" -eq 0 ]; then
     fail "Release device build"
   echo "  ok    release arm64 builds"
 
-  # --- 12. No debug affordance or retired claim survives into Release --------
+  # --- 13. No debug affordance or retired claim survives into Release --------
   # Fencing the *buttons* that drive a debug switch is not the same as fencing the switch:
   # `debugSkipToMain` was a live authentication bypass in Release for exactly that reason
   # (AUDIT 5.6). This asserts against the built artifact, which is the only place the
@@ -334,7 +405,7 @@ if [ "$FAST" -eq 0 ]; then
   [ "$leaked" -eq 0 ] || fail "a debug affordance or retired claim ships in Release (AUDIT 5.6, 5.11, 5.19, 5.30)"
   echo "  ok    no debug affordance or retired claim anywhere in the Release bundle"
 
-  # --- 13. Required-reason APIs are declared ---------------------------------
+  # --- 14. Required-reason APIs are declared ---------------------------------
   # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol
   # surface ships whether Cipher calls it or not — a required-reason API can appear with no
   # source change on our side, and the first sign would otherwise be App Review.

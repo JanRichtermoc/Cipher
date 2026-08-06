@@ -28,6 +28,33 @@ SERVER="$REPO_ROOT/server"
 # to catch the suite collapsing to zero, which is the failure that looks green.
 MIN_INTEGRATION_TESTS=104
 
+# A floor is not enough on its own, and that gap is AUDIT 6.14: the count says how
+# many tests ran, never which. A rename, a build-tag mistake in one file, or a
+# deleted case keeps the total above the floor as long as anything else grew, and
+# the property nobody is testing any more is invisible.
+#
+# These are the cases whose absence would be a security regression rather than a
+# coverage regression — the ones that pin single-use redemption, account scoping,
+# the rate limits AUDIT 3.1 depends on, and the transaction and bound work from
+# 5.22/5.23/5.27. Each must appear in the run as a PASS, by name.
+#
+# Adding a test does not belong here. Add a name only when its absence would mean a
+# control has stopped being checked at all.
+REQUIRED_INTEGRATION_TESTS=(
+  TestRedeemConsumesTheInvite
+  TestRedeemedInviteIsDeletedNotFlagged
+  TestRedeemEndpointThrottlesBruteForce
+  TestTokenIsNotStoredInPlaintext
+  TestAcknowledgementIsScopedToTheCaller
+  TestAnAccountOnlyEverReadsItsOwnQueue
+  TestPublishThenFetchRoundTrips
+  TestRedeemRefusesARegistrationIdOutsideTheProtocolRange
+  TestPublishRefusesAPreKeyIdAboveTheProtocolCeiling
+  TestRedeemRefusesATrailingSecondValue
+  TestBlobDeleteKeepsTheRowWhenTheBytesCannotBeRemoved
+  TestBlobQuotaChargesAPartialMegabyteAsAWholeOne
+)
+
 # A host port distinct from the development stack's 8080, so running this never
 # collides with a stack the developer has up.
 API_TEST_PORT="${API_TEST_PORT:-18080}"
@@ -180,4 +207,21 @@ if [ "$passed" -lt "$MIN_INTEGRATION_TESTS" ]; then
   exit 1
 fi
 
+# And the named ones actually ran. `--- PASS: Name` rather than a bare grep for the
+# name: the name also appears in a FAIL line, in a skip, and in any log line that
+# happens to mention it, and "the string is somewhere in the output" is not the
+# same claim as "the test passed".
+missing=()
+for required in "${REQUIRED_INTEGRATION_TESTS[@]}"; do
+  grep -qE "^--- PASS: ${required}( |\\(|$)" "$LOG" || missing+=("$required")
+done
+if [ "${#missing[@]}" -ne 0 ]; then
+  cat "$LOG" >&2
+  echo "FAILED: ${#missing[@]} required integration test(s) did not pass by name:" >&2
+  printf '  %s\n' "${missing[@]}" >&2
+  echo "The count floor was satisfied, which is exactly why this check exists (AUDIT 6.14)." >&2
+  exit 1
+fi
+
 echo "  ok    integration suite passed ($passed tests, race detector on)"
+echo "  ok    all ${#REQUIRED_INTEGRATION_TESTS[@]} required tests passed by name"
