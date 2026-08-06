@@ -138,63 +138,194 @@ echo "  ok    relay tests pass (race detector on)"
 # interface of whatever machine runs it. Checked mechanically because it is a
 # single-line regression that reads as normal.
 compose="$SERVER/docker-compose.yml"
-if [ -f "$compose" ]; then
-  # Grab each service's block and confirm only `api` declares ports.
+
+# service_block prints one service's lines with comments stripped.
+#
+# Stripping first is load-bearing and not tidiness. This file explains each
+# control in prose directly above the directive that implements it, so a check
+# that reads the whole file matches the paragraph after the setting is deleted —
+# which is exactly how the Redis persistence check below passed against a compose
+# file that had lost both flags (AUDIT 6.7, R3).
+service_block() {
+  awk -v want="$2:" '
+    /^  [a-z][a-z0-9_-]*:$/ { inblock = ($1 == want) }
+    inblock                 { sub(/#.*/, ""); print }
+  ' "$1"
+}
+
+# block_has greps one service block for a pattern.
+block_has() {
+  service_block "$1" "$2" | grep -qE "$3"
+}
+
+# check_compose holds every compose invariant. It *returns* rather than exits, so
+# the self-test below can run it against deliberately broken copies.
+check_compose() {
+  local file="$1"
+
+  # Only `api` may publish a port.
+  local offenders
   offenders="$(awk '
     /^  [a-z][a-z0-9_-]*:$/ { service = $1; sub(":", "", service) }
     /^ *ports:/             { if (service != "api") print service }
-  ' "$compose" | sort -u)"
+  ' "$file" | sort -u)"
   if [ -n "$offenders" ]; then
-    echo "FAILED: these compose services publish ports to the host:" >&2
-    printf '  %s\n' $offenders >&2
+    echo "these compose services publish ports to the host: $offenders" >&2
     echo "Only 'api' may, and only on 127.0.0.1 (docs/BACKEND.md §9)." >&2
-    exit 1
+    return 1
   fi
 
   # And `api` must bind loopback. `ports: "8080:8080"` binds 0.0.0.0, which
   # publishes the relay to the LAN — on a laptop on a café network, to the room.
-  if ! grep -qE '^\s*-\s*"127\.0\.0\.1:' "$compose"; then
-    echo "FAILED: the api port mapping is not bound to 127.0.0.1" >&2
-    exit 1
+  if ! grep -qE '^\s*-\s*"127\.0\.0\.1:' "$file"; then
+    echo "the api port mapping is not bound to 127.0.0.1" >&2
+    return 1
   fi
-  echo "  ok    only api publishes a port, and only on loopback"
 
   # Redis persistence off. cache.AssertNoPersistence refuses to start against a
   # persistent Redis, but that check only fires when someone runs the stack;
   # this one fires on every verification.
-  #
-  # Comments are stripped and only the `redis:` service block is considered.
-  # The first version of this check grepped the whole file, which passed after
-  # the flags were deleted because the words also appear in the comment three
-  # lines above them — the check was reading the documentation, not the
-  # configuration. Caught by negative-testing it, which is the only reason it is
-  # not still doing that.
-  redis_block="$(awk '
-    /^  [a-z][a-z0-9_-]*:$/ { inblock = ($1 == "redis:") }
-    inblock                 { sub(/#.*/, ""); print }
-  ' "$compose")"
+  local redis_block
+  redis_block="$(service_block "$file" redis)"
 
   if ! printf '%s\n' "$redis_block" | grep -qE '^\s*-\s*--appendonly\s*$'; then
-    echo "FAILED: the redis service does not pass --appendonly" >&2
+    echo "the redis service does not pass --appendonly" >&2
     echo "Redis defaults to writing to disk; see docs/BACKEND.md §3." >&2
-    exit 1
+    return 1
   fi
   if ! printf '%s\n' "$redis_block" | grep -qE '^\s*-\s*--save\s*$'; then
-    echo "FAILED: the redis service does not pass --save" >&2
+    echo "the redis service does not pass --save" >&2
     echo "Redis defaults to writing to disk; see docs/BACKEND.md §3." >&2
-    exit 1
+    return 1
   fi
   # A flag with the wrong value is worse than a missing one, because it reads as
   # protection. --appendonly must be followed by "no", --save by an empty string.
   if ! printf '%s\n' "$redis_block" | grep -A1 -E '^\s*-\s*--appendonly\s*$' | grep -qE '^\s*-\s*"no"\s*$'; then
-    echo "FAILED: --appendonly is not set to \"no\"" >&2
-    exit 1
+    echo "--appendonly is not set to \"no\"" >&2
+    return 1
   fi
   if ! printf '%s\n' "$redis_block" | grep -A1 -E '^\s*-\s*--save\s*$' | grep -qE '^\s*-\s*""\s*$'; then
-    echo "FAILED: --save is not set to \"\" (empty disables RDB snapshotting)" >&2
+    echo "--save is not set to \"\" (empty disables RDB snapshotting)" >&2
+    return 1
+  fi
+
+  # A memory ceiling on the container without one inside Redis is not a limit,
+  # it is a choice of who does the killing. Redis holds every rate-limit bucket
+  # and has no persistence, so an OOM kill hands every caller a fresh allowance
+  # — the harm AUDIT 5.24 records, reachable by traffic instead of by a deploy.
+  # noeviction is required explicitly: allkeys-lru would discard those same
+  # buckets under pressure and look like healthy operation while doing it.
+  if ! printf '%s\n' "$redis_block" | grep -qE '^\s*-\s*--maxmemory\s*$'; then
+    echo "the redis service sets no --maxmemory, so the OOM killer is its only limit" >&2
+    return 1
+  fi
+  if ! printf '%s\n' "$redis_block" | grep -A1 -E '^\s*-\s*--maxmemory-policy\s*$' | grep -qE '^\s*-\s*noeviction\s*$'; then
+    echo "the redis --maxmemory-policy is not noeviction, so rate-limit buckets can be evicted" >&2
+    return 1
+  fi
+
+  # Every service is confined, not only `api` (AUDIT 5.28). Postgres holds the
+  # account rows, the public identity keys and every undelivered envelope, and
+  # ran with Docker's default capability set and no resource ceiling while the
+  # container holding a static binary and client-encrypted blobs was locked down.
+  local service
+  for service in api postgres redis; do
+    if ! block_has "$file" "$service" '^\s*cap_drop:\s*\[\s*ALL\s*\]\s*$'; then
+      echo "the $service service does not drop all capabilities" >&2
+      return 1
+    fi
+    if ! block_has "$file" "$service" '^\s*-\s*no-new-privileges:true\s*$'; then
+      echo "the $service service does not set no-new-privileges" >&2
+      return 1
+    fi
+    if ! block_has "$file" "$service" '^\s*mem_limit:\s*[0-9]'; then
+      echo "the $service service has no memory limit" >&2
+      return 1
+    fi
+    if ! block_has "$file" "$service" '^\s*pids_limit:\s*[0-9]'; then
+      echo "the $service service has no process limit" >&2
+      return 1
+    fi
+  done
+
+  return 0
+}
+
+# selftest_compose reintroduces each defect in a real copy of the file.
+#
+# Not in a hand-written fixture: the defects that have actually shipped here were
+# in the wiring rather than in the logic, and a fixture proves the logic against
+# a file the gate will never see (AUDIT R5).
+selftest_compose() {
+  local probe cases=0 defect
+  probe="$(mktemp)"
+
+  # Each entry deletes one line from the real file. A gate that no longer fires
+  # on its own subject is a gate that has stopped working, whatever it prints.
+  for defect in \
+    's/^    cap_drop: \[ALL\]$//' \
+    's/^      - no-new-privileges:true$//' \
+    's/^    mem_limit: 1g$//' \
+    's/^    pids_limit: 512$//' \
+    's/^      - --maxmemory$//' \
+    's/^      - noeviction$//' \
+    's/^      - --appendonly$//' \
+    's/^      - "no"$//'; do
+    sed "$defect" "$compose" >"$probe"
+    if check_compose "$probe" 2>/dev/null; then
+      rm -f "$probe"
+      echo "FAILED: the compose gate accepts a file with '$defect' applied" >&2
+      exit 1
+    fi
+    cases=$((cases + 1))
+  done
+
+  # The positive control. Every case above asserts a failure, and a check_compose
+  # that failed unconditionally would satisfy all of them — so the unmodified
+  # file must still pass, through the same code path.
+  #
+  # stderr is NOT swallowed here, unlike the cases above. This control fires for
+  # two quite different reasons — a gate that refuses everything, and a compose
+  # file that genuinely regressed — and the message an operator needs is the
+  # difference between them.
+  if ! check_compose "$compose"; then
+    rm -f "$probe"
+    cat >&2 <<'EOF'
+FAILED: the committed docker-compose.yml does not satisfy its own invariants.
+
+  The specific reason is the line above. Either the compose file regressed, or a
+  check was tightened without updating it. Both make every refusal this gate
+  reports below meaningless, which is why the committed file is exercised here
+  rather than only after the negative cases.
+EOF
     exit 1
   fi
-  echo "  ok    Redis persistence disabled in compose (RDB and AOF)"
+  cases=$((cases + 1))
+
+  # And a comment naming a control must not stand in for the control. This file
+  # explains cap_drop and no-new-privileges in prose above every block that sets
+  # them, which is the shape AUDIT 6.7 records.
+  sed 's/^    cap_drop: \[ALL\]$/    # cap_drop: [ALL]/' "$compose" >"$probe"
+  if check_compose "$probe" 2>/dev/null; then
+    rm -f "$probe"
+    echo "FAILED: the compose gate is satisfied by a commented-out cap_drop" >&2
+    exit 1
+  fi
+  cases=$((cases + 1))
+
+  rm -f "$probe"
+  echo "  ok    self-test: $cases cases — the compose gate still fires, and only when it should"
+}
+
+if [ -f "$compose" ]; then
+  selftest_compose
+  check_compose "$compose" || {
+    echo "FAILED: docker-compose.yml (see the reason above)" >&2
+    exit 1
+  }
+  echo "  ok    only api publishes a port, and only on loopback"
+  echo "  ok    Redis persistence disabled and bounded in compose (RDB, AOF, maxmemory)"
+  echo "  ok    every service drops capabilities, refuses new privileges, and is bounded"
 fi
 
 # --- No committed secrets ---------------------------------------------------

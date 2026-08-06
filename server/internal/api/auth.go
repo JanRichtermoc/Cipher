@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -63,6 +64,11 @@ type AuthHandler struct {
 	limiter *ratelimit.Limiter
 	log     *slog.Logger
 	ttl     time.Duration
+
+	// Unix nanoseconds of the last activity-refresh warning, or 0 for never.
+	// See reportLastSeenFailure for why this is throttled rather than logged
+	// per request.
+	lastSeenWarnedAt atomic.Int64
 }
 
 // NewAuthHandler builds the handler.
@@ -113,6 +119,14 @@ func (h *AuthHandler) Require(next http.Handler) http.Handler {
 		}
 
 		aci, err := h.db.LookupSession(r.Context(), token.Hash())
+		if errors.Is(err, store.ErrLastSeenNotRefreshed) {
+			// The token authenticated; only the activity write failed. Serve the
+			// request — refusing it would turn bookkeeping into an outage — but
+			// say so, because an account whose `last_seen` stops advancing is on
+			// its way to the abandonment sweep while still in daily use.
+			h.reportLastSeenFailure(r.Context())
+			err = nil
+		}
 		if err != nil {
 			if !errors.Is(err, store.ErrSessionNotFound) {
 				// A database failure is not an authentication failure, and
@@ -135,6 +149,41 @@ func (h *AuthHandler) Require(next http.Handler) http.Handler {
 		// and from anything that dumps a context during debugging.
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// lastSeenWarnInterval is the minimum gap between activity-refresh warnings.
+//
+// docs/BACKEND.md §7: log volume is itself metadata, and a line that fires once
+// per authenticated request is a request record — which is exactly the shape this
+// warning would take, because a failing refresh leaves `last_seen` stale and every
+// subsequent request retries and fails again. Throttling turns it back into what an
+// operator actually wants: a signal that the fault is present, not a count of who
+// was talking to the relay while it was.
+const lastSeenWarnInterval = time.Minute
+
+// reportLastSeenFailure warns at most once per lastSeenWarnInterval.
+//
+// No account identifier, deliberately. `aci` is not logged at info level
+// (docs/BACKEND.md §7) and the redaction denylist does not cover it, so a field
+// naming the affected account would be a per-account activity record written by
+// the very code that exists to protect activity data. The operator's next step is
+// to look at the database, not at which account it was.
+func (h *AuthHandler) reportLastSeenFailure(ctx context.Context) {
+	now := time.Now().UnixNano()
+	last := h.lastSeenWarnedAt.Load()
+	if last != 0 && now-last < int64(lastSeenWarnInterval) {
+		return
+	}
+	// CompareAndSwap, not a plain Store: under concurrent requests every
+	// goroutine would otherwise pass the check above and log, which is the
+	// per-request volume this is here to avoid.
+	if !h.lastSeenWarnedAt.CompareAndSwap(last, now) {
+		return
+	}
+	h.log.WarnContext(ctx, "an authenticated account's activity date could not be "+
+		"refreshed; while this persists, accounts in daily use are ageing towards "+
+		"the abandonment sweep (docs/BACKEND.md §4)",
+		slog.Duration("suppressing_further_warnings_for", lastSeenWarnInterval))
 }
 
 type tokenResponse struct {

@@ -53,6 +53,14 @@ REQUIRED_INTEGRATION_TESTS=(
   TestRedeemRefusesATrailingSecondValue
   TestBlobDeleteKeepsTheRowWhenTheBytesCannotBeRemoved
   TestBlobQuotaChargesAPartialMegabyteAsAWholeOne
+  # The abandonment sweep (AUDIT 5.28). These four are the only checks of it
+  # anywhere: no read path filters accounts, so a sweep that stopped deleting —
+  # or one that started deleting active accounts — produces no other symptom
+  # than rows that outlive the policy, or users who silently lose their account.
+  TestAbandonedAccountsAreDeleted
+  TestAnActiveAccountSurvivesTheAbandonmentSweep
+  TestSweepingAnAccountTakesItsMessagesAndTokens
+  TestAuthenticatingRefreshesTheActivityDate
 )
 
 # A host port distinct from the development stack's 8080, so running this never
@@ -182,6 +190,21 @@ if ! curl -fsS --max-time 10 "http://127.0.0.1:${API_TEST_PORT}/health" >/dev/nu
   exit 1
 fi
 echo "  ok    the real image starts and serves /health"
+
+# --- The shipping binary must have no known vulnerability -------------------
+#
+# Here rather than in verify-all.sh because it needs the image, and the image
+# needs Docker — the same reason the suite below lives in this script. The image
+# was just built, so this costs a cached rebuild and one scan.
+#
+# It is a different question from Scripts/verify-vulns.sh, which scans the source
+# under the toolchain go.mod declares. The Dockerfile's build stage pins a
+# different Go, so that gate is not looking at the standard library the release
+# actually carries. AUDIT 5.28.
+"$REPO_ROOT/Scripts/verify-image-vulns.sh" || {
+  echo "FAILED: the binary the relay image ships has a known vulnerability." >&2
+  exit 1
+}
 
 echo "  running the integration suite inside the network"
 

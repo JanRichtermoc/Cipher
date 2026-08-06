@@ -25,6 +25,8 @@ Executed 2026-07-29 against the OVH VPS. Every "Done when" below was observed, n
 | E | done | Needed `backend = systemd` — this image ships no rsyslog, so the stock jail would have run and banned nothing. Verified four ways: jail listed, filter matched 26 real journal lines, live jail counted 3 induced failures, ban reached the packet filter and unban removed it. |
 | F | done | Docker 29.6.2, Compose v5.3.1, log rotation on, `no-new-privileges` global. |
 | G | done | All three containers healthy, 8080 on loopback only. Secrets generated on the box. Deployed revision was `9a279a4`; now `3f4cf92` — see H.0b. |
+| G.1 | **PENDING — operator action, blocked on a merge** | AUDIT 5.28. `docker-compose.yml` now confines Postgres and Redis the way `api` was already confined and bounds all three, but the routine deploy recreates only `api`, so the running datastore containers keep the configuration they were created with. Confirmed unconfined on the box 2026-08-06: `CapDrop=[] Memory=0 PidsLimit=<nil>`. Cannot be run until the change is on `main` — the step pulls that branch, and running it early empties every rate-limit bucket while applying nothing. Verify against `docker inspect`, not the file. |
+| **Deployed revision** | **STALE — operator action** | Observed 2026-08-06: the box is on `3f4cf92` (PR #22) and is **three merged server-affecting commits behind** `main` — `72105ea` (AUDIT 5.25, atomic invite redemption), `f134de3` (AUDIT 5.27, seven handler and store bounds), `2c28da9` (AUDIT 5.29, the nginx files §H.6 installs). The running relay therefore lacks controls this repository records as CLOSED. This is the same drift H.0b caught on 2026-07-30 and is not caused by any single step; it is what happens when deploys are per-finding and the box is only touched when a finding names it. Deploying is an availability change and needs explicit approval. |
 | H.0b | done 2026-07-30 | `RELAY_RATELIMIT_PEPPER` set, after the deploy that first contains it. The box had been on `9a279a4` and was **four relay-affecting commits behind** — it did not have 5.22 (blob byte quota never checked), 5.23 (ack and blob-delete unmetered) or the Go 1.25.12 stdlib fixes. Fast-forwarded to `3f4cf92`, rebuilt, then the pepper. OBSERVED, in this order: `/health` 200 over the wire on the new build with the old `.env`; the unset-pepper warning appearing for the first time (**0 → 1**, because the build that emits it had not been deployed before); then **1 → 0** after the value was set. See the trap noted in H.0b — the pre-deploy 0 was not a pass. |
 | H.0 | done | `RELAY_TRUSTED_PROXY=172.18.0.1/32` — the bridge **gateway**, not the subnet. Verified live both ways: rotating `X-Real-IP` through the host's published port gets fresh buckets, the same rotation from inside the `postgres` container still hits `429`. |
 | H.1–H.5 | done | `relay.mgchatman.app`, Let's Encrypt ECDSA leaf expiring 2026-10-27, `reuse_key = True` confirmed in the renewal config. TLS **1.3 only** — and see AUDIT 5.16, because it was 1.2-accepting at first while the config read as 1.3-only, and the first probe reported a false pass. Verified end to end from the internet: forging `X-Real-IP` per request does **not** escape the rate limit (8 requests, one bucket, throttled at the 6th). Access log carries no request URI. |
@@ -395,6 +397,107 @@ nc -vz -w 5 <IP> 8080
 ```
 
 **Done when:** `/health/ready` returns 200 on the box and port 8080 is unreachable from the Mac.
+
+### G.1 Applying the datastore confinement to a box deployed before AUDIT 5.28
+
+A box deployed before that finding runs Postgres and Redis with Docker's default capability set and
+no ceiling on memory, CPU or process count. The fix is in `docker-compose.yml`, so it is already in
+the repository after a `git pull` — but **the routine deploy does not apply it**. Every deploy step
+in this runbook ends `docker compose up -d --build api`, which recreates one container; the other
+two keep running with the configuration they were created with, and `docker compose ps` reports
+them healthy either way. Nothing here is wrong until you check.
+
+Confirm the box is actually affected before changing anything:
+
+```sh
+ssh cipher-staging 'cd ~/cipher/server && docker inspect $(docker compose ps -q postgres) \
+  --format "CapDrop={{.HostConfig.CapDrop}} Memory={{.HostConfig.Memory}} PidsLimit={{.HostConfig.PidsLimit}}"'
+```
+
+`CapDrop=[]` with no limits means unconfined — the state this closes. **Read the limit fields
+loosely:** an unset `PidsLimit` renders as `0` on some Docker versions and `<nil>` on others
+(observed `<nil>`, Docker 29.6.2, 2026-08-06), because the daemon reports the pointer rather than
+the value. Either means absent. If it already reads `CapDrop=[ALL]` with numeric limits, stop:
+there is nothing to do.
+
+**Precondition, and it is the one that makes this step worth anything: the change must be on the
+branch the box tracks.** `git pull --ff-only` here pulls `main`, so running this while the fix is
+still in an unmerged pull request recreates all three containers against the *old* compose file —
+no confinement applied, and every rate-limit bucket emptied for nothing. Check before pulling,
+rather than inferring it from the pull succeeding:
+
+```sh
+git ls-remote origin refs/heads/main
+ssh cipher-staging 'cd ~/cipher && git fetch -q origin && \
+  git show origin/main:server/docker-compose.yml | grep -c cap_drop'    # 3, not 1
+```
+
+One `cap_drop` is the pre-5.28 file, which confines `api` alone. Three is the file this step exists
+to deploy.
+
+Then pull and recreate **all three** services, not just `api`:
+
+```sh
+cd ~/cipher && git pull --ff-only
+cd server && docker compose up -d --build
+docker compose ps                       # all three healthy
+```
+
+**On a box that is several revisions behind, this deploys far more than the confinement.** `--build`
+rebuilds the relay image from whatever the pull brought with it, so every intervening server change
+ships in the same step. Read `git log --oneline HEAD@{1}..HEAD -- server/` immediately afterwards
+and record what actually went out, because "applied the confinement" is then an incomplete
+description of what happened — and if the relay misbehaves after this, the confinement is not the
+first thing to suspect.
+
+`up -d` recreates a container whose configuration changed and leaves the named volumes alone, so
+`postgres-data` survives. Do not add `-v`: that deletes the volumes, which on this box means every
+account, every published prekey and every undelivered message.
+
+Verify against the runtime rather than the file — the file is what `Scripts/verify-relay.sh` already
+checks, and the question here is what the daemon actually applied:
+
+```sh
+for s in api postgres redis; do
+  printf '%s: ' "$s"
+  docker inspect $(docker compose ps -q $s) --format \
+    'CapDrop={{.HostConfig.CapDrop}} SecurityOpt={{.HostConfig.SecurityOpt}} Memory={{.HostConfig.Memory}} PidsLimit={{.HostConfig.PidsLimit}}'
+done
+```
+
+Every line must show `CapDrop=[ALL]`, `no-new-privileges:true`, and non-zero `Memory` and
+`PidsLimit`. Then confirm Redis took its own ceiling, which is the half that protects the rate
+limits from the OOM killer:
+
+```sh
+docker compose exec redis sh -c 'redis-cli -a "$REDIS_PASSWORD" --no-auth-warning \
+  config get maxmemory maxmemory-policy'     # 201326592, noeviction
+```
+
+Finally, the service itself:
+
+```sh
+curl -s -o /dev/null -w '%{http_code}\n' https://relay.mgchatman.app/health   # expect 200
+```
+
+**Expect a short interruption, and one side effect.** Recreating Postgres and Redis restarts them,
+so requests in flight fail for a few seconds. Redis has no persistence, so **every rate-limit bucket
+is emptied** — the same reset `RELAY_RATELIMIT_PEPPER` cannot prevent, since the pepper keys the
+buckets rather than storing them. That is acceptable for a planned recreation and is precisely the
+event `--maxmemory` exists to stop happening unplanned.
+
+**Rollback.** The previous compose file is in Git, so a container that refuses to start is recovered
+by checking out the older revision of that one file and running `docker compose up -d` again:
+
+```sh
+cd ~/cipher && git show HEAD~1:server/docker-compose.yml > /tmp/compose.prev.yml
+cd server && docker compose -f /tmp/compose.prev.yml up -d
+```
+
+The data volumes are untouched by either direction, so this is reversible without data loss. If
+Postgres fails to start under the reduced capability set, capture the reason before rolling back —
+`docker compose logs postgres --since 5m` — and send it back rather than widening `cap_add` on the
+box, because a capability added on the host is one the gate cannot see.
 
 ---
 
