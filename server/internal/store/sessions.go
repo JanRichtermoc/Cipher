@@ -21,6 +21,23 @@ import (
 // and telling them apart tells an attacker that a value they hold was once real.
 var ErrSessionNotFound = errors.New("store: session not found")
 
+// ErrLastSeenNotRefreshed reports that the token authenticated but the account's
+// activity date could not be written.
+//
+// Returned *alongside a valid aci*, which is the whole point: the caller has a
+// real answer and a bookkeeping problem, and must not confuse the two. Failing the
+// request would turn a housekeeping error into an outage, which is why this was
+// originally swallowed — but swallowing it made the failure unobservable, and now
+// that the abandonment sweep exists (AccountRetentionDays) a `last_seen` that
+// silently stops advancing is an active account counting down to deletion. So the
+// fact travels to a caller that has a logger, and the decision to continue is made
+// where it can be seen. AUDIT 5.28.
+//
+// A caller that treats any non-nil error as fatal fails closed, which is the safe
+// direction to be wrong in but is not the intended handling; check for this
+// sentinel first, as api.AuthHandler.Require does.
+var ErrLastSeenNotRefreshed = errors.New("store: session valid but last_seen was not refreshed")
+
 // CreateSession stores a hashed token for an account.
 //
 // Takes the hash, never the token. The signature is what makes "the token is
@@ -50,8 +67,12 @@ func (db *DB) CreateSession(
 //
 // It also refreshes `accounts.last_seen`, which is the only thing that keeps an
 // account out of the abandonment sweep. Done here because this is the one call on
-// every authenticated path; done as a separate statement rather than a CTE
-// because it must not be able to fail the lookup.
+// every authenticated path — coupling the two is what stops a route added later
+// from authenticating without marking the account alive — and done as a separate
+// statement rather than a CTE because it must not be able to fail the lookup.
+//
+// A refresh failure returns the aci together with ErrLastSeenNotRefreshed rather
+// than nothing or nil; see that sentinel for why silence was the wrong answer.
 func (db *DB) LookupSession(ctx context.Context, tokenHash []byte) (uuid.UUID, error) {
 	var aci uuid.UUID
 	err := db.pool.QueryRow(ctx,
@@ -71,11 +92,17 @@ func (db *DB) LookupSession(ctx context.Context, tokenHash []byte) (uuid.UUID, e
 	if _, err := db.pool.Exec(ctx,
 		`UPDATE accounts SET last_seen = CURRENT_DATE
 		  WHERE aci = $1 AND last_seen <> CURRENT_DATE`, aci); err != nil {
-		// Deliberately not fatal. Failing an authenticated request because a
-		// bookkeeping write failed would turn a housekeeping problem into an
-		// outage; the cost of losing it is that an active account looks idle for
-		// a day, and the sweep runs at 180.
-		return aci, nil
+		// Still not fatal — the aci is returned and the caller is expected to
+		// serve the request. What changed is that the failure is no longer
+		// invisible: one lost day costs nothing against a 180-day threshold, but
+		// a refresh that has been failing since some deploy nobody noticed is an
+		// account being counted down to deletion while it is in daily use.
+		//
+		// The underlying error is not carried. It would reach a log line as free
+		// text, and this one runs on every authenticated request; the sentinel
+		// says which write failed, and the lookup path above already reports a
+		// database error in full when the *read* fails.
+		return aci, ErrLastSeenNotRefreshed
 	}
 	return aci, nil
 }

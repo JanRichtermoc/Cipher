@@ -33,6 +33,13 @@ type Store interface {
 	DeleteExpiredInvites(ctx context.Context) (int64, error)
 	DeleteExpiredSessions(ctx context.Context) (int64, error)
 
+	// The abandonment half of docs/BACKEND.md §4, and the only deletion here
+	// that is not driven by an `expires_at` column. Nothing else removes an
+	// account: there is no expiry predicate that could make an abandoned row
+	// invisible, so before this the policy existed only in the document
+	// (AUDIT 5.28).
+	DeleteAbandonedAccounts(ctx context.Context) (int64, error)
+
 	// Attachments are two-step: the bytes live on the filesystem and the row in
 	// Postgres, so the sweep asks for lapsed ids, removes the files, and only
 	// then removes the rows. Deleting the rows first would orphan the files —
@@ -110,10 +117,16 @@ func (s *Sweeper) once(ctx context.Context) {
 		run  func(context.Context) (int64, error)
 	}
 	// Ordered by sensitivity, most first.
+	//
+	// Accounts go last, and not because they matter least. Deleting one cascades
+	// across six tables, so it is the slowest task here and the most likely to
+	// spend the deadline above — running it first would let a large backlog
+	// starve the three cheap sweeps of the pass they always complete in.
 	for _, t := range []task{
 		{"messages", s.store.DeleteExpiredMessages},
 		{"sessions", s.store.DeleteExpiredSessions},
 		{"invites", s.store.DeleteExpiredInvites},
+		{"accounts", s.store.DeleteAbandonedAccounts},
 	} {
 		n, err := t.run(ctx)
 		if err != nil {

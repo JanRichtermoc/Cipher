@@ -328,6 +328,16 @@ Hard rules, because Redis defaults are wrong for this:
   keyed by session.
 - **Bound to the Compose network only**, never published to the host (P4.S02 explicitly forbids it),
   and `requirepass` set even so.
+- **`maxmemory` set, and the policy is `noeviction`** (AUDIT 5.28). The first sentence of this
+  section — losing all of it costs at most some in-flight rate-limit state — is true of a *planned*
+  restart and understates an unplanned one: every limit resets, including the invite-redemption
+  brute-force ceiling and the prekey-drain limit AUDIT 3.1 depends on, which is why AUDIT 5.24 made
+  the subject pepper configurable. A container memory limit with no Redis-side ceiling makes the OOM
+  killer the thing that decides when that happens, and it is reachable by traffic rather than by a
+  deploy. With `maxmemory` below the container limit, a full Redis refuses the write instead, and
+  every limiter call site already fails closed on an error. `noeviction` is stated explicitly rather
+  than left to the default because `allkeys-lru` would discard rate-limit buckets under pressure —
+  the same reset, arriving quietly and looking like healthy operation.
 
 ---
 
@@ -360,6 +370,20 @@ Rules that make this real rather than aspirational:
   an outage is holding exactly the rows it should least like to keep), and never fails the
   process: its work is always still there next tick.
   A test that accepts a flag would pass against a design that retains everything forever.
+- **The abandonment row above is a control, not an aspiration** (AUDIT 5.28). It read that way for
+  the whole of P4 and P5: `accounts.last_seen` was written on every authenticated request and no
+  code ever read it, so the 180 days were a number in this table. `store.DeleteAbandonedAccounts`
+  is now the fourth task in the hourly pass, comparing against PostgreSQL's own `CURRENT_DATE` and
+  bounded per pass because one account delete cascades across six tables. Accounts go **last** in
+  the pass for that reason — the three cheap sweeps must not be starved by a backlog.
+  Attachments are the one thing that does not cascade, because they have no owner column by design
+  (§2.8); their seven-day TTL is far inside 180, so there is nothing left to reach.
+- **A refresh that stops working is the same finding in reverse.** The threshold only protects
+  people if something moves `last_seen` forward, and `LookupSession` used to discard a failed
+  refresh in silence. It now returns `store.ErrLastSeenNotRefreshed` alongside the valid account —
+  the request is still served, because failing it would turn bookkeeping into an outage — and the
+  auth middleware warns, throttled to once a minute so the warning stays a fault signal rather than
+  becoming the per-request record §7 forbids.
 - **No archive table, no `messages_history`, no "just in case" dump.** If it would be useful to us
   after delivery, it is useful to whoever seizes the host.
 - **Backups inherit this.** A nightly `pg_dump` retained for a month reintroduces every deleted
@@ -571,6 +595,13 @@ review.
   accounts at any point.
 - **Access logs:** method, route *pattern* (never the populated path — `/v1/keys/{aci}` never
   `/v1/keys/3f2b…`), status, duration. A populated path is a metadata record hiding in a log line.
+- **Nor may an error message carry one** (AUDIT 5.28). The same rule applied to the access log has
+  to apply to whatever a handler passes to `slog.String("reason", err.Error())`, and it did not: a
+  blob's file name *is* its id, that id is the whole capability to read or delete the attachment
+  (§2.8), and every `os` failure names the path. `reason` is deliberately not on the denylist —
+  it carries the operationally useful half of every error the relay logs, and denying it wholesale
+  is how redaction gets switched off again — so `internal/blob` removes the path at the source,
+  keeping the operation and the syscall error, which is the half an operator acts on.
 - Log volume is itself metadata: an error log that fires once per delivery is a delivery record.
   Tested as such — five sends must not produce five handler log lines.
 
@@ -620,6 +651,24 @@ the most common way a development relay becomes an internet-facing one.
 P5 added a public TLS reverse proxy in front of the same loopback-bound API without widening the
 datastore boundary. [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md) owns the host procedure and staging state;
 live read-only checks win for mutable deployment facts.
+
+**Every service is confined, not only `api`** (AUDIT 5.28). Until then the relay container dropped
+all capabilities, refused new privileges and ran a read-only rootfs while Postgres and Redis ran with
+Docker's default capability set and no ceiling on memory, CPU or process count — which protects the
+wrong asset. The relay container holds a static binary and a directory of client-encrypted blobs;
+Postgres holds every account row, every public identity key and every undelivered envelope, which is
+the database §1.1 assumes an adversary is trying to reach. Both datastores now drop `ALL` and add
+back only what their entrypoints use to take ownership of a directory and `su-exec` to a service
+account, refuse new privileges, and carry `mem_limit`, `cpus` and `pids_limit`. Redis is additionally
+read-only with a tmpfs `/data`, since with persistence off it writes nothing to disk at all.
+
+Postgres is **not** read-only, and that is the recorded residual rather than an oversight: it writes
+its socket, lock files and statistics outside the data volume at paths that move between major
+versions, so a rootfs lockdown here would be a tmpfs list that silently rots at the next image bump.
+The capability set is what confines that container.
+
+`Scripts/verify-relay.sh` fails on a service that loses any of those, self-testing itself against the
+committed file first; `Scripts/verify-image-vulns.sh` scans the binary the image actually ships.
 
 ### 9.1 Certificate pinning: the pin set and the rotation runbook (P5.S06)
 

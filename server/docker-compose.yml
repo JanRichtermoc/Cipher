@@ -14,6 +14,30 @@
 #
 # Nothing here is production configuration. TLS terminates at a reverse proxy in
 # P5; there is no proxy in P4 because there is no host to put one on.
+#
+# # Every service is confined, not only `api` (AUDIT 5.28)
+#
+# `api` was given cap_drop, no-new-privileges and a read-only rootfs while
+# postgres and redis ran with Docker's default capability set and no ceiling on
+# memory, CPU or process count. That is the wrong way round for what each one
+# holds: the relay container holds a static binary and a directory of client-
+# encrypted blobs, while Postgres holds every account row, every public identity
+# key and every undelivered envelope — the database THREAT_MODEL.md §1.1 assumes
+# an adversary is trying to reach. Confining the process that handles requests and
+# leaving the process that holds the data unconfined protects the wrong asset.
+#
+# Two things are being bounded, and they are separate:
+#
+#   * **Privilege.** Capabilities are dropped and only those the image's entrypoint
+#     actually needs are added back — the alpine images start as root to fix
+#     ownership and then `su-exec` to their service account, which is why CHOWN,
+#     SETUID and SETGID appear and nothing else does.
+#   * **Resources.** A limit here is a containment control, not tuning. Redis holds
+#     every rate-limit bucket and has no persistence, so anything that restarts it
+#     grants every caller a fresh allowance (AUDIT 5.24) — including the
+#     invite-redemption brute-force limit and the prekey-drain limit AUDIT 3.1
+#     depends on. Without a ceiling, the way Redis restarts is the kernel OOM
+#     killer, which is reachable by traffic rather than by a deploy.
 
 name: cipher-relay
 
@@ -48,6 +72,24 @@ services:
       timeout: 5s
       retries: 10
       start_period: 10s
+    # The image's entrypoint starts as root to take ownership of the data
+    # directory and then drops to the postgres account with su-exec. CHOWN and
+    # FOWNER are for that ownership pass, DAC_OVERRIDE lets it read the socket
+    # directory it has just re-owned, and SETUID/SETGID are the drop itself.
+    # Everything else — NET_RAW, NET_BIND_SERVICE, MKNOD, SYS_CHROOT, KILL,
+    # AUDIT_WRITE — is in Docker's default set and is not used by a database.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, DAC_OVERRIDE, FOWNER, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true
+    # Not read_only. Postgres writes its socket, its lock files and its
+    # statistics outside the data volume, and the paths differ by version — a
+    # rootfs lockdown here would be a tmpfs list that silently rots at the next
+    # image bump. Recorded as the residual it is (AUDIT 5.28) rather than
+    # written around; the capability set above is what confines this container.
+    mem_limit: 1g
+    cpus: 1.5
+    pids_limit: 512
 
   redis:
     # redis:8-alpine, pinned by digest.
@@ -61,12 +103,31 @@ services:
     # written to disk, which silently reinstates the retention the schema is
     # designed to avoid. The relay refuses to start if it finds persistence
     # enabled (cache.AssertNoPersistence), so this cannot rot unnoticed.
+    #
+    # --maxmemory is the other half of mem_limit below, and it is a security
+    # setting rather than a tuning one. With only the container limit, Redis
+    # filling up is resolved by the kernel OOM killer: the process dies, and
+    # because persistence is off it comes back holding no rate-limit buckets at
+    # all — every caller granted a fresh allowance by traffic alone (AUDIT 5.24
+    # records the same harm arriving through a restart). With a Redis-side
+    # ceiling below the container's, a full Redis instead *refuses the write*,
+    # which every limiter call site already treats as fail-closed: the request is
+    # refused with 503 rather than silently permitted.
+    #
+    # noeviction is stated explicitly even though it is the default, because the
+    # eviction policies are the trap here — allkeys-lru would quietly discard
+    # rate-limit buckets under pressure, which is the same reset in slow motion
+    # and would look like correct operation.
     command:
       - redis-server
       - --save
       - ""
       - --appendonly
       - "no"
+      - --maxmemory
+      - 192mb
+      - --maxmemory-policy
+      - noeviction
       - --requirepass
       - ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
     # No ports:, and no volume — persistence is off, so a volume would only give
@@ -80,6 +141,25 @@ services:
       start_period: 5s
     environment:
       REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD in .env}
+    # Same entrypoint shape as postgres: root long enough to own /data, then
+    # su-exec to the redis account. No FOWNER — it changes ownership of a
+    # directory it created, never of one it does not own.
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    security_opt:
+      - no-new-privileges:true
+    # read_only here, unlike postgres: with persistence off Redis writes nothing
+    # to disk, which is the whole point of the flags above, so a writable
+    # filesystem is somewhere for a future misconfiguration to land. /data is a
+    # tmpfs so the entrypoint's chown still succeeds — and a tmpfs is memory,
+    # so anything written there dies with the container instead of reaching a
+    # disk the retention policy does not cover.
+    read_only: true
+    tmpfs:
+      - /data:mode=0700,size=16m
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 128
 
   api:
     build:
@@ -132,6 +212,17 @@ services:
     cap_drop: [ALL]
     security_opt:
       - no-new-privileges:true
+    # No cap_add: the runtime image is `scratch` running one static binary as
+    # uid 65532, and it binds 8080 rather than a privileged port.
+    #
+    # Modest against the datastores because it is the smaller process: one
+    # goroutine per request, no query planner, and attachments stream to disk
+    # rather than being buffered. The ceiling matters anyway — a container with
+    # no memory limit under an upload flood is the one the OOM killer chooses,
+    # and it takes the whole compose stack's headroom with it on the way.
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
 
 networks:
   internal:

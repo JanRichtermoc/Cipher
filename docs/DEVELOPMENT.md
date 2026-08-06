@@ -59,6 +59,13 @@ it and reports its absence clearly; `open -a Docker` starts it, and it takes a f
 seconds before `docker info` succeeds. `Scripts/verify-all.sh` does **not** need Docker —
 its relay gate is the container-free half on purpose.
 
+That script also runs [`Scripts/verify-image-vulns.sh`](../Scripts/verify-image-vulns.sh), which
+scans the binary inside the built relay image. It is a different question from
+[`Scripts/verify-vulns.sh`](../Scripts/verify-vulns.sh): that one scans the source under the
+toolchain `server/go.mod` declares, while the Dockerfile's build stage pins a different Go — so the
+standard library the release actually carries is only covered by the image scan (AUDIT 5.28). Run
+it on its own with `Scripts/verify-image-vulns.sh`, or `--self-test` for the offline half.
+
 **Go.** Homebrew and the standard Go installer use different prefixes, so include both when the
 relay verifier cannot find `go`. [`server/go.mod`](../server/go.mod) owns the required toolchain and
 module graph.
