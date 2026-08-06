@@ -130,7 +130,8 @@ public final class CryptoEngine {
             identityKey: record.identityKey.serialize(),
             firstSeenMs: record.firstSeenMs,
             changedAtMs: record.changedAtMs,
-            needsAcknowledgement: record.needsAcknowledgement)
+            needsAcknowledgement: record.needsAcknowledgement,
+            isVerified: record.isVerified)
     }
 
     /// Records that the user has seen and accepted `identityKey` for this peer, unblocking
@@ -144,6 +145,120 @@ public final class CryptoEngine {
         try requireLive()
         let address = try ProtocolAddress(name: name, deviceId: deviceId)
         return try store.acceptIdentity(IdentityKey(bytes: identityKey), for: address)
+    }
+
+    /// Records, or withdraws, the user's out-of-band comparison of this peer's safety number.
+    ///
+    /// Names the key for the same reason `acceptPeerIdentity` does: the digits the user
+    /// compared are a function of that exact key, so a verification that did not name it could
+    /// be applied to a key they never saw.
+    ///
+    /// - Returns: `false` if the stored key is no longer the one being verified.
+    @discardableResult
+    public func setPeerVerified(
+        _ verified: Bool, identityKey: Data, name: String, deviceId: UInt32
+    ) throws -> Bool {
+        try requireLive()
+        let address = try ProtocolAddress(name: name, deviceId: deviceId)
+        return try store.setIdentityVerified(
+            verified, IdentityKey(bytes: identityKey), for: address)
+    }
+
+    // MARK: - Trust, addressed the way the app addresses peers
+    //
+    // The `name:deviceId:` forms above are the primitive; these are what callers outside this
+    // module use. The difference is not convenience: `ServiceIdentifier.canonicalString` is
+    // internal, so without these an app-side caller would have to reconstruct the address
+    // string itself — reimplementing an encoding the store keys records by, in a module that
+    // cannot see the definition. `PeerAddress` is already the type the messaging API takes.
+
+    /// The stored trust state for a peer, if any.
+    public func peerIdentityState(for address: PeerAddress) throws -> PeerIdentityState? {
+        try peerIdentityState(
+            name: address.serviceId.canonicalString, deviceId: address.deviceId)
+    }
+
+    /// Records that the user has seen and accepted `identityKey` for this peer.
+    @discardableResult
+    public func acceptPeerIdentity(_ identityKey: Data, for address: PeerAddress) throws -> Bool {
+        try acceptPeerIdentity(
+            identityKey, name: address.serviceId.canonicalString, deviceId: address.deviceId)
+    }
+
+    /// Records, or withdraws, the user's out-of-band comparison of this peer's safety number.
+    @discardableResult
+    public func setPeerVerified(
+        _ verified: Bool, identityKey: Data, for address: PeerAddress
+    ) throws -> Bool {
+        try setPeerVerified(
+            verified, identityKey: identityKey,
+            name: address.serviceId.canonicalString, deviceId: address.deviceId)
+    }
+
+    // MARK: - Safety numbers (P5.S12, AUDIT 2.5)
+
+    /// The safety number for a conversation, as the sixty digits both sides must read the same.
+    ///
+    /// # What it is
+    ///
+    /// libsignal's numeric fingerprint over the two identity keys and the two addresses. It is
+    /// the only thing in Cipher that lets two people detect a substituted key, because the
+    /// relay chooses what to serve and the app cannot tell a real first contact from a
+    /// manufactured one (AUDIT 3.8). Comparing digits is out-of-band by construction: the
+    /// channel the number protects cannot be the channel it travels over.
+    ///
+    /// # Both sides compute the same string
+    ///
+    /// The generator orders the two halves canonically, so A-about-B and B-about-A produce
+    /// identical digits. `testTwoEnginesAgreeOnTheSafetyNumber` pins that, because the entire
+    /// ritual is worthless if the two screens can differ for an honest pair — users would learn
+    /// that a mismatch means nothing.
+    ///
+    /// # Parameters chosen, not defaulted
+    ///
+    /// `iterations` is the work factor libsignal applies while deriving the digits, and
+    /// `version` selects the identifier scheme. Both are fixed here rather than passed in: they
+    /// are part of the format, and two builds disagreeing on either produce different numbers
+    /// for the same pair of keys, which users would read as an attack.
+    ///
+    /// - Parameters:
+    ///   - peerIdentityKey: the peer's serialized public identity key, as shown on screen.
+    ///   - localAci: this account's ACI, the local identifier half.
+    ///   - peerAci: the peer's ACI.
+    /// - Returns: the formatted digits, or throws if either key or identifier is malformed.
+    public func safetyNumber(
+        peerIdentityKey: Data, localAci: UUID, peerAci: UUID
+    ) throws -> String {
+        try requireLive()
+
+        let localKey = try store.identityKeyPair(context: NullContext()).identityKey
+        let peerKey = try IdentityKey(bytes: peerIdentityKey)
+
+        let fingerprint = try Self.fingerprintGenerator.create(
+            version: Self.fingerprintVersion,
+            localIdentifier: Self.identifierBytes(localAci),
+            localKey: localKey.publicKey,
+            remoteIdentifier: Self.identifierBytes(peerAci),
+            remoteKey: peerKey.publicKey)
+
+        return fingerprint.displayable.formatted
+    }
+
+    /// 5200 iterations and version 2, matching the parameters libsignal's own callers use.
+    ///
+    /// Not tunable. A safety number is only useful if every build computes it identically, so
+    /// these are format constants rather than settings — lowering the work factor would not be
+    /// a performance change, it would silently produce a different number for every pair.
+    private static let fingerprintGenerator = NumericFingerprintGenerator(iterations: 5200)
+    private static let fingerprintVersion = 2
+
+    /// The 16 raw bytes of a UUID, which is what version 2 fingerprints identify parties by.
+    ///
+    /// Raw bytes rather than the hyphenated string: the string is a rendering, and two
+    /// implementations that disagreed about case or hyphens would produce different digits from
+    /// the same account.
+    private static func identifierBytes(_ id: UUID) -> Data {
+        withUnsafeBytes(of: id.uuid) { Data($0) }
     }
 
     // MARK: - Destruction
@@ -211,4 +326,11 @@ public struct PeerIdentityState: Sendable, Equatable {
     /// True while the key has changed and the user has not accepted the new one. Sending is
     /// refused until they do.
     public let needsAcknowledgement: Bool
+    /// True once the user has compared the safety number for **this** key out of band.
+    ///
+    /// Distinct from `needsAcknowledgement` being false, and the distinction is the point:
+    /// accepting a changed key unblocks sending, verifying asserts the key was checked with
+    /// the person. A key change clears this, so it can never describe a key the user has not
+    /// seen.
+    public let isVerified: Bool
 }

@@ -104,7 +104,19 @@ final class StoreEdgeTests: XCTestCase {
                        "positive control: the record must decode before it is corrupted")
 
         // Every bit this build does not define, one at a time.
-        for bit in 1..<8 {
+        //
+        // Starts at 2, not 1: bit 1 was undefined when this was written and became
+        // `verifiedFlag` in P5.S12, so the loop caught its own project's new feature as a
+        // corruption. Moving the lower bound is the correct response *because the property
+        // did not change* — undefined bits are still refused, and the bit that left this
+        // range is now covered in the other direction by
+        // SafetyNumberTests.testTheVerifiedBitRoundTripsAndUnknownFlagsAreRefused.
+        //
+        // Deliberately a literal rather than something derived from `knownFlags`: deriving
+        // it would make this loop test whatever the source happens to define, so defining a
+        // bit would silently delete its own case (AUDIT R5). Defining bit 2 must break this
+        // test, and the person defining it must come here and say so.
+        for bit in 2..<8 {
             var mutated = encoded
             mutated[mutated.startIndex + 1] |= UInt8(1 << bit)
             XCTAssertThrowsError(try PeerIdentityRecord.decode(mutated),

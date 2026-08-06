@@ -21,6 +21,7 @@ internal struct PeerIdentityRecord: Equatable {
     ///  offset  size  field
     ///       0     1  version              always 0x01
     ///       1     1  flags                bit 0 = change awaiting acknowledgement
+    ///                                     bit 1 = user has verified the safety number
     ///       2     8  firstSeenMs          UInt64, milliseconds since the Unix epoch
     ///      10     8  changedAtMs          UInt64, 0 when the key has never changed
     ///      18     N  identityKey          IdentityKey.serialize()
@@ -28,18 +29,24 @@ internal struct PeerIdentityRecord: Equatable {
     private static let version: UInt8 = 1
     private static let headerSize = 18
     private static let acknowledgementPendingFlag: UInt8 = 0x01
+    private static let verifiedFlag: UInt8 = 0x02
 
     /// Every flag bit this version understands. A record carrying anything outside this mask
     /// is refused rather than read with the unknown bits dropped.
     ///
-    /// The bit that exists today is the one that suppresses the "safety number changed"
-    /// warning, so the failure mode being avoided is specific: a record written by a future
-    /// build — one that had, say, added a *verified* bit — would otherwise be read here with
-    /// that meaning silently discarded, and the user would be shown a weaker trust state than
-    /// the one actually recorded. Refusing matches how `version` is already handled, and how
-    /// `load` treats a record it cannot open: a record this build cannot fully understand is
-    /// never partially believed.
-    private static let knownFlags: UInt8 = acknowledgementPendingFlag
+    /// The *verified* bit this comment used to name hypothetically is now bit 1 (P5.S12), and
+    /// the reasoning it was written to protect is exactly why it is declared here rather than
+    /// bolted on: a record carrying a flag this build does not understand is refused, so a
+    /// build that predates the bit reads a verified peer as unreadable rather than as
+    /// unverified. Refusing is the direction that cannot mislead — a discarded verification
+    /// would show a *weaker* trust state than the one recorded, which sounds safe and is not:
+    /// it silently retracts a claim the user made after comparing digits out of band, and the
+    /// obvious next step for them is to re-verify against whatever key is present now.
+    ///
+    /// The cost is a downgrade path that loses peer identity records. That is the correct
+    /// trade here and is bounded: `saveIdentity` treats an unreadable record as first contact,
+    /// so the peer is re-recorded and sending is blocked until the key is accepted again.
+    private static let knownFlags: UInt8 = acknowledgementPendingFlag | verifiedFlag
 
     internal let identityKey: IdentityKey
     /// When this peer's key was first recorded. Untrusted clocks never write here — it is
@@ -52,17 +59,29 @@ internal struct PeerIdentityRecord: Equatable {
     /// While this is set, `isTrustedIdentity` refuses the *sending* direction. Receiving is
     /// unaffected — see `CipherProtocolStore` for why the two directions differ.
     internal let needsAcknowledgement: Bool
+    /// True once the user has compared this peer's safety number out of band and said it
+    /// matched (P5.S12, AUDIT 2.5).
+    ///
+    /// This is a claim about **this exact `identityKey`** and nothing else. It is not stored
+    /// separately from the key for that reason: there is no record of "this peer is verified"
+    /// that could outlive the key it was asserted about, so a key change cannot leave a stale
+    /// verified badge behind. `saveIdentity` writes the new key with the bit clear, which is
+    /// what makes "invalidate on identity change" a property of the format rather than of
+    /// someone remembering to clear it.
+    internal let isVerified: Bool
 
     internal init(
         identityKey: IdentityKey,
         firstSeenMs: UInt64,
         changedAtMs: UInt64?,
-        needsAcknowledgement: Bool
+        needsAcknowledgement: Bool,
+        isVerified: Bool = false
     ) {
         self.identityKey = identityKey
         self.firstSeenMs = firstSeenMs
         self.changedAtMs = changedAtMs
         self.needsAcknowledgement = needsAcknowledgement
+        self.isVerified = isVerified
     }
 
     // MARK: - Coding
@@ -70,7 +89,10 @@ internal struct PeerIdentityRecord: Equatable {
     internal func encode() -> Data {
         var out = Data(capacity: Self.headerSize + 33)
         out.append(Self.version)
-        out.append(needsAcknowledgement ? Self.acknowledgementPendingFlag : 0)
+        var flags: UInt8 = 0
+        if needsAcknowledgement { flags |= Self.acknowledgementPendingFlag }
+        if isVerified { flags |= Self.verifiedFlag }
+        out.append(flags)
         out.append(bigEndian: firstSeenMs)
         out.append(bigEndian: changedAtMs ?? 0)
         out.append(identityKey.serialize())
@@ -103,7 +125,8 @@ internal struct PeerIdentityRecord: Equatable {
             identityKey: identityKey,
             firstSeenMs: firstSeenMs,
             changedAtMs: rawChangedAt == 0 ? nil : rawChangedAt,
-            needsAcknowledgement: flags & acknowledgementPendingFlag != 0)
+            needsAcknowledgement: flags & acknowledgementPendingFlag != 0,
+            isVerified: flags & verifiedFlag != 0)
     }
 }
 

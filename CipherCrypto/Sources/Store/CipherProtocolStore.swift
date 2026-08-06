@@ -234,9 +234,57 @@ internal final class CipherProtocolStore {
                 identityKey: existing.identityKey,
                 firstSeenMs: existing.firstSeenMs,
                 changedAtMs: existing.changedAtMs,
-                needsAcknowledgement: false),
+                needsAcknowledgement: false,
+                // Accepting is not verifying, and collapsing the two would be the whole point
+                // of AUDIT 5.4 undone. Accepting says "I have seen that this key changed and
+                // I want to keep talking"; verifying says "I compared the digits with this
+                // person out of band and they matched". A user who accepts a substituted key
+                // to unblock a conversation must not thereby acquire a verified badge, so
+                // this deliberately carries the existing bit forward rather than setting it —
+                // and after a change that bit is already false, because saveIdentity cleared
+                // it when it wrote the new key.
+                isVerified: existing.isVerified),
             for: address)
         CipherLog.session.info("identity change accepted for a peer")
+        return true
+    }
+
+    /// Records the user's out-of-band comparison of this peer's safety number.
+    ///
+    /// Takes the key for the same reason `acceptIdentity` does, and it matters more here:
+    /// the digits the user compared are a function of that exact key, so a verification that
+    /// did not name it could be applied to a key the user never saw. If the stored key has
+    /// moved on since the screen was drawn, this refuses and the caller must re-present.
+    ///
+    /// Clearing is the same operation with `verified: false` — a user who decides the numbers
+    /// did not match needs a way to say so, and it must not require the key to have changed.
+    ///
+    /// - Returns: `false` if the stored key is not the one being verified, in which case
+    ///   nothing changed.
+    @discardableResult
+    internal func setIdentityVerified(
+        _ verified: Bool, _ identity: IdentityKey, for address: ProtocolAddress
+    ) throws -> Bool {
+        CryptoActor.assertIsolated()
+
+        guard let existing = try loadPeerIdentity(address) else { return false }
+        guard existing.identityKey == identity else {
+            CipherLog.session.warning("identity verification refused: stale key presented")
+            return false
+        }
+        guard existing.isVerified != verified else { return true }
+
+        try storePeerIdentity(
+            PeerIdentityRecord(
+                identityKey: existing.identityKey,
+                firstSeenMs: existing.firstSeenMs,
+                changedAtMs: existing.changedAtMs,
+                needsAcknowledgement: existing.needsAcknowledgement,
+                isVerified: verified),
+            for: address)
+        // No address, no key, no digits. Whether a peer is verified is a fact about a
+        // conversation, and the log is not where it belongs.
+        CipherLog.session.info("peer safety-number verification state changed")
         return true
     }
 
@@ -305,7 +353,13 @@ extension CipherProtocolStore: IdentityKeyStore {
                 identityKey: identity,
                 firstSeenMs: existing.firstSeenMs,
                 changedAtMs: timestamp,
-                needsAcknowledgement: true),
+                needsAcknowledgement: true,
+                // The new key has never been compared with anyone, so it is not verified —
+                // stated explicitly rather than relying on the default, because this is the
+                // line that makes "invalidate on identity change" true. A verified badge that
+                // survived a key change would be the most dangerous possible lie in this app:
+                // it would assert the substitution had been checked.
+                isVerified: false),
             for: address)
         CipherLog.session.error("peer identity key changed; sending is blocked until accepted")
         return .replacedExisting
