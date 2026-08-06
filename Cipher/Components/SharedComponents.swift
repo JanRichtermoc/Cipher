@@ -84,17 +84,16 @@ struct UnreadBadge: View {
 
 /// Whether the UI is allowed to show a contact as verified.
 ///
-/// It is not, yet. Nothing derives verification from a key: `ConversationStore` reports
-/// `isVerified: false` for every conversation because there is nothing it could honestly report
-/// from, and before P5.S10 the flag was a hardcoded fixture boolean. Either way the checkmark
-/// would be decoration that reads as a cryptographic claim — the same lie the safety-number
-/// screen used to tell, spread across the chat list, the conversation header, and every contact
-/// picker.
+/// It now is (P5.S12). The badge is backed by a real claim: the user compared this peer's
+/// safety number out of band and said it matched, and `PeerIdentityRecord` stores that bound to
+/// the exact identity key, so a key change retracts it without anything having to remember to.
 ///
-/// Gated in one place rather than at the eight call sites, so re-enabling it is a single
-/// deliberate edit when P5.S12 derives verification from real fingerprints.
+/// The gate stays rather than being deleted. It was introduced because the checkmark had been
+/// decoration that read as a cryptographic claim (AUDIT 5.4) across the chat list, the
+/// conversation header and every contact picker, and one flag is what makes turning it off
+/// again a single deliberate edit if verification is ever weakened or moved.
 enum VerificationDisplay {
-    static let isAvailable = false
+    static let isAvailable = true
 }
 
 struct VerifiedBadge: View {

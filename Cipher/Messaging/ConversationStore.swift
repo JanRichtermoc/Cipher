@@ -20,9 +20,10 @@ import SwiftUI
 ///
 /// ## What it deliberately cannot show
 ///
-/// - **A verified badge.** Verification does not exist until P5.S12, so `Chat.isVerified` is
-///   always false here and `VerificationDisplay` gates the badge anyway. Deriving it from
-///   anything currently available would be inventing it.
+/// - **A display name it was not given** — see below. Verification *is* now real (P5.S12):
+///   `isVerified` is true only where the user compared a safety number out of band and the
+///   key has not changed since, which is why it is read from the record store on every
+///   refresh rather than held here.
 /// - **A display name it was not given.** There is no directory and no server-side profile
 ///   (`BACKEND.md` §2.1, `THREAT_MODEL.md` §3.4), so a peer is shown by a short form of their
 ///   Cipher ID until the user names them locally. A name the app made up would be worse.
@@ -164,9 +165,19 @@ final class ConversationStore {
                 }
             }
 
+            // Verification is read here rather than inside `apply`, which is synchronous.
+            // One local read per conversation, no network: the state lives in the sealed
+            // record store beside the identity key it describes.
+            var verified: Set<UUID> = []
+            for conversation in stored
+            where await repository.peerIdentity(with: conversation.peer)?.isVerified == true {
+                verified.insert(conversation.peer)
+            }
+
             localAci = aci
             messagesByChat = loaded
             ordinals = ordinalsByMessage
+            verifiedPeers = verified
             apply(stored)
             failure = nil
         } catch {
@@ -414,11 +425,59 @@ final class ConversationStore {
         failure = nil
     }
 
+    // MARK: - Safety numbers (P5.S12)
+
+    /// Everything the safety-number screen renders, or `nil` when there is no key yet.
+    ///
+    /// Assembled in one call so the digits and the key they were computed from cannot come
+    /// from two different reads: the screen hands that exact key back when the user confirms,
+    /// and the engine refuses it if the stored key has moved on since.
+    func safetyNumberDetails(for peer: UUID) async -> SafetyNumberDetails? {
+        guard !isPreviewOnly else { return nil }
+        guard let repository = try? await repository() else { return nil }
+        guard let identity = await repository.peerIdentity(with: peer) else { return nil }
+        guard let digits = await repository.safetyNumber(with: peer) else { return nil }
+        return SafetyNumberDetails(
+            peer: peer,
+            digits: digits,
+            identityKey: identity.identityKey,
+            isVerified: identity.isVerified,
+            needsAcknowledgement: identity.needsAcknowledgement,
+            changedAtMs: identity.changedAtMs)
+    }
+
+    /// Records or withdraws the user's comparison. Returns false if the key moved underneath.
+    @discardableResult
+    func setVerified(_ verified: Bool, peer: UUID, identityKey: Data) async -> Bool {
+        guard !isPreviewOnly else { return false }
+        guard let repository = try? await repository() else { return false }
+        let ok = await repository.setVerified(verified, peer: peer, identityKey: identityKey)
+        if ok { await refresh() }
+        return ok
+    }
+
+    /// Accepts a changed key so sending is unblocked (locked decision §0.2.1).
+    @discardableResult
+    func acceptIdentity(peer: UUID, identityKey: Data) async -> Bool {
+        guard !isPreviewOnly else { return false }
+        guard let repository = try? await repository() else { return false }
+        let ok = await repository.acceptIdentity(peer: peer, identityKey: identityKey)
+        if ok { await refresh() }
+        return ok
+    }
+
     // MARK: - Mapping the archive onto the view models
 
     /// The view model's message ordinal, which the archive needs to address a deletion. Kept out
     /// of `Message` itself: the ordinal is a storage detail, and P5.S11 replaces it.
     private var ordinals: [UUID: Int] = [:]
+
+    /// Peers whose safety number the user has compared out of band and confirmed.
+    ///
+    /// Derived on every refresh rather than stored here as truth. The record store owns it,
+    /// bound to the exact identity key, so this is a render cache that a key change empties
+    /// on the next reload rather than a second place the answer could be wrong.
+    private var verifiedPeers: Set<UUID> = []
 
     private func ordinal(of messageID: UUID) -> Int? { ordinals[messageID] }
 
@@ -432,9 +491,10 @@ final class ConversationStore {
                 username: Self.shortId(conversation.peer),
                 initials: Self.initials(for: conversation),
                 accentHue: Self.hue(for: conversation.peer),
-                // Nothing verifies an identity until P5.S12, and nothing reports presence at
-                // all. Both are false rather than decorative.
-                isVerified: false,
+                // Verified is now real (P5.S12): true only when the user has compared this
+                // peer's safety number and the key has not changed since. Presence still does
+                // not exist on the wire and stays false rather than decorative.
+                isVerified: verifiedPeers.contains(conversation.peer),
                 isOnline: false,
                 about: "")
         }
@@ -452,7 +512,7 @@ final class ConversationStore {
                 unreadCount: max(0, conversation.nextOrdinal - conversation.lastReadOrdinal),
                 isPinned: conversation.isPinned,
                 isMuted: conversation.isMuted,
-                isVerified: false,
+                isVerified: verifiedPeers.contains(conversation.peer),
                 avatarInitials: Self.initials(for: conversation),
                 accentHue: Self.hue(for: conversation.peer))
         }

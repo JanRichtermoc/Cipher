@@ -13,6 +13,7 @@ struct ChatInfoView: View {
     @State private var confirmBlock = false
     @State private var confirmClear = false
     @State private var nickname = ""
+    @State private var showSafetyNumber = false
 
     var body: some View {
         Group {
@@ -57,6 +58,30 @@ struct ChatInfoView: View {
                 }
             }
 
+            // The safety number sits directly under the Cipher ID, because the two answer
+            // adjacent questions: which account this is, and whether the key behind it is
+            // the one the person actually holds. A verified badge elsewhere in the app is
+            // only meaningful if this screen is one tap away from wherever it appears.
+            Section {
+                Button {
+                    showSafetyNumber = true
+                } label: {
+                    LabeledContent("Safety number") {
+                        if contact.isVerified {
+                            Label("Verified", systemImage: "checkmark.seal.fill")
+                                .labelStyle(.titleAndIcon)
+                                .foregroundStyle(CipherTheme.accent)
+                        } else {
+                            Text("Not verified")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+                .tint(.primary)
+            } footer: {
+                Text("Compare the number with this contact to confirm no one is intercepting your messages.")
+            }
+
             Section {
                 TextField("Name (only on this device)", text: $nickname)
                     .textInputAutocapitalization(.words)
@@ -93,6 +118,9 @@ struct ChatInfoView: View {
             }
         }
         .onAppear { nickname = chat.title }
+        .sheet(isPresented: $showSafetyNumber) {
+            SafetyNumberView(peer: contact.id, peerName: contact.name)
+        }
         .confirmationDialog("Block \(contact.name)?", isPresented: $confirmBlock) {
             Button(store.blockedContactIDs.contains(contact.id) ? "Unblock" : "Block", role: .destructive) {
                 Task { await store.toggleBlock(contact.id) }

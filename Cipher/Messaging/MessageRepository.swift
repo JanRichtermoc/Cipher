@@ -198,6 +198,51 @@ actor MessageRepository {
         return address.serviceId.uuid
     }
 
+    // MARK: - Identity and safety numbers (P5.S12)
+
+    /// A peer's trust state, or `nil` if this device has never seen a key for them.
+    ///
+    /// `nil` is not "untrusted" — it is "no session yet". The distinction matters at the call
+    /// site: a conversation with no key cannot show a safety number, and must not show an
+    /// unverified badge either, because there is nothing to have verified.
+    func peerIdentity(with peer: UUID) async -> PeerIdentityState? {
+        try? await engine.peerIdentityState(for: PeerAddress(aci: peer))
+    }
+
+    /// The digits both sides compare, or `nil` when there is no key for this peer yet.
+    ///
+    /// Computed on demand rather than cached with the conversation. It is a pure function of
+    /// two identity keys and two addresses, so a cache would buy nothing and could serve a
+    /// number derived from a key that has since changed — which is precisely the case the
+    /// screen exists to reveal.
+    func safetyNumber(with peer: UUID) async -> String? {
+        guard let identity = await peerIdentity(with: peer) else { return nil }
+        guard let localAci = await localAci() else { return nil }
+        return try? await engine.safetyNumber(
+            peerIdentityKey: identity.identityKey, localAci: localAci, peerAci: peer)
+    }
+
+    /// Records the user's out-of-band comparison, naming the key it applies to.
+    ///
+    /// The key is passed through from the state the screen was drawn from rather than re-read
+    /// here. That is the whole guarantee: if it changed while the screen was open, the engine
+    /// refuses and the caller re-presents, so a verification can never land on a key nobody saw.
+    @discardableResult
+    func setVerified(_ verified: Bool, peer: UUID, identityKey: Data) async -> Bool {
+        return (try? await engine.setPeerVerified(
+            verified, identityKey: identityKey, for: PeerAddress(aci: peer))) ?? false
+    }
+
+    /// Accepts a changed key, unblocking the send direction (locked decision §0.2.1).
+    ///
+    /// Separate from `setVerified` because they are separate claims, and a screen that offered
+    /// one button for both would make the badge mean "a warning was dismissed".
+    @discardableResult
+    func acceptIdentity(peer: UUID, identityKey: Data) async -> Bool {
+        return (try? await engine.acceptPeerIdentity(
+            identityKey, for: PeerAddress(aci: peer))) ?? false
+    }
+
     // MARK: - Reading
 
     func conversations() async throws -> [ConversationArchive.StoredConversation] {

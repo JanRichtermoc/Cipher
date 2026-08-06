@@ -19,6 +19,7 @@ Cipher/Features/Conversation/ConversationView.swift
 Cipher/Features/Conversation/ForwardMessageView.swift
 Cipher/Features/Conversation/MediaViewer.swift
 Cipher/Features/Conversation/MessageBubbleView.swift
+Cipher/Features/Conversation/SafetyNumberView.swift
 Cipher/Features/Debug/UICatalogView.swift
 Cipher/Features/Onboarding/OnboardingFlowView.swift
 Cipher/Features/Search/GlobalSearchView.swift

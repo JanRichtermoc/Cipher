@@ -119,8 +119,24 @@ DENY = [
         "no deletion mechanism enforces a disappearing timer (AUDIT 5.30)",
     ),
     ("Mizící zprávy", "Czech rendering of the unenforced disappearing-message control"),
-    ("Safety Number", "no key-derived comparison exists until P5.S12 (AUDIT 2.5, 5.30)"),
-    ("Bezpečnostní čísl", "Czech rendering of the unavailable safety-number surface"),
+    # The affordance AUDIT 5.4 actually retired, kept banned now that the words around it
+    # are legitimate again: a button that claims to record a verification the user never
+    # performed. The real control asks them to confirm they compared the digits.
+    ("Mark as Verified", "a button that verifies nothing is the 5.4 lie (AUDIT 5.4, 2.5)"),
+    ("Označit jako ověřené", "Czech rendering of the button that verified nothing"),
+    # "Safety Number" and its Czech rendering were on this list because the screen that
+    # used to carry those words showed twelve hardcoded blocks under the sentence "If these
+    # numbers match... your connection is secure" (AUDIT 5.4) -- a comparison ritual with
+    # nothing behind it. P5.S12 built the real one: CryptoEngine.safetyNumber derives the
+    # digits from both identity keys through libsignal, two engines are proved to agree, a
+    # substituted key is proved to change them, and the verification is stored bound to the
+    # exact key so a change retracts it. The claim is now true, so forbidding it would forbid
+    # the feature.
+    #
+    # What replaces the ban is the assertion below that the words still lead somewhere: a
+    # denylist can only stop a retired claim coming back, never stop a new invention (5.4's
+    # recorded residual), so the guard that matters here is SafetyNumberTests rather than a
+    # string search.
     ("Registration Lock", "Cipher has no registration-lock protocol or stored PIN (AUDIT 5.30)"),
     ("Zámek registrace", "Czech rendering of the unavailable registration-lock surface"),
     ("zámku registrace", "Czech inflection used by the unavailable registration-lock PIN"),
@@ -904,21 +920,26 @@ SELF_TESTS = [
         },
         "'Žádné skupiny'",
     ),
+    # P5.S12 made the safety number real, so "Safety Number" is no longer a forbidden
+    # claim and these two cases moved to the affordance that is still forbidden: a control
+    # asserting a verification nobody performed. Retargeted rather than deleted — the rule
+    # they used to cover was retired deliberately, and dropping the cases with it would have
+    # quietly reduced what this gate proves it can still catch.
     (
-        "C: unavailable safety-number surface",
-        {"Verify Safety Number": (False, "X.swift:1")},
-        {"Verify Safety Number": {}},
-        "'Safety Number'",
+        "C: a button that verifies nothing",
+        {"Mark as Verified": (False, "X.swift:1")},
+        {"Mark as Verified": {}},
+        "'Mark as Verified'",
     ),
     (
-        "C: unavailable Czech safety-number surface",
+        "C: Czech rendering of the button that verifies nothing",
         {"Verify identity": (False, "X.swift:1")},
         {
             "Verify identity": {
-                "localizations": {"cs": {"stringUnit": {"value": "Bezpečnostní čísla"}}}
+                "localizations": {"cs": {"stringUnit": {"value": "Označit jako ověřené"}}}
             }
         },
-        "'Bezpečnostní čísl'",
+        "'Označit jako ověřené'",
     ),
     (
         "C: unavailable registration-lock surface",
