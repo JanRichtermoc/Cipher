@@ -25,12 +25,12 @@ Executed 2026-07-29 against the OVH VPS. Every "Done when" below was observed, n
 | E | done | Needed `backend = systemd` — this image ships no rsyslog, so the stock jail would have run and banned nothing. Verified four ways: jail listed, filter matched 26 real journal lines, live jail counted 3 induced failures, ban reached the packet filter and unban removed it. |
 | F | done | Docker 29.6.2, Compose v5.3.1, log rotation on, `no-new-privileges` global. |
 | G | done | All three containers healthy, 8080 on loopback only. Secrets generated on the box. Deployed revision was `9a279a4`; now `3f4cf92` — see H.0b. |
-| G.1 | **PENDING — operator action, blocked on a merge** | AUDIT 5.28. `docker-compose.yml` now confines Postgres and Redis the way `api` was already confined and bounds all three, but the routine deploy recreates only `api`, so the running datastore containers keep the configuration they were created with. Confirmed unconfined on the box 2026-08-06: `CapDrop=[] Memory=0 PidsLimit=<nil>`. Cannot be run until the change is on `main` — the step pulls that branch, and running it early empties every rate-limit bucket while applying nothing. Verify against `docker inspect`, not the file. |
-| **Deployed revision** | **STALE — operator action** | Observed 2026-08-06: the box is on `3f4cf92` (PR #22), **64 commits behind** `main`, of which **three touch `server/`** — `72105ea` (AUDIT 5.25, atomic invite redemption), `f134de3` (AUDIT 5.27, seven handler and store bounds), `2c28da9` (AUDIT 5.29, the nginx files §H.6 installs). The other 61 are client and documentation work that never reaches this host; the three are what the running relay is missing. The running relay therefore lacks controls this repository records as CLOSED. This is the same drift H.0b caught on 2026-07-30 and is not caused by any single step; it is what happens when deploys are per-finding and the box is only touched when a finding names it. Deploying is an availability change and needs explicit approval. |
+| G.1 | done 2026-08-06 | AUDIT 5.28. `docker-compose.yml` confines Postgres and Redis the way `api` already was and bounds all three, but the routine deploy recreates only `api`, so the datastores kept the configuration they were created with. Pre-state observed: `postgres`/`redis` both `CapDrop=[] Memory=0 PidsLimit=<nil>`, `api` `CapDrop=[ALL]` with no limits. Ran `git pull --ff-only` then `docker compose up -d --build`. **Rehearsed first**, because the untested path was an *existing* data directory rather than a fresh volume: locally, a volume initialised under the pre-5.28 file was switched to the hardened one, Postgres returned healthy and a marker row survived. Post-state on the box: all three `CapDrop=[ALL]`, `no-new-privileges:true`, `api`/`redis` read-only, `Mem=512M/1G/256M`, `Pids=256/512/128`; Redis `maxmemory 201326592`, `noeviction`, `appendonly no`, empty `save`. `/health` and `/health/ready` both 200, 8080 still loopback-only, both datastores `PortBindings {}`, 0 ERROR lines, `schema up to date applied=0`, no unset-pepper warning on a build that emits one. |
+| **Deployed revision** | current as of 2026-08-06 | Was `3f4cf92` (PR #22), 64 commits behind `main`, of which **five touched `server/`** and were therefore missing from the running relay: `72105ea` (AUDIT 5.25, atomic invite redemption), `dd48a9c`, `f134de3` (AUDIT 5.27, seven handler and store bounds), `2c28da9` (AUDIT 5.29, the nginx files) and `23a0d29` (AUDIT 5.28). All shipped together with G.1; now `421ee6f`. **This drift is the recurring failure here** — H.0b caught the same thing on 2026-07-30, four commits behind — and it is structural rather than anyone's mistake: deploys are per-finding, the box is touched only when a finding names it, and nothing in the repository can see the gap because no gate reaches the host. The ledger said CLOSED while the relay did not have the code. Re-check with `git rev-list --count HEAD..origin/main` before trusting any finding's status against this box. |
 | H.0b | done 2026-07-30 | `RELAY_RATELIMIT_PEPPER` set, after the deploy that first contains it. The box had been on `9a279a4` and was **four relay-affecting commits behind** — it did not have 5.22 (blob byte quota never checked), 5.23 (ack and blob-delete unmetered) or the Go 1.25.12 stdlib fixes. Fast-forwarded to `3f4cf92`, rebuilt, then the pepper. OBSERVED, in this order: `/health` 200 over the wire on the new build with the old `.env`; the unset-pepper warning appearing for the first time (**0 → 1**, because the build that emits it had not been deployed before); then **1 → 0** after the value was set. See the trap noted in H.0b — the pre-deploy 0 was not a pass. |
 | H.0 | done | `RELAY_TRUSTED_PROXY=172.18.0.1/32` — the bridge **gateway**, not the subnet. Verified live both ways: rotating `X-Real-IP` through the host's published port gets fresh buckets, the same rotation from inside the `postgres` container still hits `429`. |
 | H.1–H.5 | done | `relay.mgchatman.app`, Let's Encrypt ECDSA leaf expiring 2026-10-27, `reuse_key = True` confirmed in the renewal config. TLS **1.3 only** — and see AUDIT 5.16, because it was 1.2-accepting at first while the config read as 1.3-only, and the first probe reported a false pass. Verified end to end from the internet: forging `X-Real-IP` per request does **not** escape the rate limit (8 requests, one bucket, throttled at the 6th). Access log carries no request URI. |
-| H.6 | **PENDING — operator action** | AUDIT 5.29. The configuration in `server/deploy/nginx/` is corrected and gated; the box is not. Until H.6 is run it still logs the port-80 redirect and the catch-all server through nginx's inherited **combined** format — client IP, full request path, user agent, referrer — into `/var/log/nginx/`, kept 14 daily generations by the stock logrotate. Observed 2026-08-06: seven rotated generations present, `access.log.1` 102 KB, `server_tokens` commented out in `nginx.conf` so only the TLS vhost suppresses the version banner. |
+| H.6 | done 2026-08-06 | AUDIT 5.29. Found already applied and verified independently the same day; **who ran it is not recorded here because it was not observed** — the files were installed at 09:34 UTC+2, before the G.1 pull that first brought `server/deploy/nginx/` onto the box, so they came from elsewhere (GitHub, scp) rather than from the checkout. Both files byte-identical to `server/deploy/nginx/`; three `access_log` directives (`off` for the redirect and the catch-all, `minimal` for the relay); `/var/log/nginx/` holds two empty files and **no rotated generations**, where seven were present with `access.log.1` at 102 KB before. Proved live, not inferred: traffic to the port-80 redirect and to the bare-IP catch-all left the stock `access.log` at **0 bytes**, while the relay's own `/var/log/cipher/cipher-access.log` grew — the positive control, without which an unchanged stock log is also what a box serving nothing looks like. A minimal line carries client IP, method, status, bytes and duration, and no path, user agent or referrer. The redirect answers `Server: nginx` with no version. |
 | I | done | Post-H full scan: **22, 80, 443 open; everything else filtered**, both families. Pre-H the same scan showed 65532 filtered / 2 closed / 1 open, confirming 80 and 443 only became reachable when Nginx was deployed. |
 
 ---
@@ -820,14 +820,34 @@ ssh cipher-staging 'sudo cat /etc/nginx/conf.d/00-cipher-hardening.conf' \
   | diff -u server/deploy/nginx/00-cipher-hardening.conf - && echo "hardening config matches"
 
 # 2. Every server block must now name its own access_log. Expect one line per server.
-ssh cipher-staging 'sudo grep -c "access_log" /etc/nginx/sites-available/cipher'   # 3
+#    Anchored: a bare `grep -c access_log` returns 6, because this file explains each
+#    directive in a comment directly above it (R3, the same trap as G.1's cap_drop check).
+ssh cipher-staging 'sudo grep -cE "^[[:space:]]*access_log[[:space:]]" /etc/nginx/sites-available/cipher'   # 3
 
 # 3. Prove nothing new lands in the stock log. Touch the redirect and the bare IP, then
 #    check the file has not grown.
-ssh cipher-staging 'sudo wc -c < /var/log/nginx/access.log'
+#
+#    `sudo sh -c`, not `sudo wc -c < file`. The redirection is performed by the LOGIN
+#    shell before sudo ever runs, so the unprivileged user opens a 0640 root:adm file
+#    and the command fails with "Permission denied" every time, on a correctly
+#    configured box. Written the wrong way, this step could never have passed.
+ssh cipher-staging "sudo sh -c 'wc -c < /var/log/nginx/access.log'"
 curl -s -o /dev/null http://relay.mgchatman.app/health
 curl -sk -o /dev/null https://<IP>/health || true
-ssh cipher-staging 'sudo wc -c < /var/log/nginx/access.log'   # unchanged
+ssh cipher-staging "sudo sh -c 'wc -c < /var/log/nginx/access.log'"   # unchanged
+
+# 3b. The positive control, and step 3 proves nothing without it. A stock log that does
+#     not grow is also what a box serving no traffic looks like — so confirm the request
+#     arrived by watching the log it is SUPPOSED to land in. Note the path: the relay's
+#     log is under /var/log/cipher/, deliberately outside the directory stock logrotate
+#     globs at rotate 14.
+ssh cipher-staging "sudo sh -c 'wc -c < /var/log/cipher/cipher-access.log'"
+curl -s -o /dev/null https://relay.mgchatman.app/health
+ssh cipher-staging "sudo sh -c 'wc -c < /var/log/cipher/cipher-access.log'"   # larger
+
+# 3c. And the line itself carries no request path, user agent or referrer.
+ssh cipher-staging "sudo sh -c 'tail -1 /var/log/cipher/cipher-access.log'"
+#    Expect five fields: client IP, method, status, bytes, duration. Nothing else.
 
 # 4. The version banner is gone from the redirect, not only from the TLS vhost.
 curl -sI http://relay.mgchatman.app/ | grep -i '^server:'      # "nginx", no version
