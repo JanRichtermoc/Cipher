@@ -28,6 +28,7 @@ Executed 2026-07-29 against the OVH VPS. Every "Done when" below was observed, n
 | H.0b | done 2026-07-30 | `RELAY_RATELIMIT_PEPPER` set, after the deploy that first contains it. The box had been on `9a279a4` and was **four relay-affecting commits behind** — it did not have 5.22 (blob byte quota never checked), 5.23 (ack and blob-delete unmetered) or the Go 1.25.12 stdlib fixes. Fast-forwarded to `3f4cf92`, rebuilt, then the pepper. OBSERVED, in this order: `/health` 200 over the wire on the new build with the old `.env`; the unset-pepper warning appearing for the first time (**0 → 1**, because the build that emits it had not been deployed before); then **1 → 0** after the value was set. See the trap noted in H.0b — the pre-deploy 0 was not a pass. |
 | H.0 | done | `RELAY_TRUSTED_PROXY=172.18.0.1/32` — the bridge **gateway**, not the subnet. Verified live both ways: rotating `X-Real-IP` through the host's published port gets fresh buckets, the same rotation from inside the `postgres` container still hits `429`. |
 | H.1–H.5 | done | `relay.mgchatman.app`, Let's Encrypt ECDSA leaf expiring 2026-10-27, `reuse_key = True` confirmed in the renewal config. TLS **1.3 only** — and see AUDIT 5.16, because it was 1.2-accepting at first while the config read as 1.3-only, and the first probe reported a false pass. Verified end to end from the internet: forging `X-Real-IP` per request does **not** escape the rate limit (8 requests, one bucket, throttled at the 6th). Access log carries no request URI. |
+| H.6 | **PENDING — operator action** | AUDIT 5.29. The configuration in `server/deploy/nginx/` is corrected and gated; the box is not. Until H.6 is run it still logs the port-80 redirect and the catch-all server through nginx's inherited **combined** format — client IP, full request path, user agent, referrer — into `/var/log/nginx/`, kept 14 daily generations by the stock logrotate. Observed 2026-08-06: seven rotated generations present, `access.log.1` 102 KB, `server_tokens` commented out in `nginx.conf` so only the TLS vhost suppresses the version banner. |
 | I | done | Post-H full scan: **22, 80, 443 open; everything else filtered**, both families. Pre-H the same scan showed 65532 filtered / 2 closed / 1 open, confirming 80 and 443 only became reachable when Nginx was deployed. |
 
 ---
@@ -543,11 +544,17 @@ point of no return `INFRASTRUCTURE.md` flags.
 ```sh
 sudo apt-get install -y nginx certbot
 sudo mkdir -p /var/www/acme/.well-known/acme-challenge
+# Deliberately minimal and temporary: the real file (H.5) names certificate paths that
+# do not exist until H.3, so installing it here fails `nginx -t`.
 sudo tee /etc/nginx/sites-available/cipher >/dev/null <<'EOF'
 server {
     listen 80;
     listen [::]:80;
     server_name relay.mgchatman.app;
+    # Even this temporary block sets it: without it the server inherits nginx.conf's
+    # combined format into /var/log/nginx, which the stock logrotate keeps for 14 days
+    # (AUDIT 5.29). H.5 replaces this file, but "temporary" is how a log starts.
+    access_log off;
     location /.well-known/acme-challenge/ { root /var/www/acme; }
     location / { return 301 https://$host$request_uri; }
 }
@@ -614,13 +621,17 @@ identifies *who was fetched* — so the format below carries the method and stat
 all. Rotation is what makes "short TTL" true rather than aspirational.
 
 ```sh
-sudo tee /etc/nginx/conf.d/00-cipher-log-format.conf >/dev/null <<'EOF'
-# THREAT_MODEL.md §3.6. Deliberately absent: $request / $request_uri (a populated
-# path such as /v1/keys/3f2b… is a metadata record hiding in a log line, which is
-# why httpx.pattern() strips it from application logs), $http_user_agent and
-# $http_referer (fingerprinting surface, no triage value for a native-app API).
-log_format minimal '$remote_addr $request_method $status $body_bytes_sent $request_time';
-EOF
+# The file lives in the repository so it is reviewable in a diff and checked by a gate
+# (AUDIT 5.29). Copy it rather than retyping it; `Scripts/verify-nginx-config.py` asserts
+# the properties of the committed copy, and a hand-edited box is one nothing verifies.
+scp server/deploy/nginx/00-cipher-hardening.conf cipher-staging:/tmp/
+ssh cipher-staging 'sudo install -m 0644 -o root -g root \
+    /tmp/00-cipher-hardening.conf /etc/nginx/conf.d/00-cipher-hardening.conf && \
+    rm -f /tmp/00-cipher-hardening.conf'
+
+# The earlier name, if this box predates the rename. Leaving both installed defines
+# log_format twice and nginx -t fails with "duplicate log_format".
+ssh cipher-staging 'sudo rm -f /etc/nginx/conf.d/00-cipher-log-format.conf'
 
 sudo tee /etc/logrotate.d/cipher-nginx >/dev/null <<'EOF'
 # 24 hours, and 'rotate 1' so yesterday's file is the only history that exists.
@@ -657,99 +668,14 @@ sudo logrotate --debug /etc/logrotate.conf 2>&1 | grep -i duplicate   # must pri
 ### H.5 The real server block
 
 ```sh
-sudo tee /etc/nginx/sites-available/cipher >/dev/null <<'EOF'
-# Unmatched Host (scanners hitting the bare IP) gets nothing at all.
-server {
-    listen 80 default_server;
-    listen [::]:80 default_server;
-    listen 443 ssl default_server;
-    listen [::]:443 ssl default_server;
-    server_name _;
-    # ssl_protocols MUST be here, not only in the relay block below. nginx
-    # negotiates the TLS version from the DEFAULT server's context for the
-    # listening socket, BEFORE SNI selects a virtual server — so a per-server
-    # ssl_protocols is applied too late to refuse anything. Omit this and
-    # Ubuntu's nginx.conf line 33 ("TLSv1 TLSv1.1 TLSv1.2 TLSv1.3") governs the
-    # socket: the config reads as 1.3-only and the server accepts 1.2.
-    # `nginx -t` passes either way. AUDIT 5.16.
-    ssl_protocols TLSv1.3;
-    ssl_reject_handshake on;
-    return 444;
-}
-
-server {
-    listen 80;
-    listen [::]:80;
-    server_name relay.mgchatman.app;
-    location /.well-known/acme-challenge/ { root /var/www/acme; }
-    location / { return 301 https://$host$request_uri; }
-}
-
-server {
-    # The `http2` parameter of `listen`, not the `http2 on;` directive: that
-    # directive arrived in nginx 1.25.1 and 24.04 ships 1.24.0, where it is an
-    # "unknown directive" and nginx -t fails. This form works on both.
-    listen 443 ssl http2;
-    listen [::]:443 ssl http2;
-    server_name relay.mgchatman.app;
-
-    ssl_certificate     /etc/letsencrypt/live/relay.mgchatman.app/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/relay.mgchatman.app/privkey.pem;
-
-    # 1.3 only. The sole client is a pinned iOS app; there is no legacy peer to
-    # accommodate, and every downgrade-negotiation problem disappears with 1.2.
-    ssl_protocols TLSv1.3;
-    ssl_prefer_server_ciphers off;
-    ssl_session_cache shared:SSL:10m;
-    ssl_session_timeout 10m;
-    # Tickets are a forward-secrecy hazard: one stolen ticket key retrospectively
-    # opens every session that used it.
-    ssl_session_tickets off;
-    # No ssl_stapling: Let's Encrypt retired OCSP in favour of CRLs.
-
-    # Staging: short, no includeSubDomains, no preload. A long max-age on a name
-    # that may be repurposed is a commitment browsers will not let you withdraw.
-    add_header Strict-Transport-Security "max-age=300" always;
-    server_tokens off;
-
-    # THREAT_MODEL.md §3.6 permits IP retention on "a short operational TTL",
-    # and httpx.Log deliberately keeps the client IP out of application logs so
-    # that triage data lives here instead, with its own lifetime. So: log, but
-    # on the 'minimal' format defined in nginx.conf below, and rotate at 24h.
-    #
-    # The default 'combined' format is NOT usable: it logs $request, which means
-    # /v1/keys/3f2b… — the populated-path leak that httpx.pattern() exists to
-    # prevent in application logs. Recording it in the proxy instead would defeat
-    # the control rather than relocate it. The minimal format has no URI.
-    # NOT under /var/log/nginx: the stock logrotate globs that directory at
-    # rotate 14 and would silently claim these files, making the 24h retention
-    # claim false. logrotate calls the collision a "duplicate log entry" and the
-    # winner depends on filename ordering. See H.4.
-    access_log /var/log/cipher/cipher-access.log minimal;
-    error_log  /var/log/cipher/cipher-error.log warn;
-
-    # Blobs are capped at 100 MiB by the relay. 101m lets the RELAY produce its
-    # own tested 413 instead of Nginx short-circuiting with an untested one.
-    client_max_body_size 101m;
-    client_body_timeout  120s;
-
-    location / {
-        proxy_pass http://127.0.0.1:8080;
-        proxy_http_version 1.1;
-        proxy_set_header Host              $host;
-        proxy_set_header X-Forwarded-Proto https;
-        # SET, not add: both of these OVERWRITE whatever the client sent, which
-        # is the entire reason the relay may trust them. X-Forwarded-For is
-        # deliberately collapsed to the single real peer rather than appended to
-        # — a forwarded chain is a list of values an attacker chose. See H.0.
-        proxy_set_header X-Real-IP         $remote_addr;
-        proxy_set_header X-Forwarded-For   $remote_addr;
-        proxy_request_buffering off;
-        proxy_read_timeout 120s;
-    }
-}
-EOF
-sudo nginx -t && sudo systemctl reload nginx
+# Same reasoning as H.4: the committed file is the one `Scripts/verify-nginx-config.py`
+# checks, so the box must run that file rather than a copy someone retyped.
+scp server/deploy/nginx/cipher.conf cipher-staging:/tmp/
+ssh cipher-staging 'sudo install -m 0644 -o root -g root \
+    /tmp/cipher.conf /etc/nginx/sites-available/cipher && rm -f /tmp/cipher.conf'
+ssh cipher-staging 'sudo ln -sf /etc/nginx/sites-available/cipher /etc/nginx/sites-enabled/cipher'
+ssh cipher-staging 'sudo rm -f /etc/nginx/sites-enabled/default'
+ssh cipher-staging 'sudo nginx -t && sudo systemctl reload nginx'
 ```
 
 Verify from the Mac:
@@ -763,6 +689,58 @@ openssl s_client -connect relay.mgchatman.app:443 -tls1_2 </dev/null 2>&1 | grep
 # Bare IP must give nothing:
 curl -skI https://<IP>/health
 ```
+
+### H.6 Remediating a box that predates AUDIT 5.29
+
+A box installed before this finding logs the port-80 redirect and the catch-all default
+server through nginx's inherited **combined** format into `/var/log/nginx/`, which the
+stock logrotate keeps for fourteen daily generations. Applying H.4 and H.5 stops new
+lines being written; it does not remove what is already there.
+
+Run the two installs above first, then:
+
+```sh
+# 1. Confirm the box now matches the committed files, byte for byte. A drifted copy is
+#    the case the gate cannot see, because the gate reads the repository.
+ssh cipher-staging 'sudo cat /etc/nginx/sites-available/cipher' \
+  | diff -u server/deploy/nginx/cipher.conf - && echo "site config matches"
+ssh cipher-staging 'sudo cat /etc/nginx/conf.d/00-cipher-hardening.conf' \
+  | diff -u server/deploy/nginx/00-cipher-hardening.conf - && echo "hardening config matches"
+
+# 2. Every server block must now name its own access_log. Expect one line per server.
+ssh cipher-staging 'sudo grep -c "access_log" /etc/nginx/sites-available/cipher'   # 3
+
+# 3. Prove nothing new lands in the stock log. Touch the redirect and the bare IP, then
+#    check the file has not grown.
+ssh cipher-staging 'sudo wc -c < /var/log/nginx/access.log'
+curl -s -o /dev/null http://relay.mgchatman.app/health
+curl -sk -o /dev/null https://<IP>/health || true
+ssh cipher-staging 'sudo wc -c < /var/log/nginx/access.log'   # unchanged
+
+# 4. The version banner is gone from the redirect, not only from the TLS vhost.
+curl -sI http://relay.mgchatman.app/ | grep -i '^server:'      # "nginx", no version
+```
+
+**Then destroy the history.** This is the part that actually discharges the finding: the
+accumulated files hold client IPs, full request paths, user agents and referrers going
+back two weeks, and §3.1's argument is that deletion — not encryption — is the control.
+
+```sh
+# Irreversible. Read step 1 of this section first: if the configs do not match, fix that
+# before deleting, or the box starts writing new ones immediately.
+ssh cipher-staging 'sudo sh -c "rm -f /var/log/nginx/access.log.* /var/log/nginx/error.log.* && \
+  : > /var/log/nginx/access.log && : > /var/log/nginx/error.log"'
+ssh cipher-staging 'sudo ls -l /var/log/nginx/'   # two empty files, no rotated generations
+```
+
+Truncating rather than unlinking the two live files: nginx holds them open, so deleting
+them leaks the inode until a reload and the next write goes nowhere visible.
+
+**Rollback.** Nothing here changes reachability, and the previous configuration is in
+Git — `git show HEAD~1:server/deploy/nginx/cipher.conf` — so a bad edit is recovered by
+reinstalling the older file and reloading. `nginx -t` runs before every reload above, so
+a syntactically broken config is refused rather than served. The log deletion has no
+rollback by design.
 
 ---
 

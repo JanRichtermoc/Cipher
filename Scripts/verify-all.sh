@@ -47,8 +47,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=15
-[ "$FAST" -eq 1 ] && TOTAL=12
+TOTAL=16
+[ "$FAST" -eq 1 ] && TOTAL=13
 
 step() {
   STEP=$((STEP + 1))
@@ -153,7 +153,18 @@ fi
 step "relay: build, vet, tests, compose invariants"
 ./Scripts/verify-relay.sh || fail "relay (see docs/BACKEND.md)"
 
-# --- 9. Product and documentation honesty -----------------------------------
+# --- 9. Deployment configuration ---------------------------------------------
+# The relay's TLS vhost logged carefully and its two siblings inherited nginx's
+# combined format into a directory the stock logrotate keeps for 14 days (AUDIT
+# 5.29). The configuration was right where someone had thought about it and wrong
+# in the two places nobody had. Reads the committed files, not the live box: a
+# check that needs SSH cannot run in CI, and the box is compared to these files by
+# an operator step in the runbook.
+step "deployment configuration cannot log what the threat model forbids"
+./Scripts/verify-nginx-config.py --self-test || fail "the nginx configuration gate cannot be trusted"
+./Scripts/verify-nginx-config.py || fail "the nginx configuration would retain request metadata (AUDIT 5.29)"
+
+# --- 10. Product and documentation honesty -----------------------------------
 # Cipher must not present a control or security boundary it does not provide, in any
 # language or canonical document. See the two focused scripts for what they check and why.
 #
@@ -167,14 +178,14 @@ step "product and documentation honesty"
 ./Scripts/verify-doc-key-boundary.py --self-test || fail "the documentation key-boundary gate cannot be trusted"
 ./Scripts/verify-doc-key-boundary.py || fail "documentation collapsed public, private E2E, or operational server keys"
 
-# --- 10. Module boundary -----------------------------------------------------
+# --- 11. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
 ./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
 
-# --- 11. Crypto tests --------------------------------------------------------
+# --- 12. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -298,7 +309,7 @@ grep -q "SessionCredentialTests" "$LOG" ||
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
-# --- 12. App builds ----------------------------------------------------------
+# --- 13. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -311,7 +322,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 13. Release device build ------------------------------------------------
+# --- 14. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then
@@ -327,7 +338,7 @@ if [ "$FAST" -eq 0 ]; then
     fail "Release device build"
   echo "  ok    release arm64 builds"
 
-  # --- 14. No debug affordance or retired claim survives into Release --------
+  # --- 15. No debug affordance or retired claim survives into Release --------
   # Fencing the *buttons* that drive a debug switch is not the same as fencing the switch:
   # `debugSkipToMain` was a live authentication bypass in Release for exactly that reason
   # (AUDIT 5.6). This asserts against the built artifact, which is the only place the
@@ -416,7 +427,7 @@ if [ "$FAST" -eq 0 ]; then
   [ "$leaked" -eq 0 ] || fail "a debug affordance or retired claim ships in Release (AUDIT 5.6, 5.11, 5.19, 5.30)"
   echo "  ok    no debug affordance or retired claim anywhere in the Release bundle"
 
-  # --- 15. Required-reason APIs are declared ---------------------------------
+  # --- 16. Required-reason APIs are declared ---------------------------------
   # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol
   # surface ships whether Cipher calls it or not — a required-reason API can appear with no
   # source change on our side, and the first sign would otherwise be App Review.

@@ -27,8 +27,8 @@ deployment, and operator state from their executable or live sources before acti
 |---|---|
 | Phase | P5 in progress; P1–P4 complete. |
 | Completed P5 product steps | P5.S01, P5.S02, P5.S05, P5.S06, P5.S08, P5.S09, P5.S10, and P5.S11. |
-| Security-remediation queue | The approved queue (5.26, 5.27, 1.14, 6.14, and 6.13 with it) is empty. **Two P5-scoped findings were never in it and are still OPEN: AUDIT 5.28** (relay lifecycle and deployment controls) **and 5.29** (the staging HTTP vhost's access log). Neither is approved work; queue them explicitly or record why they wait. `AUDIT.md` is authoritative. |
-| Next planned feature | P5.S12 safety numbers, followed by P5.S13 two-device staging verification. The remediation work that preceded them is done. |
+| Security-remediation queue | 5.26, 5.27, 1.14, 6.14 and 6.13 are closed. **AUDIT 5.29** is code-complete and gated but stays OPEN on one operator action — `RUNBOOK-VPS.md` §H.6, which applies the corrected nginx configuration to the staging box and destroys the retained logs. **AUDIT 5.28** (relay lifecycle and deployment controls) is the remaining unstarted P5-scoped finding. `AUDIT.md` is authoritative for both. |
+| Next planned feature | P5.S12 safety numbers, followed by P5.S13 two-device staging verification. |
 | Open and accepted risk | `AUDIT.md` is authoritative. Read every applicable OPEN and ACCEPTED row; this table never overrides it. |
 | Repository and PR state | Derive from Git and the current GitHub pull-request list. Never copy an “unmerged branch” into this plan. |
 | Staging and operator state | `RUNBOOK-VPS.md` owns procedures and its state table; live read-only checks win. Do not duplicate host, certificate, DNS, or pending-operator snapshots here. |
