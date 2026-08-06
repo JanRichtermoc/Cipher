@@ -271,10 +271,12 @@ func run() error {
 		// request regardless of who sent it, and neither reads the address.
 		httpx.RealIP(cfg.TrustedProxies),
 		httpx.SecurityHeaders,
-		// Attachment upload streams megabytes and cannot live under the global
-		// JSON-sized limit; api.BlobsHandler applies MaxBlobBytes itself. An
-		// exemption means "the handler owns this limit", never "no limit".
-		httpx.LimitBody(cfg.MaxRequestBytes, api.BlobPathPrefix),
+		// Attachment upload streams megabytes and prekey publication sends a pool
+		// of ML-KEM keys; neither fits the global JSON-sized limit, and both
+		// handlers apply their own (api.MaxBlobBytes, api.MaxPublishBytes). An
+		// exemption means "the handler owns this limit", never "no limit". The
+		// list lives in api so the tests exercise the exemptions production has.
+		httpx.LimitBody(cfg.MaxRequestBytes, api.BodyLimitExemptPrefixes()...),
 	)
 
 	srv := &http.Server{

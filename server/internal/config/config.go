@@ -55,9 +55,18 @@ type Config struct {
 	// ShutdownGrace is how long in-flight requests get on SIGTERM.
 	ShutdownGrace time.Duration
 
-	// MaxRequestBytes caps any request body. The largest legitimate body is an
-	// envelope (65567 bytes by Envelope.swift) plus JSON framing; attachments go
-	// to a separate streaming route in P4.S09 that does not use this limit.
+	// MaxRequestBytes caps request bodies on every route that does not own its
+	// own limit. The largest body under it is an envelope (65567 bytes by
+	// Envelope.swift) plus JSON framing.
+	//
+	// **It is not "the largest body the API has", and reading it that way was a
+	// bug.** Two routes are exempt and cap themselves, because both legitimately
+	// exceed anything the other routes could receive: attachment upload streams
+	// megabytes (api.MaxBlobBytes) and prekey publication sends a pool of ML-KEM
+	// keys (api.MaxPublishBytes). Publication was *not* exempt until AUDIT 5.32 —
+	// this limit silently refused every real client publication while the relay's
+	// own validator declared them legal. api.BodyLimitExemptPrefixes names the
+	// exempt routes; raising this value is not the way to admit a new large one.
 	MaxRequestBytes int64
 
 	// RateLimitPepper keys the rate limiter's subject hashes (ratelimit.Subject).

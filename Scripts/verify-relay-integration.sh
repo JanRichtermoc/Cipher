@@ -61,6 +61,12 @@ REQUIRED_INTEGRATION_TESTS=(
   TestAnActiveAccountSurvivesTheAbandonmentSweep
   TestSweepingAnAccountTakesItsMessagesAndTokens
   TestAuthenticatingRefreshesTheActivityDate
+  # The publication body limit (AUDIT 5.32). These two are the only place the
+  # middleware chain main builds is exercised at all: every other publish test
+  # runs against a bare ServeMux, so the limit that refused every real client
+  # publication is invisible to them. Losing either restores that blindness.
+  TestTheShippedClientsPublicationIsAccepted
+  TestABodyAtTheValidatorsMaximumIsReadable
 )
 
 # A host port distinct from the development stack's 8080, so running this never

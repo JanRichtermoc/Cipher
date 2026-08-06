@@ -660,6 +660,179 @@ final class MessageRepositoryTests: XCTestCase {
         XCTAssertEqual((json["one_time_prekeys"] as? [Any])?.count, expected)
     }
 
+    // MARK: - The publication the relay actually has to accept (AUDIT 5.32)
+
+    /// The bounds `server/internal/api/keys.go` enforces on a publication, mirrored here because
+    /// no Swift test can import Go. `docs/BACKEND.md` §2.4–§2.6 owns them.
+    ///
+    /// **Structural bounds only, deliberately.** The relay's ceiling on the whole body is *not*
+    /// repeated here: `api.MaxPublishBytes` is computed from these same constants, and
+    /// `TestABodyAtTheValidatorsMaximumIsReadable` proves on that side that any body satisfying
+    /// them can be read. Keeping one byte count in two languages is how the relay ended up
+    /// refusing publications it had itself declared legal.
+    private enum RelayPublishBounds {
+        static let maxKeysPerPool = 200
+        static let curveKeyBytes = 32...64
+        static let kyberKeyBytes = 32...4096
+        static let signatureBytes = 32...128
+        static let maxKeyId: UInt64 = 0xFF_FFFF
+    }
+
+    /// Every way the relay would refuse `body`, as readable text. Empty means it is accepted.
+    ///
+    /// Written as a checker rather than a wall of assertions so it can be pointed at a body the
+    /// relay *must* refuse — a check that has never reported a violation is not a check.
+    private func relayRefusals(for body: Data) throws -> [String] {
+        let json = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: body) as? [String: Any],
+            "the publication body is not a JSON object")
+        var refusals: [String] = []
+
+        func checkKey(
+            _ key: [String: Any]?, named name: String,
+            keyBytes: ClosedRange<Int>, signed: Bool
+        ) {
+            guard let key else {
+                refusals.append("\(name): absent, which the relay refuses")
+                return
+            }
+            if let id = (key["key_id"] as? NSNumber)?.uint64Value {
+                if id > RelayPublishBounds.maxKeyId {
+                    refusals.append("\(name): key id \(id) is above the protocol ceiling")
+                }
+            } else {
+                refusals.append("\(name): no numeric key_id")
+            }
+
+            if let encoded = key["public_key"] as? String,
+               let decoded = Data(base64Encoded: encoded) {
+                if !keyBytes.contains(decoded.count) {
+                    refusals.append("\(name): public key is \(decoded.count) bytes, outside \(keyBytes)")
+                }
+            } else {
+                refusals.append("\(name): public_key is missing or not base64")
+            }
+
+            guard signed else { return }
+            if let encoded = key["signature"] as? String,
+               let decoded = Data(base64Encoded: encoded) {
+                if !RelayPublishBounds.signatureBytes.contains(decoded.count) {
+                    refusals.append(
+                        "\(name): signature is \(decoded.count) bytes, outside "
+                            + "\(RelayPublishBounds.signatureBytes)")
+                }
+            } else {
+                refusals.append("\(name): signature is missing or not base64")
+            }
+        }
+
+        checkKey(
+            json["signed_prekey"] as? [String: Any], named: "signed_prekey",
+            keyBytes: RelayPublishBounds.curveKeyBytes, signed: true)
+        checkKey(
+            json["kyber_last_resort"] as? [String: Any], named: "kyber_last_resort",
+            keyBytes: RelayPublishBounds.kyberKeyBytes, signed: true)
+
+        let kyber = json["kyber_prekeys"] as? [[String: Any]] ?? []
+        let curve = json["one_time_prekeys"] as? [[String: Any]] ?? []
+        for (pool, name) in [(kyber, "kyber_prekeys"), (curve, "one_time_prekeys")]
+        where pool.count > RelayPublishBounds.maxKeysPerPool {
+            refusals.append(
+                "\(name): \(pool.count) keys, above the \(RelayPublishBounds.maxKeysPerPool) "
+                    + "the relay accepts in one upload")
+        }
+        for (index, key) in kyber.enumerated() {
+            checkKey(
+                key, named: "kyber_prekeys[\(index)]",
+                keyBytes: RelayPublishBounds.kyberKeyBytes, signed: true)
+        }
+        for (index, key) in curve.enumerated() {
+            checkKey(
+                key, named: "one_time_prekeys[\(index)]",
+                keyBytes: RelayPublishBounds.curveKeyBytes, signed: false)
+        }
+
+        return refusals
+    }
+
+    func testThePublishedBodyStaysInsideEveryBoundTheRelayEnforces() async throws {
+        // AUDIT 5.32, from this side. The relay refused the shipped client's publication for a
+        // month of work because nothing ever compared what the client *produces* with what the
+        // relay *accepts* — the relay's own fixtures modelled a four-key pool, and this side
+        // never checked the payload against a bound at all.
+        //
+        // This is the real body: a genuine `register()` at the shipped pool size, captured from
+        // the transport, not a re-encoding of it by the test.
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
+        RoutedStubRelay.reset(try await defaultRoutes())
+        let repository = makeRepository()
+        try await repository.register()
+
+        let body = try XCTUnwrap(RoutedStubRelay.requests("PUT /v1/keys").first)
+        let refusals = try relayRefusals(for: body)
+        XCTAssertEqual(
+            refusals, [],
+            "the shipped client publishes material the relay refuses:\n"
+                + refusals.joined(separator: "\n"))
+    }
+
+    func testSerializedKeyAndSignatureSizesAreWhatTheRelayBoundsAssume() async throws {
+        // The relay's bounds and its body ceiling are both sized from these three numbers, and
+        // they come from a `0.x` dependency that promises no stability between releases
+        // (AUDIT 1.4). Measured from the payload that ships, so a libsignal bump that changes a
+        // serialized length fails here — naming the number — rather than in production as a 413.
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
+        RoutedStubRelay.reset(try await defaultRoutes())
+        try await makeRepository().register()
+
+        let body = try XCTUnwrap(RoutedStubRelay.requests("PUT /v1/keys").first)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+
+        func byteCount(_ key: [String: Any]?, _ field: String) throws -> Int {
+            let encoded = try XCTUnwrap((key?[field]) as? String)
+            return try XCTUnwrap(Data(base64Encoded: encoded)).count
+        }
+
+        let curve = try XCTUnwrap((json["one_time_prekeys"] as? [[String: Any]])?.first)
+        let kyber = try XCTUnwrap((json["kyber_prekeys"] as? [[String: Any]])?.first)
+        let signed = json["signed_prekey"] as? [String: Any]
+
+        XCTAssertEqual(try byteCount(curve, "public_key"), 33, "0x05 type byte + 32 key bytes")
+        XCTAssertEqual(
+            try byteCount(kyber, "public_key"), 1569,
+            "ML-KEM-1024: type byte + 1568 key bytes")
+        XCTAssertEqual(try byteCount(signed, "signature"), 64)
+    }
+
+    func testTheBoundCheckerReportsAPublicationTheRelayWouldRefuse() async throws {
+        // The positive control for the two tests above. A checker that has never returned a
+        // violation proves nothing about the body it reads — AUDIT **R2**, and **R5** for the
+        // habit of deriving the failing case from the data under test. This case is built by
+        // hand, in the two directions that actually matter: a pool above the per-upload cap, and
+        // a key id above the protocol ceiling.
+        let overCap = (0...RelayPublishBounds.maxKeysPerPool).map { index in
+            #"{"key_id":\#(index + 1),"public_key":"\#(Data(repeating: 5, count: 33).base64EncodedString())"}"#
+        }.joined(separator: ",")
+        let signature = Data(repeating: 0xAA, count: 64).base64EncodedString()
+        let kyberKey = Data(repeating: 8, count: 1569).base64EncodedString()
+        let body = Data(
+            """
+            {"signed_prekey":{"key_id":16777216,\
+            "public_key":"\(Data(repeating: 5, count: 33).base64EncodedString())",\
+            "signature":"\(signature)"},\
+            "kyber_last_resort":{"key_id":2,"public_key":"\(kyberKey)","signature":"\(signature)"},\
+            "kyber_prekeys":[],"one_time_prekeys":[\(overCap)]}
+            """.utf8)
+
+        let refusals = try relayRefusals(for: body)
+        XCTAssertTrue(
+            refusals.contains { $0.contains("above the 200") },
+            "the checker missed a pool above the per-upload cap: \(refusals)")
+        XCTAssertTrue(
+            refusals.contains { $0.contains("above the protocol ceiling") },
+            "the checker missed a key id above 0xFFFFFF: \(refusals)")
+    }
+
     @MainActor
     func testAccountCleanupErasesHistoryAndDropsInMemoryConversations() async throws {
         let root = URL(fileURLWithPath: NSTemporaryDirectory())
