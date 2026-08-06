@@ -26,7 +26,7 @@ Executed 2026-07-29 against the OVH VPS. Every "Done when" below was observed, n
 | F | done | Docker 29.6.2, Compose v5.3.1, log rotation on, `no-new-privileges` global. |
 | G | done | All three containers healthy, 8080 on loopback only. Secrets generated on the box. Deployed revision was `9a279a4`; now `3f4cf92` — see H.0b. |
 | G.1 | **PENDING — operator action, blocked on a merge** | AUDIT 5.28. `docker-compose.yml` now confines Postgres and Redis the way `api` was already confined and bounds all three, but the routine deploy recreates only `api`, so the running datastore containers keep the configuration they were created with. Confirmed unconfined on the box 2026-08-06: `CapDrop=[] Memory=0 PidsLimit=<nil>`. Cannot be run until the change is on `main` — the step pulls that branch, and running it early empties every rate-limit bucket while applying nothing. Verify against `docker inspect`, not the file. |
-| **Deployed revision** | **STALE — operator action** | Observed 2026-08-06: the box is on `3f4cf92` (PR #22) and is **three merged server-affecting commits behind** `main` — `72105ea` (AUDIT 5.25, atomic invite redemption), `f134de3` (AUDIT 5.27, seven handler and store bounds), `2c28da9` (AUDIT 5.29, the nginx files §H.6 installs). The running relay therefore lacks controls this repository records as CLOSED. This is the same drift H.0b caught on 2026-07-30 and is not caused by any single step; it is what happens when deploys are per-finding and the box is only touched when a finding names it. Deploying is an availability change and needs explicit approval. |
+| **Deployed revision** | **STALE — operator action** | Observed 2026-08-06: the box is on `3f4cf92` (PR #22), **64 commits behind** `main`, of which **three touch `server/`** — `72105ea` (AUDIT 5.25, atomic invite redemption), `f134de3` (AUDIT 5.27, seven handler and store bounds), `2c28da9` (AUDIT 5.29, the nginx files §H.6 installs). The other 61 are client and documentation work that never reaches this host; the three are what the running relay is missing. The running relay therefore lacks controls this repository records as CLOSED. This is the same drift H.0b caught on 2026-07-30 and is not caused by any single step; it is what happens when deploys are per-finding and the box is only touched when a finding names it. Deploying is an availability change and needs explicit approval. |
 | H.0b | done 2026-07-30 | `RELAY_RATELIMIT_PEPPER` set, after the deploy that first contains it. The box had been on `9a279a4` and was **four relay-affecting commits behind** — it did not have 5.22 (blob byte quota never checked), 5.23 (ack and blob-delete unmetered) or the Go 1.25.12 stdlib fixes. Fast-forwarded to `3f4cf92`, rebuilt, then the pepper. OBSERVED, in this order: `/health` 200 over the wire on the new build with the old `.env`; the unset-pepper warning appearing for the first time (**0 → 1**, because the build that emits it had not been deployed before); then **1 → 0** after the value was set. See the trap noted in H.0b — the pre-deploy 0 was not a pass. |
 | H.0 | done | `RELAY_TRUSTED_PROXY=172.18.0.1/32` — the bridge **gateway**, not the subnet. Verified live both ways: rotating `X-Real-IP` through the host's published port gets fresh buckets, the same rotation from inside the `postgres` container still hits `429`. |
 | H.1–H.5 | done | `relay.mgchatman.app`, Let's Encrypt ECDSA leaf expiring 2026-10-27, `reuse_key = True` confirmed in the renewal config. TLS **1.3 only** — and see AUDIT 5.16, because it was 1.2-accepting at first while the config read as 1.3-only, and the first probe reported a false pass. Verified end to end from the internet: forging `X-Real-IP` per request does **not** escape the rate limit (8 requests, one bucket, throttled at the 6th). Access log carries no request URI. |
@@ -429,11 +429,20 @@ rather than inferring it from the pull succeeding:
 ```sh
 git ls-remote origin refs/heads/main
 ssh cipher-staging 'cd ~/cipher && git fetch -q origin && \
-  git show origin/main:server/docker-compose.yml | grep -c cap_drop'    # 3, not 1
+  git show origin/main:server/docker-compose.yml | grep -cE "^[[:space:]]*cap_drop:"'   # 3, not 1
 ```
 
-One `cap_drop` is the pre-5.28 file, which confines `api` alone. Three is the file this step exists
-to deploy.
+One `cap_drop:` directive is the pre-5.28 file, which confines `api` alone. Three is the file this
+step exists to deploy.
+
+**Anchored to the start of the line, and that is not style.** The bare `grep -c cap_drop` this
+check was first written with returns **4** on the current file: the header comment explains the
+control using the word it is searching for, so the count includes the prose describing the setting
+as though it were the setting. Observed 2026-08-06, and it is AUDIT 6.7 and **R3** exactly — the
+same defect `Scripts/verify-relay.sh` was negative-tested into fixing, reappearing in a runbook
+command written in the same change. An operator reading `4` against a documented `3` stops and
+looks for a problem that is not there; worse, the loose form would count a file whose directives had
+all been deleted but whose comments survived.
 
 Then pull and recreate **all three** services, not just `api`:
 
