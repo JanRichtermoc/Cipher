@@ -31,7 +31,7 @@ remediation that closed 5.27, and the transport remediation that closed 5.26.
 
 ## 0. Recurring failure modes
 
-Four classes have each produced multiple findings. Stated once here as rules, because they were
+Five classes have each produced multiple findings. Stated once here as rules, because they were
 first recorded as facts about one command and recurred anyway.
 
 **R1 — Never put an infinite or long producer upstream of a consumer that exits early.**
@@ -62,6 +62,26 @@ Deleting an English string leaves its `cs` rendering in the catalog, and a guard
 English silently exempts every other language ("passcode" → "kód zařízení").
 `Scripts/verify-localization.py` searches every language and carries a `--self-test` that
 reintroduces each defect before its own verdict is believed.
+
+**R5 — A self-test can be wrong in the same way the check is.** (6.14, 6.16, 5.29, 1.14.)
+Every gate here carries a self-test, and writing them surfaced four distinct ways the
+self-test itself passes without proving anything. **Do not derive the cases from the data
+under test:** the simulator-fault self-test looped over the pattern list, so deleting a
+pattern deleted its own case and the suite stayed green — the exact defect 6.14 records,
+reproduced inside its fix. Observed inputs go in as literals. **`set -e` turns a bare
+call into a silent exit:** `chain_is_verified "$x"` on its own line aborts the script when
+it returns non-zero, which made a pin self-test exit 1 with no output *and* would have
+turned "this certificate failed validation" into a silent failure at the live call site.
+Use `|| rc=$?`. **A subshell cannot report a failure flag:** running checks inside
+`$(...)` to capture their output left `FAILED` in the child, so five negative cases read
+as accepted. Redirect to a file instead. **And a wait is not free of the harness:** test
+ceilings must stay below whatever escape hatch the fixture uses, or a wait that outlives
+it stops observing the property and starts observing the timeout — silently a different
+test (6.16).
+
+A self-test that has never been made to fail is worth exactly as much as the gate it is
+supposed to validate. Reintroduce the defect in the *real* file, not only in a fixture:
+that is what caught the two cases above where the fixture was fine and the wiring was not.
 
 ---
 
