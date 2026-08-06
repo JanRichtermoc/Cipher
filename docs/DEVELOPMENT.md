@@ -38,6 +38,27 @@ export PATH="/opt/homebrew/opt/ruby/bin:$PATH"
 bundle install
 ```
 
+The system Ruby is 2.6 and cannot load the pinned Bundler at all — it fails with
+`Could not find 'bundler' (…) required by your Gemfile.lock`, which reads like a missing
+gem rather than the wrong interpreter. Export the path first and the message disappears.
+
+**CocoaPods needs a UTF-8 locale, and says so misleadingly.** Without one, `pod install`
+dies inside its *error reporter* with
+`Unicode Normalization not appropriate for ASCII-8BIT (Encoding::CompatibilityError)` and
+a stack trace through `Pod::UserInterface::ErrorReport` — so the real error, whatever it
+was, is never printed. Any genuine podspec or resolution failure looks like this until
+the locale is set:
+
+```sh
+export LANG=en_US.UTF-8
+bundle exec pod install
+```
+
+**Docker Desktop is not running by default.** `Scripts/verify-relay-integration.sh` needs
+it and reports its absence clearly; `open -a Docker` starts it, and it takes a few tens of
+seconds before `docker info` succeeds. `Scripts/verify-all.sh` does **not** need Docker —
+its relay gate is the container-free half on purpose.
+
 **Go.** Homebrew and the standard Go installer use different prefixes, so include both when the
 relay verifier cannot find `go`. [`server/go.mod`](../server/go.mod) owns the required toolchain and
 module graph.
