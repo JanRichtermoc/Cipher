@@ -89,8 +89,8 @@ func productionKeysStack(t *testing.T) (http.Handler, *store.DB) {
 	}
 
 	return httpx.Chain(mux,
-		httpx.Log(log),
-		httpx.Recover(log),
+		httpx.Log(log, httpx.MuxRoute(mux)),
+		httpx.Recover(log, httpx.MuxRoute(mux)),
 		httpx.SecurityHeaders,
 		httpx.LimitBody(cfg.MaxRequestBytes, api.BodyLimitExemptPrefixes()...),
 	), db

@@ -91,8 +91,8 @@ func TestAFullFlowLeaksNothingIntoTheLog(t *testing.T) {
 
 	// The same middleware stack main uses.
 	h := httpx.Chain(mux,
-		httpx.Log(log),
-		httpx.Recover(log),
+		httpx.Log(log, httpx.MuxRoute(mux)),
+		httpx.Recover(log, httpx.MuxRoute(mux)),
 		httpx.SecurityHeaders,
 		httpx.LimitBody(128*1024, api.BlobPathPrefix),
 	)
@@ -228,7 +228,7 @@ func TestTheAccessLogRecordsNoAddressAndNoPopulatedPath(t *testing.T) {
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
 	api.NewKeysHandler(db, authHandler, log).Routes(mux)
-	h := httpx.Chain(mux, httpx.Log(log), httpx.Recover(log))
+	h := httpx.Chain(mux, httpx.Log(log, httpx.MuxRoute(mux)), httpx.Recover(log, httpx.MuxRoute(mux)))
 
 	target, token := enrol(t, h, db, "203.0.113.213")
 	do(h, http.MethodGet, "/v1/keys/"+target.String(), token, "203.0.113.213", nil)
@@ -259,7 +259,7 @@ func TestRateLimitBucketKeysNeverReachTheLog(t *testing.T) {
 	authHandler := api.NewAuthHandler(db, limiter, log)
 	mux := http.NewServeMux()
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
-	h := httpx.Chain(mux, httpx.Log(log))
+	h := httpx.Chain(mux, httpx.Log(log, httpx.MuxRoute(mux)))
 
 	key := base64.StdEncoding.EncodeToString(make([]byte, 33))
 	for range 8 {
