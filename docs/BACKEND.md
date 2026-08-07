@@ -423,6 +423,36 @@ Token-bucket in Redis. Keyed by session token hash where authenticated, by sourc
 | `DELETE /v1/blobs/{id}` | 200 / hour / account | Removes a row and unlinks a file. **Added after it was found unthrottled** (AUDIT 5.23) |
 | `POST /v1/auth/rotate` | 10 / hour / account | Token grinding |
 
+### Request body limits, and the one that refused legal requests
+
+Every route is capped at `RELAY_MAX_REQUEST_BYTES` (128 KiB by default), applied as a
+`MaxBytesReader` rather than a `Content-Length` check — a chunked request declares no length, so a
+length check reads as protection while providing none.
+
+**Two routes are exempt and own their own limit, because both legitimately exceed anything the
+others could receive.** An exemption is never "no limit": the handler applies its own reader, and
+`api.BodyLimitExemptPrefixes` names them in one place that `main` and the integration tests share.
+
+| Route | Ceiling | Sized by |
+|---|---|---|
+| `POST /v1/blobs` | `api.MaxBlobBytes`, 100 MiB | The attachment policy (§2.8). Answers **413** above it |
+| `PUT /v1/keys` | `api.MaxPublishBytes`, ≈1.1 MiB | **Computed** from the bounds `validate()` enforces — `MaxPreKeysPerUpload` keys per pool at their longest accepted key and signature lengths, base64 and JSON framing included. Answers **413** above it |
+| everything else | `RELAY_MAX_REQUEST_BYTES` | An envelope (65567 bytes) plus framing |
+
+`PUT /v1/keys` is exempt because it was not, and the relay spent a phase refusing publications it
+had itself declared legal (AUDIT 5.32). A real client publishes 100 one-time keys of each kind; an
+ML-KEM-1024 public key is 1569 serialized bytes, so the body is around 229 KB against a 128 KiB
+global limit, and `MaxPreKeysPerUpload` permits twice that many keys again. The read failed, the
+JSON decode reported an error, and the route answered a bare 400 — on an endpoint capped at six
+publications a day, where each refusal still spends a token because the limiter runs before the
+body is read.
+
+**The invariant to keep:** every body `validate()` accepts must be readable. `MaxPublishBytes` is
+derived from the same constants `validate()` checks, so widening a bound widens the ceiling with
+it; two numbers maintained by hand is exactly how these came to disagree. And oversize is **413**,
+never 400 — a caller can act on "publish a smaller pool" and cannot act on "your JSON is broken",
+so collapsing the two costs a debugging session and tells the operator nothing.
+
 ### The blob byte quota, and why charging is not enforcing
 
 The 500 MB figure was in this table for a whole phase while nothing consulted it. The bytes were
@@ -471,7 +501,13 @@ contract, recorded here because it is the half this file could not previously se
 - **Publication happens once per installation, not once per launch.** `PUT /v1/keys` is 6 per day,
   and generating the pool is a hundred keypairs. A flag in the sealed container records that the
   relay *accepted* the publication — set after the 200, never before, so a failed publication is
-  retried on the next launch rather than remembered as done.
+  retried on the next launch rather than remembered as done. **That retry is what turned AUDIT 5.32
+  into a lockout:** the publication was refused for a reason no relaunch could change, and six
+  honest retries spent the day's budget. The client is right to retry a failed publication; the
+  relay must not refuse one it declares legal.
+- **The publication body is about 229 KB**, and the relay must be able to read it. 100 one-time
+  keys of each kind, an ML-KEM-1024 public key being 1569 serialized bytes. `PUT /v1/keys` owns its
+  own body ceiling for this reason — see *Request body limits* above.
 - **A bundle is fetched only when there is no session with that peer**, never as a refresh. Every
   fetch consumes one of the target's one-time prekeys, which is exactly the pressure AUDIT 3.1 is
   about, so the request is also marked non-idempotent client-side: a `GET` that mutates must not be

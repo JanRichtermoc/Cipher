@@ -34,6 +34,18 @@ const (
 	BlobPathPrefix = "/v1/blobs"
 )
 
+// BodyLimitExemptPrefixes are the routes whose handlers own their own body limit,
+// in the form httpx.LimitBody takes them.
+//
+// **One list, used by main and by the integration tests.** A test that spelled the
+// exemptions out itself would keep passing after production stopped applying one —
+// which is AUDIT **R2**: a gate that cannot observe the defect it exists to catch.
+// Both entries are exempt because both handlers apply a larger, route-specific
+// MaxBytesReader; an exemption is never "no limit" (httpx.LimitBody).
+func BodyLimitExemptPrefixes() []string {
+	return []string{BlobPathPrefix, KeysPathPrefix}
+}
+
 // docs/BACKEND.md §5: 100 uploads and 500 MB per day per account.
 //
 // The byte quota is charged in whole megabytes so one Redis bucket can express

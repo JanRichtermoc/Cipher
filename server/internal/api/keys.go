@@ -31,10 +31,14 @@ const (
 	minSignatureLen  = 32
 	maxSignatureLen  = 128
 
-	// maxPreKeysPerUpload caps one request. Storage per account is otherwise
+	// MaxPreKeysPerUpload caps one request. Storage per account is otherwise
 	// unbounded by anything except the body limit, and an account uploading
 	// hundreds of thousands of prekeys is not replenishing a pool.
-	maxPreKeysPerUpload = 200
+	//
+	// Exported because it is the published contract (docs/BACKEND.md §2.4/§2.6)
+	// and because MaxPublishBytes must be provably large enough for a request
+	// this size — a test that guessed the cap could not prove that.
+	MaxPreKeysPerUpload = 200
 
 	// maxPreKeyID is the protocol's own ceiling: Signal keeps prekey ids inside
 	// 24 bits, and `CipherProtocolStore.maxPreKeyId` refuses to mint one above it,
@@ -48,6 +52,69 @@ const (
 	// bundle, so the key sat in the pool waiting to be dispensed into a session
 	// that could never be established.
 	maxPreKeyID = 0xFF_FFFF
+)
+
+// KeysPathPrefix is exempted from the global request-body limit in main, for the
+// reason httpx.LimitBody documents: the handler owns the limit for this route.
+// The prefix covers the fetch route too, which never reads a body at all.
+const KeysPathPrefix = "/v1/keys"
+
+// MaxPublishBytes is the largest body publish will read, **computed from the
+// bounds validate() enforces rather than chosen**.
+//
+// # Why this constant exists
+//
+// It did not, and the relay refused publications it had itself declared legal.
+// The global limit (config.MaxRequestBytes, 128 KiB) was sized for the largest
+// body the API had *at the time* — an envelope plus framing — and prekey
+// publication later became several times larger without anything noticing. A
+// real client publishing its shipped pool of 100 one-time keys sends roughly
+// 229 KB, because an ML-KEM-1024 public key is 1569 serialized bytes and base64
+// costs a third more; MaxPreKeysPerUpload permits 200, which is more again.
+// MaxBytesReader failed the read, DecodeJSON reported an error, and the handler
+// answered 400 — indistinguishable from malformed JSON, on a route rate-limited
+// to six attempts a day. Registration could never complete, and the relay logged
+// nothing about why (AUDIT 5.32).
+//
+// # The invariant
+//
+// **Every body validate() accepts must be readable.** Deriving the ceiling from
+// the same constants validate() checks is what makes that true by construction
+// instead of by someone remembering to update two numbers together. Widen a
+// bound above and this widens with it.
+//
+// The result is generous — around 1.1 MiB against a real publication's 229 KB —
+// because maxKyberKeyBytes is itself a deliberately loose bound (see its
+// comment). That is the correct direction: the limit that refuses a malformed
+// upload is validate(), which runs on the decoded value; this one exists only so
+// an oversize *read* cannot pre-empt it. The route is authenticated and capped at
+// six publications a day per account, so the daily ceiling this admits is a few
+// megabytes.
+const (
+	// Standard base64 with padding: four characters per three bytes, rounded up.
+	b64CurveKeyLen  = ((maxCurveKeyBytes + 2) / 3) * 4
+	b64KyberKeyLen  = ((maxKyberKeyBytes + 2) / 3) * 4
+	b64SignatureLen = ((maxSignatureLen + 2) / 3) * 4
+
+	// JSON punctuation around one key, with slack. A signed key's fixed text is
+	// 53 characters at the widest key_id ({"key_id":4294967295,"public_key":"",
+	// "signature":""} plus a separating comma); a one-time key's is 38. Rounded
+	// up so a formatting difference cannot make the ceiling too small.
+	jsonSignedKeyOverhead = 64
+	jsonPreKeyOverhead    = 48
+
+	// The four top-level field names and their brackets are about 100 characters.
+	jsonPublishFraming = 256
+
+	MaxPublishBytes = jsonPublishFraming +
+		// signed_prekey
+		(b64CurveKeyLen + b64SignatureLen + jsonSignedKeyOverhead) +
+		// kyber_last_resort
+		(b64KyberKeyLen + b64SignatureLen + jsonSignedKeyOverhead) +
+		// kyber_prekeys
+		MaxPreKeysPerUpload*(b64KyberKeyLen+b64SignatureLen+jsonSignedKeyOverhead) +
+		// one_time_prekeys
+		MaxPreKeysPerUpload*(b64CurveKeyLen+jsonPreKeyOverhead)
 )
 
 // Prekey-fetch limits (docs/BACKEND.md §5). Both apply; the burst limit stops a
@@ -172,8 +239,8 @@ func (r publishRequest) validate() (store.PreKeyUpload, bool) {
 		return store.PreKeyUpload{}, false
 	}
 
-	if len(r.KyberPreKeys) > maxPreKeysPerUpload ||
-		len(r.OneTimePreKeys) > maxPreKeysPerUpload {
+	if len(r.KyberPreKeys) > MaxPreKeysPerUpload ||
+		len(r.OneTimePreKeys) > MaxPreKeysPerUpload {
 		return store.PreKeyUpload{}, false
 	}
 
@@ -218,8 +285,26 @@ func (h *KeysHandler) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// This route is exempt from the global body limit (see httpx.LimitBody and
+	// KeysPathPrefix), so the cap is applied here and is the only one.
+	//
+	// **413, not 400, when the body is the problem.** The two failures are
+	// different and the caller can act on only one of them: a malformed body is a
+	// client bug, an oversize one is a client that must publish a smaller pool.
+	// Collapsing them is what made AUDIT 5.32 cost a debugging session — the app
+	// saw a bare 400 on a route it could try six times a day, and the relay wrote
+	// no line saying which of the two it meant.
 	var req publishRequest
-	if err := httpx.DecodeJSON(r.Body, &req); err != nil {
+	if err := httpx.DecodeJSON(http.MaxBytesReader(w, r.Body, MaxPublishBytes), &req); err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			// No account, no key material — only that a publication was too big,
+			// which is the fact an operator needs and carries nothing else.
+			h.log.WarnContext(ctx, "refused an oversize prekey publication",
+				slog.Int64("limit", MaxPublishBytes))
+			httpx.WriteError(w, http.StatusRequestEntityTooLarge)
+			return
+		}
 		httpx.WriteError(w, http.StatusBadRequest)
 		return
 	}
