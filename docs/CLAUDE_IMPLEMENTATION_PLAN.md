@@ -26,9 +26,9 @@ deployment, and operator state from their executable or live sources before acti
 | Field | Current status |
 |---|---|
 | Phase | P5 in progress; P1–P4 complete. |
-| Completed P5 product steps | P5.S01, P5.S02, P5.S05, P5.S06, P5.S08, P5.S09, P5.S10, P5.S11, P5.S12, P5.S13, and P5.S14. **Every numbered P5 step is done; the P5 exit criteria are a separate evaluation and are still unticked.** Each is an evidenced claim in its own right, and one of them — safety numbers correct *on two devices* — meets the same one-device-plus-simulator residual 5.1 records. |
+| Completed P5 product steps | P5.S01, P5.S02, P5.S05, P5.S06, P5.S08, P5.S09, P5.S10, P5.S11, P5.S12, P5.S13, and P5.S14 — every numbered P5 step. **The exit criteria were evaluated 2026-08-07: six of seven are met and ticked with their evidence; one is not.** "Safety numbers visible and correct **on two devices**" stays unticked because the P5.S13 pairing was one real iPhone plus one simulator — the residual AUDIT 5.1 records. It needs a second real device or an operator acceptance recorded as explicitly as 5.1's. **P5 is therefore not formally exited**, and that is a hardware decision rather than remaining engineering work. |
 | Security-remediation queue | Empty of closed work: 5.26, 5.27, 1.14, 6.14, 6.13, 5.28, 5.29, 5.32, 5.33 and 5.34 are closed; 5.29 reached the live box 2026-08-06 and 5.32 on 2026-08-07. 5.34 and 6.17 are client- and tooling-only and need no deploy. **5.1 closed 2026-08-07 (P5.S14), and no row is OPEN.** Closing it split out the push clause it also carried as **5.35** (ACCEPTED, foreground-only delivery, fix in P8.S02) rather than dropping it. What remains in this ledger is ACCEPTED residuals, which are read, not cleared. `AUDIT.md` is authoritative, and a finding's CLOSED status describes the repository: check the deployed revision against `origin/main` before assuming the staging relay carries it (`RUNBOOK-VPS.md`, Deployed revision). **5.32 is why that check exists, and 5.33 is why it is not paranoia** — both passed CI while the relay a real iPhone was talking to did not have them. |
-| Next planned feature | **P5.S14 is done** (2026-08-07); 5.1 is CLOSED and P5's numbered steps are complete. Two things are deliberately *not* implied by that. The **P5 exit criteria are still unticked** — evaluating them is the natural next unit, and "safety numbers correct on two devices" runs into the same one-device-plus-simulator residual 5.1 restates, so it needs a second real device or an explicit acceptance. And **5.35** now carries the foreground-only delivery limitation on its own, fixed in P8.S02, not P7.S03. After that the roadmap continues into P6 (rotation, disappearing messages, attachments). |
+| Next planned feature | **P5's numbered steps and six of its seven exit criteria are done** (2026-08-07). One operator decision stands between here and a formal P5 exit: a second real device for the two-device safety-number criterion, or an explicit recorded acceptance of the one-device-plus-simulator residual. Nothing in the repository can supply either. Engineering work continues into **P6** — rotation and replenishment (2.4, P6.S01) is the first step and the most security-critical, followed by disappearing messages and attachments. **5.35** separately carries foreground-only delivery, fixed in P8.S02 and not P7.S03. |
 | Open and accepted risk | `AUDIT.md` is authoritative. Read every applicable OPEN and ACCEPTED row; this table never overrides it. |
 | Repository and PR state | Derive from Git and the current GitHub pull-request list. Never copy an “unmerged branch” into this plan. |
 | Staging and operator state | `RUNBOOK-VPS.md` owns procedures and its state table; live read-only checks win. Do not duplicate host, certificate, DNS, or pending-operator snapshots here. |
@@ -349,14 +349,54 @@ and an encrypted local database **from the first real message**.
 | **P5.S13** | Two-device end-to-end test via staging: register, exchange prekeys, send/receive real ciphertext. **DONE 2026-08-07, both directions**, between a physical iPhone and the `iPhone 17 Pro` simulator against the deployed relay. Each side initiated one session, so both halves of PQXDH establishment were exercised rather than one direction replayed: a prekey message each way (1864 B and 1845 B), a curve and a Kyber prekey consumed from the recipient's pool, `POST 202` then fetch then `ack 200`, the queue draining to zero each time, and the stored envelope containing none of the plaintext. Acknowledgement follows durable storage in the same transaction, so a drained queue is evidence of decryption and not merely of receipt. The run also found and closed 5.32 and 5.33, and hit 5.34 twice and 6.17 once. **This does not close 5.1** — see that row for the accepted residual (one device plus one simulator) and for the push clause it also names. | AI + HUMAN | — | Real message delivered device-to-device | Test only in the simulator; call it done on one device plus a simulator without recording the residual |
 | **P5.S14** | Close AUDIT 5.1 once transport, auth, and the non-mock messaging path work on staging. **DONE 2026-08-07.** 5.1 is CLOSED against named guards rather than against the field run alone — `MessagingTests.testRoundTripThroughTheFacade` and `testSessionSurvivesAnEngineRestart` for two real engines, the four `MessageRepositoryTests` that pin ciphertext-on-the-wire and the acknowledge-what-is-durable ordering, `CertificatePinnerTests.shippedPinsCoverTheLiveLeaf`, `SessionCredentialTests.testWritingUserDefaultsCannotAuthenticate`, and `verify-relay-integration.sh`; P5.S13 supplies the field evidence those guards describe. **The push clause 5.1 also carried did not close with it** — it is now 5.35 (ACCEPTED, foreground-only delivery, fix in P8.S02), split out rather than dropped, because 5.1 asserts the path *works* and foregrounding changes when a message is collected rather than whether it is delivered. The row also mis-cited P7.S03 for "there is no push"; P7.S03 hardens a token that P8.S01/P8.S02 create. The operator-accepted one-device-plus-simulator residual is restated on 5.1 unchanged, not quietly satisfied. **5.3 was already CLOSED in P5.S10** (2026-07-30) and is struck from this row's blockers; `AUDIT.md` owns finding status and had said so since. | AI | ~~5.3~~, 5.1 | 5.1 CLOSED with tests named | Close 5.1 by dropping the push clause, or treat the field run as its own guard |
 
-**Exit criteria:**
-- [ ] Domain + staging VPS owned and hardened
-- [ ] TLS live; client pins **fail closed** on the wrong certificate
-- [ ] Real invite auth end-to-end
-- [ ] Two-party encrypted message via the server
-- [ ] **C-01 and C-02 closed**
-- [ ] **Safety numbers visible and correct on two devices**
-- [ ] **No plaintext message body on the wire, in the server DB, or at rest on device**
+**Exit criteria** — evaluated 2026-08-07, after P5.S14. Six are met; one is not, and it is not the
+kind that can be argued into being met. Each tick names what was checked, because a ticked box whose
+evidence nobody can find is worth less than an unticked one.
+
+- [x] **Domain + staging VPS owned and hardened.** Verified live on the box 2026-08-07: `sshd -T`
+      reports `passwordauthentication no` and `permitrootlogin no`; the `fail2ban` sshd jail is
+      running; `/etc/docker/daemon.json` bounds container logs; only 22/80/443 listen externally with
+      the API on `127.0.0.1:8080` and Postgres/Redis unpublished; all three containers run
+      `CapDrop=[ALL]` with bounded memory and pids, `api` and `redis` read-only; and
+      `RELAY_TRUSTED_PROXY` is the bridge subnet rather than loopback. `RUNBOOK-VPS.md` owns the
+      procedures and the state table.
+- [x] **TLS live; client pins fail closed on the wrong certificate.** Live probe 2026-08-07 with real
+      OpenSSL 3.6.3 — *not* the LibreSSL macOS ships as `openssl`, which has already reported a false
+      pass here (5.16, 6.14): TLS 1.3 negotiates, TLS 1.2 is refused with `alert protocol version`,
+      and the chain and hostname validate. The served leaf matches a shipped pin, `certbot` keeps the
+      key on renewal, and `RelayEndpoint` pins exactly the values `BACKEND.md` §9.1 records.
+      Fail-closed is proved by tests rather than by the happy path: a pin set without the leaf, an
+      empty pin set, a self-signed certificate, a wrong-pin server with a perfectly valid chain, and a
+      challenge for a different host are each refused, with "the same valid chain IS accepted once the
+      correct pin is present" as the positive control. **Standing operator action (6.14):**
+      `verify-pins.sh` exits non-zero because the backup-key check has no material on this machine.
+      That non-zero *is* 6.14's fix working — an unproven check must not read as a pass — and it is
+      not a TLS failure. Running it needs `PIN_BACKUP_KEY_FILE`.
+- [x] **Real invite auth end-to-end.** C-01 closed in P5.S09: the code is redeemed against the relay
+      and only a server-issued token authenticates. Exercised against the deployed relay during the
+      P5.S13 field run; guarded by `InviteRedemptionTests` and
+      `SessionCredentialTests.testWritingUserDefaultsCannotAuthenticate`.
+- [x] **Two-party encrypted message via the server.** P5.S13, 2026-08-07, both directions through the
+      deployed relay with each side initiating a session. See that row for the measurements and
+      AUDIT 5.1 for the named guards that hold the property between field runs.
+- [x] **C-01 and C-02 closed.** Both 2026-07-30, in P5.S09 and P5.S10 respectively (§0.5).
+- [ ] **Safety numbers visible and correct on two devices.** *Not met, and deliberately not ticked.*
+      P5.S12 built the real thing — `CryptoEngine.safetyNumber` derives the digits from both identity
+      keys through libsignal, `SafetyNumberTests` prove two engines agree and that a substituted key
+      changes them, and verification is stored bound to the exact key so a change retracts it. What is
+      missing is the literal words **on two devices**: the P5.S13 pairing was one real iPhone plus one
+      simulator, which is the residual AUDIT 5.1 records. A simulator proves the protocol, not the
+      device. Ticking this needs **a second real device**, or an operator acceptance recorded as
+      explicitly as 5.1's was — it is a decision about what hardware stands behind the claim, not an
+      engineering judgement.
+- [x] **No plaintext message body on the wire, in the server DB, or at rest on device.** Wire:
+      `MessageRepositoryTests.testASentMessageIsCiphertextTheRelayCannotRead`, and the P5.S13 run
+      observed the stored envelope containing none of the plaintext. Relay: the integration suite
+      passes with the race detector on and all its required tests by name. At rest: P5.S11's sealed
+      database, with 4.3, 4.7, 4.12 and 4.13 closed against it. **The live relay database was
+      deliberately not queried for message rows.** Confirming the property that way means reading real
+      private traffic, which the root contract forbids; the tests and the field observation establish
+      it without anyone having to look at someone's messages.
 
 ---
 
