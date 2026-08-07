@@ -270,7 +270,11 @@ func ClientAddr(r *http.Request) string {
 // The stack trace goes to the log and never to the response. A Go panic message
 // routinely contains the values that caused it, which for this service can mean
 // an envelope, a token, or a key.
-func Recover(log *slog.Logger) Middleware {
+// `route` resolves the matched pattern for the same reason Log takes one: this
+// middleware also sits outside RealIP, so the request it holds is not the one the
+// mux stamped, and "where it happened" was reading `(unmatched)` in deployment —
+// on the one line whose entire value is saying where (AUDIT 5.33).
+func Recover(log *slog.Logger, route RouteFor) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
@@ -279,7 +283,7 @@ func Recover(log *slog.Logger) Middleware {
 					// arbitrary data from the failure site. What is actionable
 					// is where it happened, which the stack gives.
 					log.ErrorContext(r.Context(), "panic recovered",
-						slog.String("route", pattern(r)),
+						slog.String("route", pattern(route, r)),
 						slog.String("stack", string(debug.Stack())))
 					WriteError(w, http.StatusInternalServerError)
 				}
@@ -299,7 +303,9 @@ func Recover(log *slog.Logger) Middleware {
 // No client IP. §3.6 allows 24 h retention for operational triage, and that
 // belongs in the reverse proxy's own log with its own lifetime, not correlated
 // with application events here.
-func Log(log *slog.Logger) Middleware {
+// Log writes one access line per request. `route` resolves the matched pattern;
+// see RouteFor for why the field on the request is not enough.
+func Log(log *slog.Logger, route RouteFor) Middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -314,7 +320,7 @@ func Log(log *slog.Logger) Middleware {
 				}
 				log.InfoContext(r.Context(), "request",
 					slog.String("method", r.Method),
-					slog.String("route", pattern(r)),
+					slog.String("route", pattern(route, r)),
 					slog.Int("status", rec.status),
 					slog.Duration("duration", time.Since(start)))
 			}()
@@ -324,13 +330,55 @@ func Log(log *slog.Logger) Middleware {
 	}
 }
 
+// RouteFor reports the route pattern a request matches, for the access log.
+//
+// # Why the logger is told, instead of reading r.Pattern
+//
+// `ServeMux` records the matched pattern on the request it routes — and by then
+// that is often not the request an outer middleware is holding. `RealIP` hands a
+// shallow *copy* downstream so the caller's `RemoteAddr` is never rewritten
+// (`TestRealIPDoesNotMutateTheCallersRequest`), so the mux stamps the copy and
+// `Log`, sitting outside it, still sees an empty `Pattern`.
+//
+// That is not hypothetical: the deployed relay logged `"route":"(unmatched)"` on
+// every request for a phase, breaking the promise `docs/BACKEND.md` §7 makes,
+// while the unit test passed because it chained `Log` straight onto the mux
+// (AUDIT 5.33). Only the health probes looked right, and only because Docker's
+// HEALTHCHECK reaches the API directly, sends no proxy header, and so never
+// takes the copying path — the one caller that could not see the defect.
+//
+// Asking the router is robust where reading the field is not: it stays correct
+// however many middlewares copy the request on the way in, so the next one to do
+// so cannot silently blank the access log again.
+type RouteFor func(*http.Request) string
+
+// MuxRoute resolves patterns against the mux that will serve the request.
+//
+// `mux.Handler` is a lookup with no side effects; it costs one extra match per
+// request and returns the empty string when nothing matches, which `pattern`
+// turns into the placeholder.
+func MuxRoute(mux *http.ServeMux) RouteFor {
+	return func(r *http.Request) string {
+		_, matched := mux.Handler(r)
+		return matched
+	}
+}
+
 // pattern returns the matched route pattern, or a placeholder.
 //
-// r.Pattern is empty when no route matched (a 404), and returning the requested
-// path in that case would reintroduce exactly the populated-path leak this
-// function exists to avoid — an attacker would only have to request a path
+// The pattern is empty when no route matched (a 404), and returning the
+// requested path in that case would reintroduce exactly the populated-path leak
+// this function exists to avoid — an attacker would only have to request a path
 // containing what they wanted logged.
-func pattern(r *http.Request) string {
+//
+// `r.Pattern` remains the fallback so a chain that does not copy the request
+// still logs its route when no resolver was supplied.
+func pattern(route RouteFor, r *http.Request) string {
+	if route != nil {
+		if matched := route(r); matched != "" {
+			return matched
+		}
+	}
 	if r.Pattern != "" {
 		return r.Pattern
 	}

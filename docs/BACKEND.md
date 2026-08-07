@@ -631,6 +631,12 @@ review.
   accounts at any point.
 - **Access logs:** method, route *pattern* (never the populated path — `/v1/keys/{aci}` never
   `/v1/keys/3f2b…`), status, duration. A populated path is a metadata record hiding in a log line.
+  **The pattern comes from the router, not from `r.Pattern`** (`httpx.RouteFor`). `ServeMux` stamps
+  the request it routes, and `RealIP` deliberately hands a *copy* downstream so the caller's
+  `RemoteAddr` is never rewritten — so the middleware outside it holds a request the mux never
+  touched. For a phase this logged `(unmatched)` on every request that arrived through Nginx while
+  the unit test passed, because the test chained the logger straight onto the mux (AUDIT 5.33).
+  Asking the router is what makes the line correct however many middlewares copy the request.
 - **Nor may an error message carry one** (AUDIT 5.28). The same rule applied to the access log has
   to apply to whatever a handler passes to `slog.String("reason", err.Error())`, and it did not: a
   blob's file name *is* its id, that id is the whole capability to read or delete the attachment

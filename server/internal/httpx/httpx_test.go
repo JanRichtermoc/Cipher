@@ -49,7 +49,7 @@ func TestLogRecordsThePatternNotThePopulatedPath(t *testing.T) {
 	mux.HandleFunc("GET /v1/keys/{aci}", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	handler := Chain(mux, Log(log))
+	handler := Chain(mux, Log(log, MuxRoute(mux)))
 
 	const aci = "3f2b8c14-0000-4000-8000-000000000001"
 	req := httptest.NewRequest(http.MethodGet, "/v1/keys/"+aci, nil)
@@ -64,11 +64,89 @@ func TestLogRecordsThePatternNotThePopulatedPath(t *testing.T) {
 	}
 }
 
+// productionChain builds the middleware stack main serves, in main's order.
+//
+// **The whole point is that it is not a simplified stack.** The test above
+// chains Log straight onto the mux and passes, while the deployed relay logged
+// `"route":"(unmatched)"` on every request that came through nginx — because
+// RealIP hands a *copy* of the request downstream, ServeMux records the matched
+// pattern on that copy, and the Log middleware outside it is still holding the
+// original. A test that omits RealIP cannot see that, which is how the defect
+// survived a green suite (AUDIT 5.33, and the same shape as 5.32).
+func productionChain(t *testing.T, log *slog.Logger, mux *http.ServeMux) http.Handler {
+	t.Helper()
+	return Chain(mux,
+		Log(log, MuxRoute(mux)),
+		Recover(log, MuxRoute(mux)),
+		RealIP(mustPrefixes(t, "172.18.0.0/16")),
+		SecurityHeaders,
+		LimitBody(128*1024, "/v1/blobs", "/v1/keys"),
+	)
+}
+
+// throughProxy builds a request as nginx would deliver it: from the trusted
+// bridge gateway, carrying the client's address in the header. That header is
+// what makes RealIP copy the request, so it is what triggers the defect.
+func throughProxy(method, target string) *http.Request {
+	req := httptest.NewRequest(method, target, nil)
+	req.RemoteAddr = "172.18.0.1:41234"
+	req.Header.Set(realIPHeader, "203.0.113.9")
+	return req
+}
+
+func TestLogRecordsThePatternThroughTheProductionChain(t *testing.T) {
+	// The regression. docs/BACKEND.md §7 promises the access log names the route
+	// pattern; in deployment it named nothing, so route visibility was lost for
+	// every request except the health probes — and those only kept working
+	// because Docker's HEALTHCHECK reaches the API directly, sends no proxy
+	// header, and therefore never takes the copying path.
+	log, buf := testLogger()
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /v1/keys/{aci}", func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	const aci = "3f2b8c14-0000-4000-8000-000000000001"
+	productionChain(t, log, mux).ServeHTTP(httptest.NewRecorder(), throughProxy(
+		http.MethodGet, "/v1/keys/"+aci))
+
+	out := buf.String()
+	if strings.Contains(out, "(unmatched)") {
+		t.Fatalf("the matched route was logged as unmatched: %s", out)
+	}
+	if !strings.Contains(out, "/v1/keys/{aci}") {
+		t.Fatalf("the route pattern is missing, so the line is useless: %s", out)
+	}
+	// The reason the pattern is logged rather than the path, still true here.
+	if strings.Contains(out, aci) {
+		t.Fatalf("the populated path reached the log: %s", out)
+	}
+}
+
+func TestLogHidesAnUnmatchedPathThroughTheProductionChain(t *testing.T) {
+	// Resolving the pattern from the router must not become a way to echo an
+	// attacker-chosen path: an unmatched request still logs the placeholder.
+	log, buf := testLogger()
+
+	productionChain(t, log, http.NewServeMux()).ServeHTTP(
+		httptest.NewRecorder(), throughProxy(http.MethodGet, "/attacker-controlled-value"))
+
+	out := buf.String()
+	if strings.Contains(out, "attacker-controlled-value") {
+		t.Fatalf("an unmatched path was echoed into the log: %s", out)
+	}
+	if !strings.Contains(out, "(unmatched)") {
+		t.Fatalf("an unmatched request lost its placeholder: %s", out)
+	}
+}
+
 func TestLogDoesNotEchoAnUnmatchedPath(t *testing.T) {
 	// A 404 has no pattern. Falling back to the requested path would let an
 	// attacker log arbitrary content by requesting it.
 	log, buf := testLogger()
-	handler := Chain(http.NewServeMux(), Log(log))
+	empty := http.NewServeMux()
+	handler := Chain(empty, Log(log, MuxRoute(empty)))
 
 	req := httptest.NewRequest(http.MethodGet, "/attacker-controlled-value", nil)
 	handler.ServeHTTP(httptest.NewRecorder(), req)
@@ -84,7 +162,7 @@ func TestRecoverReturns500AndKeepsTheStackOutOfTheResponse(t *testing.T) {
 	const secret = "panic-carried-this-secret"
 	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic(secret)
-	}), Recover(log))
+	}), Recover(log, nil))
 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
@@ -115,7 +193,7 @@ func TestRecoverStillProducesAnAccessLine(t *testing.T) {
 	log, buf := testLogger()
 	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
-	}), Log(log), Recover(log))
+	}), Log(log, nil), Recover(log, nil))
 
 	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -140,7 +218,7 @@ func TestLogEmitsEvenIfAnInnerHandlerPanicsUnrecovered(t *testing.T) {
 	log, buf := testLogger()
 	handler := Chain(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		panic("boom")
-	}), Log(log))
+	}), Log(log, nil))
 
 	func() {
 		defer func() { _ = recover() }()

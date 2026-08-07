@@ -261,9 +261,13 @@ func run() error {
 
 	// Log OUTSIDE Recover, not the other way round. See httpx.Chain: the
 	// intuitive order silently drops every panicking request from the access log.
+	// Both take the router itself, because both log the matched route and both
+	// sit outside RealIP — which hands a copy of the request downstream, so the
+	// pattern the mux records never reaches them (httpx.RouteFor, AUDIT 5.33).
+	route := httpx.MuxRoute(mux)
 	handler := httpx.Chain(mux,
-		httpx.Log(log),
-		httpx.Recover(log),
+		httpx.Log(log, route),
+		httpx.Recover(log, route),
 		// Outermost of the request-shaping middleware, and above all outside
 		// anything that rate-limits: every later decision that depends on who
 		// the client is must see the resolved address, not the proxy's. It sits
