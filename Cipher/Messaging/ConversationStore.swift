@@ -194,7 +194,32 @@ final class ConversationStore {
         guard !isPreviewOnly else { return }
 
         await refresh()
+        await maintainKeys()
         await receive()
+    }
+
+    /// Retries an unfinished publication and rotates this installation's prekeys when either is
+    /// due (P6.S01, AUDIT 2.4 and 5.36).
+    ///
+    /// **Before `receive`, and deliberately.** A device returning after a long absence has both
+    /// a rotation outstanding and a queue waiting; draining the queue first can take twenty
+    /// pages, and the operation gate holds the rotation behind all of it. Publishing first costs
+    /// one request and is what lets peers start a session at all.
+    ///
+    /// **Failures are logged, not surfaced.** Nothing here is a user action: a rotation that
+    /// could not reach the relay is retried on the next foreground, and the initial publication
+    /// already reports its own failure at onboarding, where there is someone to tell. Recording
+    /// it as `failure` would put a banner over the conversation list for a background task the
+    /// user cannot influence.
+    private func maintainKeys() async {
+        do {
+            try await repository().maintainKeys()
+        } catch MessageRepository.Failure.notAuthenticated,
+                MessageRepository.Failure.notRegistered {
+            // Signed out, or onboarding has not finished. Neither is a fault.
+        } catch {
+            AppLog.keys.error("prekey maintenance did not complete; it will be retried")
+        }
     }
 
     /// Reloads conversations and messages from the sealed archive. No network.

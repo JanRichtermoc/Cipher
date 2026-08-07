@@ -125,40 +125,151 @@ actor MessageRepository {
 
     /// Binds this installation to the pending credential's ACI and publishes its prekeys, once.
     ///
-    /// Idempotent and cheap after the first success: `adoptLocalAddress` is a no-op for the same
+    /// Idempotent and cheap after the first success: `adoptAddress` is a no-op for the same
     /// address, and the publication flag means the hundred-keypair generation happens once per
-    /// installation rather than once per launch. It is also *retried* on every launch until it
-    /// succeeds, because an account whose keys never published is an account no peer can start a
-    /// session with — and nothing else would ever notice.
+    /// installation rather than once per launch. `maintainKeys` retries it on every foreground
+    /// for as long as it has not succeeded, because an account whose keys never published is an
+    /// account no peer can start a session with — and nothing else would ever notice.
     func register() async throws {
         try await operationGate.withExclusiveAccess {
-            try await registerExclusively()
+            let credential = try registrationCredential()
+            try await adoptAddress(credential.aci)
+            try await publishKeysIfNeeded(token: credential.token)
         }
     }
 
-    private func registerExclusively() async throws {
-        let credential = try registrationCredential()
+    /// Binds this installation to `aci`, and refuses if it is already bound to another.
+    ///
+    /// Refused rather than reconciled: adopting a second address orphans every existing session,
+    /// and the failure would surface a launch later as peers reporting a changed safety number.
+    private func adoptAddress(_ aci: UUID) async throws {
         do {
-            try await engine.adoptLocalAddress(PeerAddress(aci: credential.aci))
+            try await engine.adoptLocalAddress(PeerAddress(aci: aci))
         } catch MessagingError.localAddressAlreadySet {
             throw Failure.accountMismatch
         } catch {
             throw Failure.storageUnavailable
         }
-        guard await localAci() == credential.aci else { throw Failure.accountMismatch }
-        try await publishKeysIfNeeded(token: credential.token)
+        guard await localAci() == aci else { throw Failure.accountMismatch }
     }
 
-    /// The launch-time half of registration: this installation already has an address, so all
-    /// that can be outstanding is the publication.
+    /// The launch-time half of registration and the prekey scheduler, in one entry point.
     ///
-    /// Called on every launch rather than only after redemption, because a publication that
-    /// failed the first time leaves an account no peer can start a session with, and the only
-    /// symptom is other people's session setup returning 404.
-    func resumeRegistration() async throws {
+    /// Called when the app reaches the main UI and on every return to the foreground. It does
+    /// three things, in order, each a no-op when it is not needed:
+    ///
+    /// 1. Re-adopts this installation's address — idempotent, and the precondition for the rest.
+    /// 2. Retries a publication that never succeeded. An account whose keys never reached the
+    ///    relay is one no peer can start a session with, and the only symptom is *other people*
+    ///    seeing 404s, so nothing on this device would ever notice.
+    /// 3. Rotates and replenishes when either is due (AUDIT 2.4).
+    ///
+    /// **This is the launch hook that AUDIT 5.36 records as missing.** `resumeRegistration`
+    /// claimed in its own documentation to run on every launch and had no caller outside the
+    /// tests, so step 2 has never happened in a shipped build — and it could not have, because
+    /// it asked for a `.registering` credential, which an onboarded account no longer holds.
+    /// Rotation needs the same hook, so the two are one method rather than two things a future
+    /// caller could wire up half of.
+    ///
+    /// Failures propagate. The caller decides whether they are worth showing: a rotation that
+    /// could not reach the relay is retried on the next foreground and is not something a user
+    /// can act on.
+    func maintainKeys() async throws {
         try await operationGate.withExclusiveAccess {
-            try await registerExclusively()
+            let credential = try maintenanceCredential()
+            try await adoptAddress(credential.aci)
+            try await publishKeysIfNeeded(token: credential.token)
+            try await rotateKeysIfDue(token: credential.token)
         }
+    }
+
+    // MARK: - Prekey rotation and replenishment (P6.S01, AUDIT 2.4)
+
+    /// How long a signed prekey and last-resort Kyber key stay live.
+    ///
+    /// Rotation is what bounds the damage of a compromised prekey: a private half that leaks is
+    /// useful for establishing sessions only until the relay stops serving its public half.
+    /// Two days is Signal's own cadence and sits far inside the relay's six-publications-a-day
+    /// limit, leaving room for threshold replenishment on the same budget.
+    static let preKeyRotationInterval: TimeInterval = 48 * 60 * 60
+
+    /// Below this, the pool is topped up without waiting for the rotation to fall due.
+    ///
+    /// A quarter of the target, so an ordinary week of session setup never reaches it and a
+    /// drain does. Set too high, every launch republishes and spends the daily budget on
+    /// nothing; too low, the pool empties between checks and peers cannot start a session at
+    /// all — which is the residual AUDIT 3.1 describes and P6.S02 closes.
+    static let replenishThreshold = 25
+
+    /// The floor between two publications, whatever else is due.
+    ///
+    /// The threshold path reads a count the relay reported when it accepted the *last* upload,
+    /// so a pool that is genuinely drained stays reported as drained until the next publication
+    /// changes it. Without a floor, an attacker draining the pool would get one publication per
+    /// foreground — six in as many minutes, the whole daily allowance spent before lunch, and
+    /// then a full day in which a *rotation* could not publish either. An hour spreads the same
+    /// six attempts across the day the limit is measured over, which is the better failure: a
+    /// drained pool blocks session setup with this account and nothing else.
+    static let minimumPublishInterval: TimeInterval = 60 * 60
+
+    /// Publishes a fresh signed prekey, last-resort Kyber key and pool top-up when either the
+    /// rotation interval has elapsed or a pool has fallen below the threshold.
+    ///
+    /// ## Which count decides
+    ///
+    /// Both, and the **lower** of them. They measure different things and neither is sufficient:
+    ///
+    /// - The relay's count, reported when it accepted the last publication, is the pool an
+    ///   attacker drains — every bundle fetch consumes a key there. It is stale the moment it
+    ///   arrives and can only have gone down since, so it is a ceiling.
+    /// - The local count falls only when a peer actually *sends*, so it misses a drain entirely.
+    ///   It is the half a hostile relay cannot lie about.
+    ///
+    /// Taking the minimum means a relay understating the pool costs an extra publication, and a
+    /// relay overstating it is caught by the local count once the keys are genuinely used.
+    ///
+    /// ## Why an empty pool is still bounded by the interval
+    ///
+    /// A pool drained to zero between two checks is not observable here: nothing tells this
+    /// device that a bundle was dispensed. The rotation interval is therefore also the ceiling
+    /// on how long that lasts, which is why rotation runs on a schedule rather than only on a
+    /// threshold. `BACKEND.md` §5 states the residual; it closes with AUDIT 3.1 in P6.S02.
+    private func rotateKeysIfDue(token: String) async throws {
+        let published: ConversationArchive.StoredKeyPublication?
+        let localRemaining: Int
+        do {
+            published = try await archive.keyPublication()
+            localRemaining = try await engine.preKeyState.remainingOneTimePreKeys
+        } catch {
+            throw Failure.storageUnavailable
+        }
+
+        // No record means the publication that would have written one has not been accepted
+        // yet, and `publishKeysIfNeeded` above owns that retry. Rotating on top of it would
+        // spend a second daily token to replace keys that were just minted.
+        guard let published else { return }
+
+        let effectivePool = min(published.relayOneTimePreKeys, localRemaining)
+        let elapsed = now().timeIntervalSince1970
+            - Double(published.publishedAtMs) / 1000
+        let rotationDue = elapsed >= Self.preKeyRotationInterval
+        let poolLow = effectivePool < Self.replenishThreshold
+            || published.relayKyberPreKeys < Self.replenishThreshold
+
+        guard rotationDue || (poolLow && elapsed >= Self.minimumPublishInterval) else { return }
+
+        // Only the shortfall, never a full pool every time. The relay adds one-time keys rather
+        // than replacing them (`BACKEND.md` §2.4), so republishing the full target on every
+        // rotation would grow both pools without bound — and the private halves grow with them,
+        // on the device. Computed from the ceiling above, so it can over-mint by whatever was
+        // consumed since the last publication and never under-mint into a pool that is fuller
+        // than it appears. Zero is a legal publication: a rotation that falls due against a full
+        // pool replaces the two long-lived keys and adds nothing.
+        let target = await CryptoEngine.defaultOneTimePreKeyCount
+        let topUp = max(0, min(target - effectivePool, target))
+
+        AppLog.keys.info("rotating this installation's published prekeys")
+        try await publishKeys(token: token, oneTimeCount: topUp)
     }
 
     private func publishKeysIfNeeded(token: String) async throws {
@@ -168,24 +279,48 @@ actor MessageRepository {
             throw Failure.storageUnavailable
         }
 
-        let keys: PublishedKeys
-        do {
-            keys = try await engine.generatePublishedKeys()
-        } catch {
-            throw Failure.storageUnavailable
-        }
-
-        do {
-            try await directory.publish(keys, token: token)
-        } catch let failure as RelayKeyDirectory.Failure {
-            throw Self.mapped(failure)
-        }
+        try await publishKeys(
+            token: token, oneTimeCount: await CryptoEngine.defaultOneTimePreKeyCount)
 
         // Only after the relay has them. A flag set first would make a failed publication
         // permanent — the keys exist locally, nothing would ever try again, and every peer's
         // session setup would fail with a 404 that looks like the peer's problem.
         do {
             try await archive.setFlag(ConversationArchive.keysPublishedFlag, true)
+        } catch {
+            throw Failure.storageUnavailable
+        }
+    }
+
+    /// Mints, publishes, and records the result. The one path that talks to the directory, so
+    /// the first publication and every rotation cannot diverge in what they persist.
+    ///
+    /// The order is the same one `generatePublishedKeys` documents and for the same reason: the
+    /// private halves are on disk before the public halves are handed to the relay, and the
+    /// record of *when* is written only after the relay has accepted them. A record written
+    /// first would make a failed publication look like a completed rotation, and nothing would
+    /// try again until the interval elapsed.
+    private func publishKeys(token: String, oneTimeCount: Int) async throws {
+        let keys: PublishedKeys
+        do {
+            keys = try await engine.generatePublishedKeys(oneTimeCount: oneTimeCount)
+        } catch {
+            throw Failure.storageUnavailable
+        }
+
+        let counts: RelayKeyDirectory.PoolCounts
+        do {
+            counts = try await directory.publish(keys, token: token)
+        } catch let failure as RelayKeyDirectory.Failure {
+            throw Self.mapped(failure)
+        }
+
+        do {
+            try await archive.setKeyPublication(
+                ConversationArchive.StoredKeyPublication(
+                    publishedAtMs: Self.milliseconds(now()),
+                    relayOneTimePreKeys: counts.oneTimePreKeys,
+                    relayKyberPreKeys: counts.kyberPreKeys))
         } catch {
             throw Failure.storageUnavailable
         }
@@ -562,6 +697,25 @@ actor MessageRepository {
     private func registrationCredential() throws -> (token: String, aci: UUID) {
         guard let credential = sessions.current(),
               credential.phase == .registering,
+              !credential.isExpired(at: now()),
+              let token = credential.bearerToken else { throw Failure.notAuthenticated }
+        return (token, credential.aci)
+    }
+
+    /// A credential good enough to publish this installation's **own** keys.
+    ///
+    /// Deliberately wider than either accessor above, because key maintenance is the one
+    /// operation that has to keep working across the whole life of an account: the publication
+    /// that failed during onboarding is retried while the credential is still `.registering`,
+    /// and a rotation two years later runs against an `.active` one. Requiring one phase is
+    /// what made the launch retry dead code rather than merely uncalled (AUDIT 5.36).
+    ///
+    /// `.destroying` is excluded. An account being erased must not put fresh keys into a
+    /// directory it is about to disappear from — they would outlive the account by whatever the
+    /// erase left unfinished, and peers would keep fetching bundles for it.
+    private func maintenanceCredential() throws -> (token: String, aci: UUID) {
+        guard let credential = sessions.current(),
+              credential.phase != .destroying,
               !credential.isExpired(at: now()),
               let token = credential.bearerToken else { throw Failure.notAuthenticated }
         return (token, credential.aci)

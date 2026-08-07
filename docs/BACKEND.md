@@ -543,8 +543,23 @@ Two supporting measures, since a limit alone leaves a slow-drain path:
   PQXDH keeps running. The cost is that the KEM contribution is then shared with every session that
   also fell back — classical X25519 forward secrecy is unaffected — and that degradation is exactly
   what a drain buys the attacker.
-- The client is told its remaining counts on upload and replenishes on a threshold, not a schedule.
-  Its own counts only: a peer's pool size is precisely the measurement someone draining it wants.
+- The client is told its remaining counts on upload and replenishes on a threshold. Its own counts
+  only: a peer's pool size is precisely the measurement someone draining it wants. **Live since
+  P6.S01** (AUDIT 2.4), and the shape is worth stating because it is not purely threshold-driven:
+  - The count in the publish response is the pool an attacker drains, and it is **stale the moment
+    it arrives** — a dispense is invisible to the account that owns the keys, so nothing tells the
+    client its pool emptied until the next publication changes the number. The client therefore also
+    rotates on a **48-hour interval**, which is what bounds how long a drained pool stays drained.
+    That residual belongs to AUDIT 3.1 and is settled in P6.S02.
+  - The client takes the **lower** of the relay's count and its own local one. The local count falls
+    only when a peer actually sends, so it misses a drain; the relay's can be understated by a
+    hostile relay, which costs an extra publication and nothing else.
+  - A top-up sends the **shortfall**, not the target, because §2.4 *adds* one-time prekeys rather
+    than replacing them — republishing the full pool every time would grow this table and the
+    client's private halves without bound.
+  - There is a **one-hour floor between publications**. Without it a drained pool would produce one
+    publication per foreground and spend the six-a-day allowance in minutes, leaving a full day in
+    which a rotation could not publish either.
 
 > **Correction, 2026-07-29 (P4.S05).** This section previously said the dispense path would "serve
 > the last-resort key without deleting a one-time key once an account's remaining pool falls below a

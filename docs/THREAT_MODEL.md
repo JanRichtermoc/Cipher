@@ -70,8 +70,9 @@ The relay is untrusted by construction; this is the adversary `Envelope` was des
 - Cannot force a session reset — `PlaintextContent`/`DecryptionErrorMessage` is refused at the wire
   boundary (AUDIT 3.5), which otherwise hands a relay a repeatable prekey-burning primitive.
 - **Can** drive base-key witness eviction by fetching prekey bundles. `AUDIT.md` 3.1 owns the
-  current mitigation status and residual: rate limiting alone is not complete; prekey rotation and
-  replenishment must also be live before the finding closes.
+  current mitigation status and residual. Both controls it waits on are now live — per-caller fetch
+  rate limiting (P4.S06) and prekey rotation with replenishment (P6.S01) — so what remains is the
+  judgement recorded in P6.S02, not a missing mitigation.
 
 ### 1.3 Network attacker
 

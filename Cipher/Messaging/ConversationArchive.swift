@@ -82,6 +82,10 @@ actor ConversationArchive {
         static let conversation = "conv"
         static let message = "msg"
         static let flag = "flag"
+        /// Prekey maintenance state (P6.S01). Its own namespace rather than a second shape in
+        /// `flag`, because `flag(_:)` reads the first byte of whatever it finds — a multi-byte
+        /// record sharing that namespace would read as `true` for any name that collided.
+        static let keyState = "key-state"
         /// No writer any more — the conversation list is derived from the records themselves.
         /// Kept so the migration can still find a P5.S10 index and move what it points at.
         static let index = "conv-index"
@@ -666,6 +670,47 @@ actor ConversationArchive {
     }
 
     static let keysPublishedFlag = "keys-published"
+
+    // MARK: - Prekey maintenance state (P6.S01, AUDIT 2.4)
+
+    /// What the last accepted publication left behind: when it happened, and the pool sizes the
+    /// relay reported once it had committed.
+    ///
+    /// Sealed in the same container as everything else, so it dies with the identity it
+    /// describes. That matters more here than for a flag: a surviving "last published two hours
+    /// ago" would tell a fresh installation it had nothing to do, and the first symptom would be
+    /// peers unable to start a session with an account that never published at all.
+    nonisolated struct StoredKeyPublication: Codable, Sendable, Equatable, SchemaVersioned {
+        static let expectedSchema = 1
+
+        var schema: Int = StoredKeyPublication.expectedSchema
+        /// When the relay accepted the publication, by this device's clock.
+        var publishedAtMs: UInt64
+        /// The relay's own count of this account's remaining one-time curve prekeys, as of that
+        /// response. **Stale by construction** — every bundle dispensed since then lowered it,
+        /// and nothing tells this device when that happens. It is a ceiling, not a reading, and
+        /// the scheduler treats it as one.
+        var relayOneTimePreKeys: Int
+        var relayKyberPreKeys: Int
+    }
+
+    private static let keyPublicationGroup = "prekey-publication"
+
+    func keyPublication() async throws -> StoredKeyPublication? {
+        try await ensureMigrated()
+        guard let bytes = try await engine.loadSealedRow(
+            namespace: Namespace.keyState, group: Self.keyPublicationGroup,
+            ordinal: Self.singleton)
+        else { return nil }
+        return try Self.decode(StoredKeyPublication.self, from: bytes)
+    }
+
+    func setKeyPublication(_ record: StoredKeyPublication) async throws {
+        try await ensureMigrated()
+        try await engine.storeSealedRow(
+            namespace: Namespace.keyState, group: Self.keyPublicationGroup,
+            ordinal: Self.singleton, value: try Self.encode(record))
+    }
 
     // MARK: - Coding
 
