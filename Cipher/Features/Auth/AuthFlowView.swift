@@ -4,6 +4,7 @@
 //
 
 import CipherCrypto
+import os
 import SwiftUI
 
 struct AuthFlowView: View {
@@ -31,6 +32,10 @@ struct InviteCodeView: View {
     @State private var code = ""
     @State private var isRedeeming = false
     @State private var errorMessage: String?
+    /// AUDIT 5.34. Shown only after `store.engine()` has actually refused for this reason, so
+    /// the destructive affordance below cannot appear beside a working account.
+    @State private var localStateIsOrphaned = false
+    @State private var isConfirmingErase = false
 
     @Environment(AppSession.self) private var session
     @Environment(ConversationStore.self) private var store
@@ -95,6 +100,16 @@ struct InviteCodeView: View {
                         .padding(.horizontal, CipherTheme.spacingXL)
                 }
 
+                // The one failure on this screen that retrying cannot clear, so it is the one
+                // that gets a way out instead of a button that re-throws (AUDIT 5.34).
+                if localStateIsOrphaned {
+                    SecondaryGlassButton(title: "Erase Local Data", systemImage: "trash") {
+                        isConfirmingErase = true
+                    }
+                    .padding(.horizontal, CipherTheme.spacingXL)
+                    .disabled(isRedeeming)
+                }
+
                 PrimaryGlassButton(
                     title: isRedeeming ? "Checking…" : "Continue",
                     systemImage: "arrow.right",
@@ -107,6 +122,20 @@ struct InviteCodeView: View {
             }
         }
         .navigationBarTitleDisplayMode(.inline)
+        // Irreversible, so it is confirmed rather than performed on the first tap, and the
+        // confirmation states the loss instead of asking "are you sure?".
+        .confirmationDialog(
+            "Erase this device's Cipher data?",
+            isPresented: $isConfirmingErase,
+            titleVisibility: .visible
+        ) {
+            Button("Erase", role: .destructive) {
+                Task { await eraseOrphanedLocalState() }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The encrypted data already on this device cannot be opened and will be removed permanently.")
+        }
     }
 
     /// Redeem the code against the relay, and sign in only if it issues a session.
@@ -117,6 +146,7 @@ struct InviteCodeView: View {
     private func submit() async {
         isRedeeming = true
         errorMessage = nil
+        localStateIsOrphaned = false
         defer { isRedeeming = false }
 
         do {
@@ -128,6 +158,16 @@ struct InviteCodeView: View {
             // Persist the account-bound pending state before the view changes.
             // RootView owns the recoverable adoption/publication pass.
             try session.beginRegistration(with: redeemed.credential)
+        } catch CryptoEngineError.orphanedLocalState {
+            // AUDIT 5.34. This used to fall to the generic `catch` below: the same eight words
+            // that also cover a malformed relay response, with nothing in the device log after
+            // "Initializing libsignal". It was diagnosed from first principles twice in one
+            // session because the copy named nothing and the log said nothing.
+            AppLog.store.error("onboarding refused: local state is orphaned")
+            localStateIsOrphaned = true
+            // One line, never a `"""` block: `Scripts/verify-localization.py` skips those
+            // wholesale, so a multi-line literal would leave this copy unscanned.
+            errorMessage = String(localized: "This device still holds encrypted data from an earlier Cipher account, and nothing can open it. Trying again cannot recover it.")
         } catch let failure as InviteRedemption.Failure {
             // The relay does not distinguish unknown from spent from expired, and neither does
             // this copy — saying "already used" would confirm to a guessing loop that a code
@@ -143,7 +183,36 @@ struct InviteCodeView: View {
                 String(localized: "Something went wrong. Try again.")
             }
         } catch {
+            // Every other `AppLog` line is a static literal, deliberately: interpolation is
+            // where a log leaks. This one interpolates the error's *type name* and nothing
+            // else — a compile-time identifier from a fixed set, which cannot carry an
+            // address, token, or plaintext the way `error` or `localizedDescription` could
+            // (`THREAT_MODEL.md` §4.6). `.public` is required, not incidental: the default
+            // privacy for an interpolated string is redaction, which would reproduce exactly
+            // the empty log 5.34 is about.
+            AppLog.store.error(
+                "onboarding failed: \(String(describing: type(of: error)), privacy: .public)")
             errorMessage = String(localized: "Something went wrong. Try again.")
+        }
+    }
+
+    /// Erases the unopenable state, after the user has confirmed it.
+    ///
+    /// The store refuses unless it actually observed the refusal, so this cannot become a
+    /// "reset the app" button that a working account can reach.
+    private func eraseOrphanedLocalState() async {
+        isRedeeming = true
+        defer { isRedeeming = false }
+
+        do {
+            try await store.discardOrphanedLocalState()
+            localStateIsOrphaned = false
+            errorMessage = nil
+        } catch {
+            // Nothing is claimed to have been removed. A partial erase leaves ciphertext no
+            // key can open, so retrying is safe and is what the message asks for.
+            AppLog.store.error("erasing orphaned local state failed")
+            errorMessage = String(localized: "Could not erase this device's Cipher data. Try again.")
         }
     }
 }

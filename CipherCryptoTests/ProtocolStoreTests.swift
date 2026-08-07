@@ -675,7 +675,12 @@ final class CryptoEngineTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: root.path))
 
             XCTAssertThrowsError(try CryptoEngine(root: root, secrets: secrets)) { error in
-                XCTAssertEqual(error as? RecordStoreError, .missingEncryptionKey)
+                // AUDIT 5.34 changed this deliberately. The store still throws
+                // `RecordStoreError.missingEncryptionKey` — `StoreEdgeTests` pins that at its
+                // own boundary — but the engine translates it, because `RecordStoreError` is
+                // internal and an app that cannot name this condition cannot offer a way out
+                // of it.
+                XCTAssertEqual(error as? CryptoEngineError, .orphanedLocalState)
             }
             XCTAssertNil(
                 try secrets.load(EncryptedFileRecordStore.encryptionKeyAccount),
@@ -689,6 +694,46 @@ final class CryptoEngineTests: XCTestCase {
             XCTAssertNil(
                 try replacement.loadSealedRow(
                     namespace: "msg", group: "old-account", ordinal: 0))
+        }.value
+    }
+
+    /// AUDIT 5.34: the condition must be *nameable* outside the module, and must stay
+    /// distinguishable from the other reason an engine refuses to work.
+    ///
+    /// A test that only asserted "opening throws" would have passed before 5.34, when
+    /// everything the app could see was the same generic failure. What is pinned here is that
+    /// the two public refusals are different values, so the one with a remedy can be told from
+    /// the one without.
+    func testOrphanedLocalStateIsAPublicErrorDistinctFromDestruction() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let secrets = InMemorySecretStorage()
+
+        try await Task { @CryptoActor in
+            let engine = try CryptoEngine(root: root, secrets: secrets)
+            try engine.storeSealedRow(
+                namespace: "msg", group: "survivor", ordinal: 0, value: Data("body".utf8))
+
+            // A destroyed engine refuses too. That refusal is recoverable by opening a new
+            // one, so conflating the two would offer an irreversible erase for a state that
+            // does not need it.
+            try engine.destroyAllState()
+            XCTAssertThrowsError(try engine.localIdentityKey) { error in
+                XCTAssertEqual(error as? CryptoEngineError, .destroyed)
+            }
+
+            // Now reproduce the field condition: sealed bytes survive with no key behind them.
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+            try Data("sealed remains".utf8)
+                .write(to: root.appendingPathComponent("records.sqlite3"))
+
+            XCTAssertThrowsError(try CryptoEngine(root: root, secrets: secrets)) { error in
+                XCTAssertEqual(error as? CryptoEngineError, .orphanedLocalState)
+                XCTAssertNotEqual(error as? CryptoEngineError, .destroyed)
+            }
+            XCTAssertNil(
+                try secrets.load(EncryptedFileRecordStore.encryptionKeyAccount),
+                "naming the condition must not have started minting a replacement key")
         }.value
     }
 }

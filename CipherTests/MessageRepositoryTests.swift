@@ -884,6 +884,105 @@ final class MessageRepositoryTests: XCTestCase {
         XCTAssertTrue(store.contacts.isEmpty)
         XCTAssertNil(store.localAci)
     }
+
+    /// AUDIT 5.34, end to end through a real engine: the state that stopped onboarding dead
+    /// twice in one field session, and the way out of it.
+    ///
+    /// Before this the only repair was deleting the app container from outside the app. The
+    /// assertions that matter are the last two: the erase actually ran, and the next attempt
+    /// opens a genuinely fresh installation rather than re-throwing forever.
+    @MainActor
+    func testOnboardingSurfacesOrphanedLocalStateAndCanDiscardIt() async throws {
+        let root = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("orphaned-state-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        // Build a real installation, then reproduce the field condition: the Keychain went,
+        // the sealed container stayed. This is what 6.17 did to the test device twice.
+        let previous = ConversationStore(openEngine: {
+            try await CryptoEngine.open(container: root)
+        })
+        try await previous.engine().destroyAllState()
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try Data("sealed remains".utf8)
+            .write(to: root.appendingPathComponent("records.sqlite3"))
+
+        let probe = PersistentEraseProbe()
+        let store = ConversationStore(
+            openEngine: { try await CryptoEngine.open(container: root) },
+            destroyPersistedState: {
+                await probe.erase()
+                try FileManager.default.removeItem(at: root)
+            })
+
+        XCTAssertFalse(store.localStateIsOrphaned, "positive control: nothing observed yet")
+        do {
+            _ = try await store.engine()
+            XCTFail("opening ciphertext with no key behind it must refuse")
+        } catch {
+            XCTAssertEqual(error as? CryptoEngineError, .orphanedLocalState,
+                           "the app cannot offer a remedy for a failure it cannot name")
+        }
+        XCTAssertTrue(store.localStateIsOrphaned)
+
+        try await store.discardOrphanedLocalState()
+        var calls = await probe.callCount()
+        XCTAssertEqual(calls, 1)
+        XCTAssertFalse(store.localStateIsOrphaned)
+
+        let reopened = try await store.engine()
+        let reopenedAddress = try? await reopened.localAddress
+        XCTAssertNil(reopenedAddress, "the replacement engine inherited the prior account")
+
+        // The authorisation is spent. A working installation is now behind the same guard as
+        // any other caller, which is the property that keeps this from being a reset button.
+        do {
+            try await store.discardOrphanedLocalState()
+            XCTFail("erasing a working installation must be refused")
+        } catch {
+            XCTAssertEqual(error as? MessageRepository.Failure, .storageUnavailable)
+        }
+        calls = await probe.callCount()
+        XCTAssertEqual(calls, 1, "the erase ran again against a live account")
+
+        try await reopened.destroyAllState()
+    }
+
+    /// Negative control for the erase authorisation (AUDIT 5.34).
+    ///
+    /// `discardOrphanedLocalState` reaches `CryptoEngine.destroyPersistedState`, which removes
+    /// every Keychain secret and unlinks the container without opening anything. Against a live
+    /// account that is silent, total and irreversible. An open failure that is *not* orphaned
+    /// state — a transient Keychain read before first unlock, say — must therefore leave it
+    /// disarmed. Delete the `localStateIsOrphaned` guard and this test reports the erase
+    /// running with no refusal ever observed.
+    @MainActor
+    func testDiscardingLocalStateIsRefusedUnlessOpeningReportedItOrphaned() async throws {
+        struct TransientKeychainFailure: Error {}
+        let probe = PersistentEraseProbe()
+        let store = ConversationStore(
+            openEngine: { throw TransientKeychainFailure() },
+            destroyPersistedState: { await probe.erase() })
+
+        do {
+            _ = try await store.engine()
+            XCTFail("positive control: the injected open must fail")
+        } catch {
+            XCTAssertNil(error as? CryptoEngineError,
+                         "positive control: this must not be the orphaned-state refusal")
+        }
+        XCTAssertFalse(store.localStateIsOrphaned)
+
+        do {
+            try await store.discardOrphanedLocalState()
+            XCTFail("erasing without an observed refusal must be refused")
+        } catch {
+            XCTAssertEqual(error as? MessageRepository.Failure, .storageUnavailable)
+        }
+
+        let calls = await probe.callCount()
+        XCTAssertEqual(calls, 0, "an unauthorised caller reached the irreversible erase")
+    }
 }
 
 private actor PersistentEraseProbe {
