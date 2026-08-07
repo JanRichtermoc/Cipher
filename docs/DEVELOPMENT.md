@@ -23,11 +23,28 @@ Run the gates serially. The crypto tests are app-hosted (AUDIT 6.6), and concurr
 `xcodebuild test` processes against one simulator can fail preflight with `RequestDenied … Busy`.
 Neither `--fast` nor `--offline` is release evidence; the full command must pass before release.
 
-> **Running this destroys any real account on the target simulator (AUDIT 6.17).** App-hosted means
-> the tests run *inside* `Cipher.app`, sharing its container and Keychain, and they call
-> `destroyAllState()`. A simulator you have registered and are testing against is wiped — silently,
-> mid-run, with nothing in the gate's output to say so. Use a second simulator via
-> `CIPHER_TEST_SIMULATOR` for device-style testing, or finish the manual session first.
+> **This would destroy any real account on the target simulator, and now refuses to (AUDIT 6.17).**
+> App-hosted means the tests run *inside* `Cipher.app`, sharing its container and Keychain, and they
+> call `destroyAllState()`. A simulator you have registered and are testing against used to be
+> wiped silently, mid-run, with nothing in the gate's output to say so. Gate 1 now checks the target
+> before anything slow runs and stops the run when it holds a registered account. It applies to
+> `--fast` and `--offline` too: the app-hosted test run is not skipped by either.
+>
+> Two ways past it, and the refusal prints both. Run somewhere else, which is the
+> non-destructive one:
+>
+> ```sh
+> CIPHER_TEST_SIMULATOR="<another installed simulator>" ./Scripts/verify-all.sh
+> ```
+>
+> Or say the account is expendable, which destroys it:
+>
+> ```sh
+> CIPHER_ALLOW_SIMULATOR_WIPE=1 ./Scripts/verify-all.sh
+> ```
+>
+> Set the override per run, never in your shell profile. A permanently exported override is the
+> same as having no check, and the warning it prints stops being read.
 
 The security gates were **negative-tested** by reintroducing the defects they catch. The
 localization gate carries its negative test as `--self-test` and runs it before its own verdict is
