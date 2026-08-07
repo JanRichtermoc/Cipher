@@ -65,6 +65,30 @@ final class PreKeyRotationTests: XCTestCase {
             kyberPreKeySignature: published.kyberPreKeys[oneTimeIndex].signature)
     }
 
+    /// The same bundle, but carrying the **last-resort** Kyber key rather than a one-time one.
+    ///
+    /// This is the shape the replay residual in AUDIT 3.1 is about: a one-time Kyber prekey is
+    /// deleted when it is used, so a session cannot be established against it twice, while the
+    /// last-resort key is reusable by design and the base-key witness is what stands in for that
+    /// deletion. Every one-time *curve* prekey here is still distinct, so a failure can never be
+    /// blamed on that pool.
+    @CryptoActor
+    private static func dispensedWithLastResort(
+        _ published: PublishedKeys, from engine: CryptoEngine, oneTimeIndex: Int
+    ) throws -> PeerKeyBundle {
+        PeerKeyBundle(
+            registrationId: try engine.localRegistrationId,
+            identityKey: try engine.localIdentityKey,
+            preKeyId: published.oneTimePreKeys[oneTimeIndex].keyId,
+            preKey: published.oneTimePreKeys[oneTimeIndex].publicKey,
+            signedPreKeyId: published.signedPreKey.keyId,
+            signedPreKey: published.signedPreKey.publicKey,
+            signedPreKeySignature: published.signedPreKey.signature,
+            kyberPreKeyId: published.kyberLastResort.keyId,
+            kyberPreKey: published.kyberLastResort.publicKey,
+            kyberPreKeySignature: published.kyberLastResort.signature)
+    }
+
     /// Drives a real peer through `bundle` and returns whether the engine could read what it
     /// sent. A fresh peer identity each time, so two calls never collide on trust state.
     @CryptoActor
@@ -210,6 +234,64 @@ final class PreKeyRotationTests: XCTestCase {
             XCTAssertTrue(
                 try Self.peerCanReach(
                     engine, localAci: localAci, bundle: firstBundle, text: "clock went backwards"))
+        }.value
+    }
+
+    // MARK: - What rotation buys AUDIT 3.1 (P6.S02)
+
+    func testPruningTheLastResortKeyEndsSessionSetupAgainstTheSupersededPair() async throws {
+        // The compensation AUDIT 3.1's acceptance rests on, proved rather than argued.
+        //
+        // The base-key witness evicts rather than fails, so an attacker who can flush it can
+        // re-establish a session against a **reusable** last-resort Kyber key — that reuse is
+        // exactly why the witness exists. Rotation does not prevent the flush. What it does is
+        // put an *end* on the window: once the superseded pair is pruned, session setup against
+        // it fails on the missing key, and no amount of witness manipulation brings it back.
+        //
+        // Each attempt uses a different one-time curve prekey, all still unconsumed, and a base
+        // key the witness has never seen. So neither pool nor witness can explain the refusal —
+        // only the prune can.
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let clock = TestClock(1_000_000)
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root, secrets: InMemorySecretStorage(), clock: clock)
+            let localAci = UUID()
+            try engine.adoptLocalAddress(PeerAddress(aci: localAci))
+
+            let published = try engine.generatePublishedKeys(oneTimeCount: 3)
+            XCTAssertTrue(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensedWithLastResort(published, from: engine,
+                                                             oneTimeIndex: 0),
+                    text: "while the pair is live"))
+
+            // Retired, and still inside its window: the positive control. Without it, a test
+            // that only shows the refusal cannot tell "pruned" from "never worked".
+            clock.advance(by: 48 * 60 * 60 * 1000)
+            _ = try engine.generatePublishedKeys(oneTimeCount: 0)
+            XCTAssertTrue(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensedWithLastResort(published, from: engine,
+                                                             oneTimeIndex: 1),
+                    text: "retired but still retained"))
+
+            // Past retention. The pair is gone and the window is closed.
+            clock.advance(by: CryptoEngine.retiredPreKeyRetentionMs + 1)
+            _ = try engine.generatePublishedKeys(oneTimeCount: 0)
+            XCTAssertFalse(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensedWithLastResort(published, from: engine,
+                                                             oneTimeIndex: 2),
+                    text: "after the pair was pruned"))
+
+            // And the one-time prekey the last attempt named was never the reason: it is still
+            // there, because nothing consumed it.
+            XCTAssertEqual(try engine.preKeyState.remainingOneTimePreKeys, 1)
         }.value
     }
 

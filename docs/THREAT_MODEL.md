@@ -69,10 +69,11 @@ The relay is untrusted by construction; this is the adversary `Envelope` was des
 - Cannot read or forge message content: authenticity comes from the Double Ratchet.
 - Cannot force a session reset — `PlaintextContent`/`DecryptionErrorMessage` is refused at the wire
   boundary (AUDIT 3.5), which otherwise hands a relay a repeatable prekey-burning primitive.
-- **Can** drive base-key witness eviction by fetching prekey bundles. `AUDIT.md` 3.1 owns the
-  current mitigation status and residual. Both controls it waits on are now live — per-caller fetch
-  rate limiting (P4.S06) and prekey rotation with replenishment (P6.S01) — so what remains is the
-  judgement recorded in P6.S02, not a missing mitigation.
+- **Can** drive base-key witness eviction — by **sending prekey messages**, not by fetching. That
+  correction is P6.S02's: one fetched bundle yields unlimited base keys, so the fetch limit bounds
+  *pool drain* and not this. `AUDIT.md` 3.1 owns the status (**ACCEPTED**), the arithmetic, and the
+  residual: prekey rotation (P6.S01) now puts a hard end on the window in which a captured message
+  can be replayed, but nothing prevents the eviction itself.
 
 ### 1.3 Network attacker
 
