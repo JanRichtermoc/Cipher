@@ -527,11 +527,21 @@ by asking, without ever sending a message. The pool is empty from then until the
 next uploads, and every session established in that window falls back to the reused last-resort
 Kyber prekey (§2.6).
 
-That is the mechanism behind base-key witness eviction. Rate limiting is the mitigation, it costs
-almost nothing while the endpoint is being written, and it is expensive and disruptive to retrofit
-onto a live service — which is exactly why P4.S06 makes it mandatory in this phase and why "defer to
-P6" is listed as the anti-goal. AUDIT 3.1 does not close until this and P6.S01 rotation are both
-live (P6.S02).
+Rate limiting is the mitigation for that drain, it costs almost nothing while the endpoint is being
+written, and it is expensive and disruptive to retrofit onto a live service — which is exactly why
+P4.S06 makes it mandatory in this phase and why "defer to P6" is listed as the anti-goal.
+
+> **Correction, 2026-08-07 (P6.S02).** This section previously said the drain above "is the mechanism
+> behind base-key witness eviction" and credited this limit with bounding it. It does not. Filling
+> the witness needs 512 distinct **base keys** against one (kyber prekey, signed prekey) pair, and a
+> base key is free: one fetched bundle can be run through `processPreKeyBundle` any number of times,
+> each run minting a new one. The attacker also need not spend the pool — they assemble the bundle
+> themselves and may name the reusable last-resort Kyber key, or omit the one-time prekey. The real
+> cost is 512 sends against `POST /v1/messages` at 60 a minute, which is about nine minutes from one
+> account. Two different attacks were being described as one. This limit bounds **pool drain**, which
+> is a denial of service against session setup and worth having on its own terms. Witness eviction is
+> a send-side cost, and what bounds *it* is prekey rotation (P6.S01) putting an end to the window
+> rather than preventing the eviction. AUDIT 3.1 is **ACCEPTED** on that reasoning and owns it.
 
 Measured, not asserted: with the limit removed, 60 fetch attempts consumed 60 of the target's
 prekeys. With it in place the same 60 attempts consume 10 and the pool survives.
