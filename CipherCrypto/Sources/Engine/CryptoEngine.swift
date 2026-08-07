@@ -71,7 +71,22 @@ public final class CryptoEngine {
         CryptoActor.assertIsolated()
         self.now = now
 
-        let legacyRecords = try EncryptedFileRecordStore(root: root, secrets: secrets)
+        // Ciphertext with no key left to open it is a *nameable* condition, not a generic
+        // failure: it is the only open failure a user can act on, and the only one whose
+        // repair is destructive. `RecordStoreError` is internal to this module, so before
+        // AUDIT 5.34 the app could not tell this apart from a transient Keychain read and
+        // said "Something went wrong. Try again." to a state no amount of retrying changes.
+        // Translated here rather than exported wholesale: the app gets the one case it has a
+        // remedy for, and no view acquires the ability to match on a storage internal.
+        let legacyRecords: EncryptedFileRecordStore
+        do {
+            legacyRecords = try EncryptedFileRecordStore(root: root, secrets: secrets)
+        } catch RecordStoreError.missingEncryptionKey {
+            // No key material and no path: `THREAT_MODEL.md` §4.6. The line says the engine
+            // refused and why, which is exactly what the device log was missing.
+            CipherLog.store.error("crypto engine refused to open: local state is orphaned")
+            throw CryptoEngineError.orphanedLocalState
+        }
         // Built from `records` rather than from `secrets`: its keys are derived from the record
         // encryption key, so there is still exactly one Keychain item whose deletion is a
         // cryptographic erase of every session, prekey, trust decision, conversation and
@@ -312,6 +327,18 @@ public final class CryptoEngine {
 public enum CryptoEngineError: Error, Equatable, Sendable {
     /// The engine's state was destroyed. Discard it and `open` a new one.
     case destroyed
+    /// Sealed records survive on this device with no Keychain key left to open them.
+    ///
+    /// An interrupted cryptographic erase, a partially restored backup, or anything else that
+    /// removed the Keychain item while the container stayed behind. **Opening deliberately
+    /// refuses instead of minting a replacement key** — a fresh key beside orphaned ciphertext
+    /// is a standing anti-goal (plan §0.2), because it would present an empty account as a
+    /// working one and make the loss look like a first launch.
+    ///
+    /// Retrying can never clear it. The only repair is to erase what survives, which is
+    /// irreversible and therefore the user's decision to take, not the app's
+    /// (`ConversationStore.discardOrphanedLocalState`, AUDIT 5.34).
+    case orphanedLocalState
 }
 
 /// A peer's trust state, in a form that can safely leave the crypto domain.

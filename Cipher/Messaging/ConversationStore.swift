@@ -8,6 +8,7 @@
 
 import CipherCrypto
 import Foundation
+import os
 import SwiftUI
 
 /// What the screens read. The production replacement for `MockStore`.
@@ -51,6 +52,9 @@ final class ConversationStore {
     private(set) var failure: MessageRepository.Failure?
     /// True while a fetch or send is in flight, so the UI can say so rather than look frozen.
     private(set) var isSyncing = false
+    /// Set when opening the engine refused because sealed records survive with no key to open
+    /// them (AUDIT 5.34). It is the sole authorisation for `discardOrphanedLocalState`.
+    private(set) var localStateIsOrphaned = false
 
     private var messagesByChat: [UUID: [Message]] = [:]
 
@@ -114,11 +118,58 @@ final class ConversationStore {
         let task = Task { try await openEngine() }
         engineTask = task
         do {
-            return try await task.value
+            let opened = try await task.value
+            localStateIsOrphaned = false
+            return opened
         } catch {
             engineTask = nil
+            // Latched from an *observed* refusal rather than probed for. The erase below is
+            // irreversible, and the only evidence that it is the right thing to do is that
+            // opening actually refused for this reason.
+            localStateIsOrphaned = (error as? CryptoEngineError) == .orphanedLocalState
             throw error
         }
+    }
+
+    /// Erases sealed local state that no key can open, once the user has asked for it.
+    ///
+    /// AUDIT 5.34. Before this the condition was a dead end: every retry re-threw, and the only
+    /// repair was deleting the app container from outside the app, which no user can do.
+    ///
+    /// **Why this is guarded rather than always available.** It reaches
+    /// `CryptoEngine.destroyPersistedState`, which removes every Keychain secret and unlinks the
+    /// container without opening anything. Against a *live* account that is a silent, total,
+    /// irreversible loss. `destroyAccountState` may call the same primitive because a persisted
+    /// `.destroying` gate has already authorised it; onboarding has no such gate, so the
+    /// authorisation here is the latched refusal itself. A caller that has not seen
+    /// `orphanedLocalState` is refused — which is the property the negative test pins.
+    ///
+    /// Consent is the caller's to obtain. This performs the erase; it does not ask.
+    func discardOrphanedLocalState() async throws {
+        guard !isPreviewOnly else { return }
+        guard localStateIsOrphaned else {
+            // Never widen this into "try it and see". A store that has not refused to open may
+            // hold a working account, and this would take it without asking.
+            AppLog.store.error("refused to discard local state that was never observed orphaned")
+            throw MessageRepository.Failure.storageUnavailable
+        }
+
+        do {
+            try await destroyPersistedState()
+        } catch {
+            AppLog.store.error("discarding orphaned local state failed")
+            record(.storageUnavailable)
+            throw MessageRepository.Failure.storageUnavailable
+        }
+
+        AppLog.store.info("orphaned local state discarded at the user's request")
+        dropAccountModels()
+        // Both handles were built over state that no longer exists. Clearing them is what lets
+        // the next attempt open a genuinely fresh installation instead of re-throwing.
+        engineTask = nil
+        repositoryTask = nil
+        localStateIsOrphaned = false
+        failure = nil
     }
 
     private func repository() async throws -> MessageRepository {
@@ -236,6 +287,9 @@ final class ConversationStore {
             do {
                 try await destroyPersistedState()
                 engineTask = nil
+                // The authorisation is spent with the state it authorised removing. Leaving it
+                // latched would carry a stale "yes" past the erase it belonged to.
+                localStateIsOrphaned = false
                 failure = nil
                 return
             } catch {
