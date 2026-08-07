@@ -149,6 +149,224 @@ internal final class CipherProtocolStore {
         return value
     }
 
+    // MARK: - Prekey rotation (P6.S01, AUDIT 2.4)
+
+    private static let preKeyRotationKey = "prekey-rotation"
+
+    /// Upper bound on retired pairs the record will carry.
+    ///
+    /// Retention alone bounds this in every schedule the app actually runs — thirty days of
+    /// two-day rotations is fifteen pairs — so this is the valve for a schedule that is wrong,
+    /// not the mechanism. It matters because the record is one sealed value with a size ceiling:
+    /// an unbounded list would eventually fail to *write*, which would make rotation itself
+    /// start failing. Overflow retires the oldest entries early, which is the safe direction —
+    /// it deletes key material sooner rather than keeping it longer.
+    internal static let retiredPreKeyCapacity = 64
+
+    /// Which store a retired record belongs to. Persisted as a byte, so it is a format
+    /// decision: a rotation record written by one build must resolve to the same store in the
+    /// next, or a prune would delete the wrong key.
+    internal enum RetiredPreKeyKind: UInt8 {
+        case signedPreKey = 1
+        case kyberLastResort = 2
+
+        fileprivate var recordKind: RecordKind {
+            switch self {
+            case .signedPreKey: return .signedPreKey
+            case .kyberLastResort: return .kyberPreKey
+            }
+        }
+    }
+
+    internal struct RetiredPreKey: Equatable {
+        internal let kind: RetiredPreKeyKind
+        internal let keyId: UInt32
+        internal let retiredAtMs: UInt64
+    }
+
+    /// The live signed prekey and last-resort Kyber key, when they were minted, and the
+    /// superseded pairs still inside their retention window.
+    internal struct PreKeyRotationRecord: Equatable {
+        internal let signedPreKeyId: UInt32
+        internal let kyberLastResortId: UInt32
+        internal let rotatedAtMs: UInt64
+        internal let retired: [RetiredPreKey]
+    }
+
+    internal func preKeyRotation() throws -> PreKeyRotationRecord? {
+        CryptoActor.assertIsolated()
+        guard let bytes = try records.load(.metadata, Self.preKeyRotationKey) else { return nil }
+        return try Self.decodeRotation(bytes)
+    }
+
+    /// Promotes the newly minted pair to live, retires the pair it replaces, and deletes
+    /// retired records whose retention has elapsed.
+    ///
+    /// # Why the old pair is not deleted here
+    ///
+    /// A peer that fetched this account's bundle just before the rotation holds the *old*
+    /// signed prekey id and names it in their first message. Deleting the private half on the
+    /// spot turns that message into a permanent `invalidKeyIdentifier` — the peer cannot retry
+    /// into success, because the key is gone. Retention is what makes rotation safe to do
+    /// often; the prune is what stops it from being a slow leak.
+    ///
+    /// # Order, and what a crash in the middle costs
+    ///
+    /// Expired records are removed **before** the new record is written. A crash between the
+    /// two leaves the previous pair still marked live, so the next rotation retires it again —
+    /// nothing is orphaned. The reverse order would drop the only reference to a record that
+    /// still exists on disk, and nothing would ever prune it.
+    ///
+    /// # The one thing this cannot clean up
+    ///
+    /// An installation that published before this record existed has a signed prekey and a
+    /// last-resort Kyber key whose ids nothing recorded, and the record store deliberately
+    /// offers no enumeration to find them. Those two records survive until the account is
+    /// erased. Two records, known and bounded, and stated rather than discovered later.
+    internal func recordPreKeyRotation(
+        signedPreKeyId: UInt32, kyberLastResortId: UInt32, at now: UInt64, retention: UInt64
+    ) throws {
+        CryptoActor.assertIsolated()
+
+        let previous = try preKeyRotation()
+        var retired = previous?.retired ?? []
+        if let previous {
+            retired.append(
+                RetiredPreKey(
+                    kind: .signedPreKey, keyId: previous.signedPreKeyId, retiredAtMs: now))
+            retired.append(
+                RetiredPreKey(
+                    kind: .kyberLastResort, keyId: previous.kyberLastResortId, retiredAtMs: now))
+        }
+
+        // A clock that moved backwards keeps a record rather than dropping it: the test is
+        // "demonstrably older than the window", not "not newer than". Erring toward keeping
+        // costs one stored keypair; erring the other way costs a peer their first message.
+        //
+        // One predicate, applied once, rather than a filter and its negation written out twice:
+        // two expressions that must stay exact complements are two expressions that can drift,
+        // and a drift here either deletes a live key or never deletes a dead one.
+        func hasExpired(_ entry: RetiredPreKey) -> Bool {
+            now >= entry.retiredAtMs && now - entry.retiredAtMs >= retention
+        }
+        var expired = retired.filter(hasExpired)
+        var kept = retired.filter { !hasExpired($0) }
+
+        if kept.count > Self.retiredPreKeyCapacity {
+            let overflow = kept.count - Self.retiredPreKeyCapacity
+            expired.append(contentsOf: kept.prefix(overflow))
+            kept.removeFirst(overflow)
+            CipherLog.keys.warning(
+                "retired prekey list at capacity; retiring the oldest entries early")
+        }
+
+        for entry in expired {
+            try records.remove(entry.kind.recordKind, idKey(entry.keyId))
+        }
+
+        try records.store(
+            .metadata, Self.preKeyRotationKey,
+            Self.encodeRotation(
+                PreKeyRotationRecord(
+                    signedPreKeyId: signedPreKeyId, kyberLastResortId: kyberLastResortId,
+                    rotatedAtMs: now, retired: kept)))
+
+        if !expired.isEmpty {
+            CipherLog.keys.info("pruned superseded prekey records past their retention")
+        }
+    }
+
+    // MARK: Rotation record coding
+
+    /// ```text
+    ///  offset  size  field
+    ///       0     1  version             always 0x01
+    ///       1     4  signedPreKeyId      big-endian
+    ///       5     4  kyberLastResortId   big-endian
+    ///       9     8  rotatedAtMs         big-endian
+    ///      17     1  retiredCount
+    ///      18  13*n  retired entries     kind(1) | keyId(4) | retiredAtMs(8)
+    /// ```
+    ///
+    /// Fixed-width and versioned for the same reason `PeerIdentityRecord` is: a record this
+    /// build cannot parse must fail loudly rather than be read as a different record. An
+    /// unreadable rotation record surfaces as a refusal to rotate, which is visible, rather
+    /// than as a silent "never rotated" that would republish over live keys.
+    private static let rotationVersion: UInt8 = 1
+    private static let retiredEntrySize = 13
+    private static let rotationHeaderSize = 18
+
+    private static func encodeRotation(_ record: PreKeyRotationRecord) -> Data {
+        precondition(record.retired.count <= retiredPreKeyCapacity)
+
+        var out = Data(capacity: rotationHeaderSize + record.retired.count * retiredEntrySize)
+        out.append(rotationVersion)
+        appendBigEndian(&out, record.signedPreKeyId)
+        appendBigEndian(&out, record.kyberLastResortId)
+        appendBigEndian(&out, record.rotatedAtMs)
+        out.append(UInt8(record.retired.count))
+        for entry in record.retired {
+            out.append(entry.kind.rawValue)
+            appendBigEndian(&out, entry.keyId)
+            appendBigEndian(&out, entry.retiredAtMs)
+        }
+        return out
+    }
+
+    private static func decodeRotation(_ bytes: Data) throws -> PreKeyRotationRecord {
+        let base = bytes.startIndex
+        guard bytes.count >= rotationHeaderSize, bytes[base] == rotationVersion else {
+            throw ProtocolStoreError.malformedMetadata
+        }
+
+        let count = Int(bytes[base + 17])
+        guard bytes.count == rotationHeaderSize + count * retiredEntrySize,
+              count <= retiredPreKeyCapacity
+        else {
+            throw ProtocolStoreError.malformedMetadata
+        }
+
+        var retired: [RetiredPreKey] = []
+        retired.reserveCapacity(count)
+        for index in 0..<count {
+            let start = base + rotationHeaderSize + index * retiredEntrySize
+            guard let kind = RetiredPreKeyKind(rawValue: bytes[start]) else {
+                throw ProtocolStoreError.malformedMetadata
+            }
+            retired.append(
+                RetiredPreKey(
+                    kind: kind,
+                    keyId: readBigEndian(bytes, start + 1),
+                    retiredAtMs: readBigEndian(bytes, start + 5)))
+        }
+
+        return PreKeyRotationRecord(
+            signedPreKeyId: readBigEndian(bytes, base + 1),
+            kyberLastResortId: readBigEndian(bytes, base + 5),
+            rotatedAtMs: readBigEndian(bytes, base + 9),
+            retired: retired)
+    }
+
+    private static func appendBigEndian(_ out: inout Data, _ value: UInt32) {
+        withUnsafeBytes(of: value.bigEndian) { out.append(contentsOf: $0) }
+    }
+
+    private static func appendBigEndian(_ out: inout Data, _ value: UInt64) {
+        withUnsafeBytes(of: value.bigEndian) { out.append(contentsOf: $0) }
+    }
+
+    private static func readBigEndian(_ bytes: Data, _ offset: Int) -> UInt32 {
+        var value: UInt32 = 0
+        for index in 0..<4 { value = (value << 8) | UInt32(bytes[offset + index]) }
+        return value
+    }
+
+    private static func readBigEndian(_ bytes: Data, _ offset: Int) -> UInt64 {
+        var value: UInt64 = 0
+        for index in 0..<8 { value = (value << 8) | UInt64(bytes[offset + index]) }
+        return value
+    }
+
     // MARK: - Installation metadata
 
     /// Small, non-secret installation facts — currently only this device's own address.
@@ -518,8 +736,14 @@ extension CipherProtocolStore: KyberPreKeyStore {
     ///
     /// Eviction degrades instead: an attacker must first capture a specific old prekey
     /// message and then flush the witness before it can be replayed. The real fixes are
-    /// server-side bundle-fetch rate limiting and prekey rotation, neither of which exists
-    /// yet; this is recorded in `docs/AUDIT.md` as an open residual, not as solved.
+    /// server-side bundle-fetch rate limiting (P4.S06) and prekey rotation (P6.S01,
+    /// `recordPreKeyRotation` above), and **both are now live**. AUDIT 3.1 stays open
+    /// regardless until P6.S02 records what residual remains with both in place — an
+    /// implemented mitigation is not the same as a reviewed one.
+    ///
+    /// Witness records are not pruned when a retired prekey is: they carry SHA-256 digests
+    /// and no key material, they are bounded per pair, and the pairing needed to find them
+    /// is not what the rotation record tracks. Stated on AUDIT 2.4 as a residual.
     internal func markKyberPreKeyUsed(
         id: UInt32, signedPreKeyId: UInt32, baseKey: PublicKey, context: StoreContext
     ) throws {

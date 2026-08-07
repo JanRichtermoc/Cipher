@@ -38,22 +38,34 @@ final class MessageRepositoryTests: XCTestCase {
         try await super.tearDown()
     }
 
-    private func makeRepository() -> MessageRepository {
+    private func makeRepository(now: @escaping @Sendable () -> Date = { Date() })
+        -> MessageRepository {
         let client = RoutedStubRelay.client()
         return MessageRepository(
             engine: fixture.engine,
             directory: RelayKeyDirectory(client: client),
             mailbox: RelayMailbox(client: client),
-            sessions: TestSession.store())
+            sessions: TestSession.store(),
+            now: now)
     }
+
+    /// What the relay reports after accepting a full publication: both pools at the target.
+    private static let healthyPoolReply =
+        #"{"one_time_prekeys":100,"kyber_prekeys":100}"#
 
     /// A relay that accepts a publication, dispenses the peer's bundle, accepts sends, and has
     /// nothing waiting. Individual tests override the routes they care about.
+    ///
+    /// The publication reply reports a **healthy** pool, which is what a relay answers a device
+    /// that has just uploaded its full one. It used to say one key of each kind, which no longer
+    /// means "accepted" alone: since P6.S01 the scheduler reads those counts and a pool of one is
+    /// a pool it must immediately replenish, so every test that touched `maintainKeys` would
+    /// have measured a second publication it never asked for.
     private func defaultRoutes(
         fetch: String = #"{"messages":[],"more":false}"#
     ) async throws -> [String: [RoutedStubRelay.Reply]] {
         [
-            "PUT /v1/keys": [.init(status: 200, json: #"{"one_time_prekeys":1,"kyber_prekeys":1}"#)],
+            "PUT /v1/keys": [.init(status: 200, json: Self.healthyPoolReply)],
             "GET /v1/keys/": [.init(status: 200, json: try await peerBundleJSON())],
             "POST /v1/messages/ack": [.init(status: 200, json: #"{"acknowledged":1}"#)],
             "POST /v1/messages": [.init(status: 202)],
@@ -586,7 +598,7 @@ final class MessageRepositoryTests: XCTestCase {
 
         try await repository.register()
         try await repository.register()
-        try await repository.resumeRegistration()
+        try await repository.maintainKeys()
 
         // Publication is 6 per day per account (`BACKEND.md` §5) and generating the pool is a
         // hundred keypairs. Republishing on every launch would spend both for nothing.
@@ -615,16 +627,45 @@ final class MessageRepositoryTests: XCTestCase {
             XCTAssertEqual(failure, .relayUnavailable)
         }
 
-        RoutedStubRelay.setRoute(
-            "PUT /v1/keys", [.init(status: 200, json: #"{"one_time_prekeys":1,"kyber_prekeys":1}"#)])
-        try await repository.resumeRegistration()
+        RoutedStubRelay.setRoute("PUT /v1/keys", [.init(status: 200, json: Self.healthyPoolReply)])
+        try await repository.maintainKeys()
 
         // And once it has been accepted, it stops: the flag is set only after the relay has the
         // keys, and only then does the retry loop end.
         let attempts = RoutedStubRelay.count("PUT /v1/keys")
-        try await repository.resumeRegistration()
-        try await repository.resumeRegistration()
+        try await repository.maintainKeys()
+        try await repository.maintainKeys()
         XCTAssertEqual(RoutedStubRelay.count("PUT /v1/keys"), attempts)
+    }
+
+    /// The retry above, but for an account that has finished onboarding — which is the state a
+    /// launch actually finds, and the one the dead `resumeRegistration` could never serve.
+    ///
+    /// It asked for a `.registering` credential. An onboarded device holds an `.active` one, so
+    /// even a caller wired to it would have got `notAuthenticated` and given up (AUDIT 5.36).
+    func testAnActiveAccountStillRetriesAPublicationThatNeverSucceeded() async throws {
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
+        var routes = try await defaultRoutes()
+        routes["PUT /v1/keys"] = [.init(status: 500)]
+        RoutedStubRelay.reset(routes)
+        let repository = makeRepository()
+
+        do {
+            try await repository.register()
+            XCTFail("a relay that never accepts the publication must surface")
+        } catch let failure as MessageRepository.Failure {
+            XCTAssertEqual(failure, .relayUnavailable)
+        }
+
+        // Onboarding completes; the credential is no longer `.registering`.
+        try TestSession.signIn(aci: fixture.localAci, phase: .active)
+        RoutedStubRelay.setRoute("PUT /v1/keys", [.init(status: 200, json: Self.healthyPoolReply)])
+
+        let before = RoutedStubRelay.count("PUT /v1/keys")
+        try await repository.maintainKeys()
+        XCTAssertGreaterThan(
+            RoutedStubRelay.count("PUT /v1/keys"), before,
+            "an onboarded account whose keys never reached the relay must still publish them")
     }
 
     func testAMismatchedAccountIsRefusedRatherThanReadopted() async throws {
@@ -658,6 +699,171 @@ final class MessageRepositoryTests: XCTestCase {
         let expected = await CryptoEngine.defaultOneTimePreKeyCount
         XCTAssertEqual((json["kyber_prekeys"] as? [Any])?.count, expected)
         XCTAssertEqual((json["one_time_prekeys"] as? [Any])?.count, expected)
+    }
+
+    // MARK: - Rotation and replenishment (P6.S01, AUDIT 2.4)
+
+    /// The two "Done when" halves of P6.S01 need a device that has already published, so every
+    /// test below starts from one.
+    private func registeredRepository() async throws -> MessageRepository {
+        try TestSession.signIn(aci: fixture.localAci, phase: .active)
+        RoutedStubRelay.reset(try await defaultRoutes())
+        let repository = makeRepository()
+        // `register()` needs the registering phase; maintenance is what an onboarded device runs.
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
+        try await repository.register()
+        try TestSession.signIn(aci: fixture.localAci, phase: .active)
+        return repository
+    }
+
+    /// The signed prekey and the last-resort Kyber key a publication body carries.
+    private func publishedRotationIds(_ body: Data) throws -> (signed: UInt32, lastResort: UInt32) {
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let signed = try XCTUnwrap(json["signed_prekey"] as? [String: Any])
+        let lastResort = try XCTUnwrap(json["kyber_last_resort"] as? [String: Any])
+        return (
+            try XCTUnwrap((signed["key_id"] as? NSNumber)?.uint32Value),
+            try XCTUnwrap((lastResort["key_id"] as? NSNumber)?.uint32Value))
+    }
+
+    func testAHealthyPoolInsideTheIntervalDoesNotRepublish() async throws {
+        let repository = try await registeredRepository()
+        let after = RoutedStubRelay.count("PUT /v1/keys")
+
+        try await repository.maintainKeys()
+        try await repository.maintainKeys()
+
+        // Publication is six per day per account and minting a pool is a hundred keypairs.
+        // A scheduler that republished on every foreground would spend both on nothing, and
+        // would exhaust the daily budget before a rotation that mattered ever fell due.
+        XCTAssertEqual(RoutedStubRelay.count("PUT /v1/keys"), after)
+    }
+
+    func testTheIntervalElapsingRotatesBothLongLivedKeys() async throws {
+        _ = try await registeredRepository()
+        let first = try publishedRotationIds(
+            try XCTUnwrap(RoutedStubRelay.requests("PUT /v1/keys").last))
+
+        // A second repository over the same engine and archive, whose clock is past the
+        // interval. This is the restart: nothing in memory carries over, and the decision is
+        // made from the record the first one persisted.
+        let interval = MessageRepository.preKeyRotationInterval
+        let later = Date().addingTimeInterval(interval + 60)
+        let restarted = makeRepository(now: { later })
+        try await restarted.maintainKeys()
+
+        let bodies = RoutedStubRelay.requests("PUT /v1/keys")
+        XCTAssertEqual(bodies.count, 2, "the rotation must reach the relay")
+        let second = try publishedRotationIds(try XCTUnwrap(bodies.last))
+        XCTAssertNotEqual(second.signed, first.signed)
+        XCTAssertNotEqual(second.lastResort, first.lastResort)
+        // Never a reissued id: a replayed prekey message matched against a brand-new private
+        // key is what the monotonic counter exists to prevent.
+        XCTAssertGreaterThan(second.signed, first.signed)
+        XCTAssertGreaterThan(second.lastResort, first.lastResort)
+    }
+
+    func testARelayReportedPoolBelowTheThresholdIsReplenishedWithoutWaiting() async throws {
+        // The relay reports the pool it holds once a publication commits, and that report is the
+        // only signal this device gets: a bundle fetch consumes a key on the relay while the
+        // local copy survives until the peer actually sends, so the local count still reads a
+        // hundred here (AUDIT 3.1). So the drained count has to arrive on the publication the
+        // device already made — which is exactly how a real drain becomes visible.
+        let threshold = MessageRepository.replenishThreshold
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
+        var routes = try await defaultRoutes()
+        routes["PUT /v1/keys"] = [
+            .init(
+                status: 200,
+                json: #"{"one_time_prekeys":\#(threshold - 1),"kyber_prekeys":90}"#),
+        ]
+        RoutedStubRelay.reset(routes)
+        try await makeRepository().register()
+        try TestSession.signIn(aci: fixture.localAci, phase: .active)
+
+        // Past the publication floor but far short of the rotation interval, so what is being
+        // observed is the threshold and not the schedule.
+        let later = Date().addingTimeInterval(MessageRepository.minimumPublishInterval + 60)
+        try await makeRepository(now: { later }).maintainKeys()
+
+        XCTAssertEqual(
+            RoutedStubRelay.count("PUT /v1/keys"), 2,
+            "a drained pool must be topped up without waiting for the rotation interval")
+
+        // And the top-up is the shortfall, not another full pool: the relay *adds* one-time
+        // prekeys rather than replacing them, so republishing the target every time would grow
+        // both the relay's pool and this device's private halves without bound.
+        let body = try XCTUnwrap(RoutedStubRelay.requests("PUT /v1/keys").last)
+        let json = try XCTUnwrap(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let target = await CryptoEngine.defaultOneTimePreKeyCount
+        XCTAssertEqual((json["one_time_prekeys"] as? [Any])?.count, target - (threshold - 1))
+    }
+
+    func testADrainedPoolIsNotRepublishedOnEveryForeground() async throws {
+        // The negative half of the test above, and the reason the floor exists. The relay's
+        // report only changes when a publication changes it, so a genuinely drained pool reads
+        // as drained on every check — without a floor an attacker draining it would get one
+        // publication per foreground, spend the whole six-a-day allowance in minutes, and leave
+        // a full day in which a rotation could not publish either.
+        let threshold = MessageRepository.replenishThreshold
+        try TestSession.signIn(aci: fixture.localAci, phase: .registering)
+        var routes = try await defaultRoutes()
+        routes["PUT /v1/keys"] = [
+            .init(
+                status: 200,
+                json: #"{"one_time_prekeys":\#(threshold - 1),"kyber_prekeys":90}"#),
+        ]
+        RoutedStubRelay.reset(routes)
+        try await makeRepository().register()
+        try TestSession.signIn(aci: fixture.localAci, phase: .active)
+
+        let repository = makeRepository()
+        try await repository.maintainKeys()
+        try await repository.maintainKeys()
+        XCTAssertEqual(RoutedStubRelay.count("PUT /v1/keys"), 1)
+    }
+
+    func testAPublicationTheRelayRefusedIsNotRecordedAsARotation() async throws {
+        _ = try await registeredRepository()
+        let interval = MessageRepository.preKeyRotationInterval
+        let later = Date().addingTimeInterval(interval + 60)
+        let restarted = makeRepository(now: { later })
+
+        RoutedStubRelay.setRoute("PUT /v1/keys", [.init(status: 500)])
+        do {
+            try await restarted.maintainKeys()
+            XCTFail("a relay that never accepts the rotation must surface")
+        } catch let failure as MessageRepository.Failure {
+            XCTAssertEqual(failure, .relayUnavailable)
+        }
+
+        // The record is written only after the relay has the keys. Written first, a failed
+        // rotation would look like a completed one and nothing would try again for two days,
+        // while the relay still served the old signed prekey.
+        RoutedStubRelay.setRoute("PUT /v1/keys", [.init(status: 200, json: Self.healthyPoolReply)])
+        let before = RoutedStubRelay.count("PUT /v1/keys")
+        try await restarted.maintainKeys()
+        XCTAssertGreaterThan(RoutedStubRelay.count("PUT /v1/keys"), before)
+    }
+
+    func testAnAccountBeingErasedDoesNotPublishFreshKeys() async throws {
+        _ = try await registeredRepository()
+        let after = RoutedStubRelay.count("PUT /v1/keys")
+
+        try TestSession.signIn(aci: fixture.localAci, phase: .destroying)
+        let interval = MessageRepository.preKeyRotationInterval
+        let later = Date().addingTimeInterval(interval + 60)
+        let restarted = makeRepository(now: { later })
+
+        do {
+            try await restarted.maintainKeys()
+            XCTFail("an account being erased must not publish")
+        } catch let failure as MessageRepository.Failure {
+            XCTAssertEqual(failure, .notAuthenticated)
+        }
+        // Keys that outlived the account they belong to would leave peers fetching bundles for
+        // an account that no longer exists.
+        XCTAssertEqual(RoutedStubRelay.count("PUT /v1/keys"), after)
     }
 
     // MARK: - The publication the relay actually has to accept (AUDIT 5.32)

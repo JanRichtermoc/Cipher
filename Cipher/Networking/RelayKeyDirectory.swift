@@ -45,6 +45,19 @@ nonisolated struct RelayKeyDirectory: Sendable {
 
     // MARK: - Publishing
 
+    /// The account's own remaining pool sizes, as the relay reports them once a publication has
+    /// committed.
+    ///
+    /// Returned to the caller rather than dropped because it is the only view this device has of
+    /// the *relay-side* pool, and that is the one an attacker drains: a bundle fetch consumes a
+    /// key there, while the local copy survives until the peer actually sends. Replenishment is
+    /// driven from it (`BACKEND.md` §5, AUDIT 2.4). A hostile relay can of course understate it —
+    /// the cost of that is a client that republishes more often than it needs to.
+    struct PoolCounts: Sendable, Equatable {
+        let oneTimePreKeys: Int
+        let kyberPreKeys: Int
+    }
+
     /// Publishes this installation's public prekey material.
     ///
     /// **Marked idempotent, which is a statement about the database and not about the cost.**
@@ -54,7 +67,7 @@ nonisolated struct RelayKeyDirectory: Sendable {
     /// app records that it has published and does not do it on every launch; that is a
     /// scheduling decision, not a safety one, and retrying a 5xx here is strictly better than
     /// leaving an account whose peers cannot start a session with it.
-    func publish(_ keys: PublishedKeys, token: String) async throws {
+    func publish(_ keys: PublishedKeys, token: String) async throws -> PoolCounts {
         let payload = PublishRequest(
             signedPreKey: .init(keys.signedPreKey),
             kyberLastResort: .init(keys.kyberLastResort),
@@ -109,6 +122,9 @@ nonisolated struct RelayKeyDirectory: Sendable {
               keys.kyberPreKeys.isEmpty || decoded.kyberPreKeys > 0 else {
             throw Failure.malformedResponse
         }
+
+        return PoolCounts(
+            oneTimePreKeys: decoded.oneTimePreKeys, kyberPreKeys: decoded.kyberPreKeys)
     }
 
     // MARK: - Fetching

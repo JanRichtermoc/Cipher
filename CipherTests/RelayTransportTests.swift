@@ -570,8 +570,13 @@ struct RelayTransportTests {
             TransportStub.reset([TransportStub.json(
                 200, #"{"one_time_prekeys":1,"kyber_prekeys":1}"#)])
 
-            try await RelayKeyDirectory(client: stubbedClient()).publish(keys, token: "token")
+            let counts = try await RelayKeyDirectory(client: stubbedClient())
+                .publish(keys, token: "token")
             #expect(TransportStub.received.count == 1)
+            // The counts are returned rather than dropped: they are the only view this device
+            // has of the *relay-side* pool, which is the one a drain empties, and P6.S01's
+            // replenishment threshold is read from them.
+            #expect(counts == RelayKeyDirectory.PoolCounts(oneTimePreKeys: 1, kyberPreKeys: 1))
         }
     }
 
