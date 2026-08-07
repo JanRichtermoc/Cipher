@@ -23,6 +23,12 @@ Run the gates serially. The crypto tests are app-hosted (AUDIT 6.6), and concurr
 `xcodebuild test` processes against one simulator can fail preflight with `RequestDenied … Busy`.
 Neither `--fast` nor `--offline` is release evidence; the full command must pass before release.
 
+> **Running this destroys any real account on the target simulator (AUDIT 6.17).** App-hosted means
+> the tests run *inside* `Cipher.app`, sharing its container and Keychain, and they call
+> `destroyAllState()`. A simulator you have registered and are testing against is wiped — silently,
+> mid-run, with nothing in the gate's output to say so. Use a second simulator via
+> `CIPHER_TEST_SIMULATOR` for device-style testing, or finish the manual session first.
+
 The security gates were **negative-tested** by reintroducing the defects they catch. The
 localization gate carries its negative test as `--self-test` and runs it before its own verdict is
 trusted. Do not "fix" a gate by making it stop running—a skipped gate can look like a passing one.
