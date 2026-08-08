@@ -95,7 +95,55 @@ internal final class Keychain: SecretStorage, Sendable {
     /// exact and a test instance can be fully isolated from the real one.
     internal let service: String
 
-    internal static let shared = Keychain(service: "cz.janrichtermoc.Cipher.crypto")
+    /// The service a shipped build uses, and the only one that ever holds a real account.
+    internal static let productionService = "cz.janrichtermoc.Cipher.crypto"
+
+    #if DEBUG
+    /// Where a test run's keys go instead (AUDIT 6.18).
+    ///
+    /// A different service string, not a prefix or a suffix convention: `kSecAttrService`
+    /// matches exactly, so `removeAll` under this value cannot reach an item stored under the
+    /// production one no matter what it deletes.
+    internal static let testService = "cz.janrichtermoc.Cipher.crypto.xctest"
+
+    /// The process-wide handle, redirected away from the real account while tests are running.
+    ///
+    /// ## Why this is here and not in a fixture
+    ///
+    /// AUDIT 6.17 put an account-destruction refusal in `verify-all.sh`, which is the right
+    /// place for the run someone starts and walks away from — but the hazard lives in the
+    /// *tests*, so a direct `xcodebuild test -only-testing:…` walked straight past it. AUDIT
+    /// 6.18 recorded that, and recorded it as observed rather than hypothesised: it destroyed
+    /// the simulator installation the P5.S13 field test was using.
+    ///
+    /// The fix could have gone in `MessagingFixture`, which is the fixture that did the damage.
+    /// It is here instead because a fixture protects the tests someone has already written.
+    /// Every path into this module's storage goes through `Keychain.shared` — including
+    /// `CryptoEngine.open`, which is the public entry point an app-side test naturally reaches
+    /// for — so redirecting it once covers the fixtures nobody has written yet.
+    ///
+    /// ## Why the detection is what it is
+    ///
+    /// `XCTestCase` being loadable means the XCTest framework is in this process, which for an
+    /// app-hosted suite (AUDIT 6.6) is the host app itself. The environment variable is the
+    /// signal `xcodebuild` sets and is checked as well, so neither mechanism alone is load
+    /// bearing. A developer running the app in Debug by hand matches neither and keeps their
+    /// account, which is the behaviour to preserve — this must protect real state from tests,
+    /// not make Debug a second, quieter account.
+    ///
+    /// Fenced out of Release entirely. A shipping binary contains neither the branch nor the
+    /// string, which is the rule 5.6 and 5.11 exist to enforce: `#if DEBUG` fences code, and
+    /// gate 16 greps the whole Release bundle for what leaks past it anyway.
+    internal static let shared: Keychain = {
+        let environment = ProcessInfo.processInfo.environment
+        let underTest = NSClassFromString("XCTestCase") != nil
+            || environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+        return Keychain(service: underTest ? testService : productionService)
+    }()
+    #else
+    internal static let shared = Keychain(service: productionService)
+    #endif
 
     internal init(service: String) {
         self.service = service
