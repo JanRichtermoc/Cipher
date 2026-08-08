@@ -23,7 +23,15 @@ is updated in the same commit.
 was found. What matters going forward is what must stay true and what would notice if it stopped
 being true. Compressed 2026-07-29; the narratives are recoverable from git history.
 
-Last reviewed: 2026-08-08, after **P8.S05 re-checked the required-reason enumeration** and found it unchanged — the dependency has not moved since P1.S11 performed it, both judgement calls still hold, and the gate exits 0 against the Release build. One thing it did find: **Apple restructured the documentation**, moving the per-category API lists off the article and onto `NSPrivacyAccessedAPIType`, so a later re-check reading only the old page finds no lists and could mistake that for the requirement lapsing. Recorded in `PRIVACY_MANIFEST.md`. Before it, **P8.S04 decided there will be no notification-service extension**.
+Last reviewed: 2026-08-08, after **P8.S08 decided against crash reporting entirely** and enforced it
+at the only place a dependency can enter the app: `verify-supply-chain.sh` now refuses a `Podfile`
+declaring anything but LibSignalClient, which discharges `THREAT_MODEL.md` §4.1 and §4.4 together.
+Recognising reporter SDKs by name would be a list that ages; refusing every dependency does not.
+**The first version of that check was wrong in the dangerous direction, and review caught it:** it
+matched only `pod 'X'`, so `pod('X')` — the same Ruby DSL method, called with parentheses — was
+reported as "LibSignalClient is the only declared dependency". Reproduced against the real Podfile
+before the fix and pinned by a self-test case afterwards, because a false negative here ships the
+SDK. Before it, **P8.S05 re-checked the required-reason enumeration** and found it unchanged — the dependency has not moved since P1.S11 performed it, both judgement calls still hold, and the gate exits 0 against the Release build. One thing it did find: **Apple restructured the documentation**, moving the per-category API lists off the article and onto `NSPrivacyAccessedAPIType`, so a later re-check reading only the old page finds no lists and could mistake that for the requirement lapsing. Recorded in `PRIVACY_MANIFEST.md`. Before it, **P8.S04 decided there will be no notification-service extension**.
 **4.4 is ACCEPTED by withdrawing its requirement rather than by meeting it** — none of its three
 blockers was ever on the path to notifications, because the thing that must decrypt while the device
 is locked is **wake-only push in the app's own process**, not an extension. The prohibition on adding

@@ -96,6 +96,56 @@ check_podfile_pins_a_commit() {
   fi
 }
 
+# check_libsignal_is_the_only_pod enforces THREAT_MODEL.md §4.1.
+#
+# The comment above check_podfile_pins_a_commit has always said that libsignal
+# being the only dependency is what makes "no tag anywhere" exact, and that a
+# second pod "would be a supply-chain review in its own right" — but nothing
+# made that true. This does. §4.1 is a standing prohibition ("No analytics. No
+# telemetry. No third-party SDKs"), and §4.4 forbids a crash reporter that could
+# capture plaintext; both are enforced here at the only place a dependency can
+# enter the app, which is cheaper and more exact than trying to recognise every
+# reporter SDK by name (P8.S08).
+#
+# Refuses a Podfile with **no** pod line as well as one with too many: a check
+# whose "nothing forbidden found" answer is also its "I read nothing" answer is
+# not a check (AUDIT R2).
+check_libsignal_is_the_only_pod() {
+  local root="$1"
+  local podfile="$root/Podfile"
+  local code names extra
+  if [ ! -f "$podfile" ]; then
+    fail "no Podfile at $podfile"
+    return
+  fi
+  # Comments stripped first, so the paragraph above — which names the very thing
+  # it forbids — cannot trip it (AUDIT R3).
+  code="$(strip_ruby_comments "$podfile")"
+
+  # A Podfile is Ruby and `pod` is a method, so `pod 'X'`, `pod "X"` and `pod('X')`
+  # are all the same declaration. The first version of this matched only the
+  # space-separated form and therefore reported "LibSignalClient is the only
+  # declared dependency" for a Podfile containing `pod('FirebaseCrashlytics')` —
+  # a false negative, which is the direction that ships the SDK. Found in review.
+  #
+  # `[^_[:alnum:]]` before the keyword keeps `podspec` and `my_pod` from matching.
+  names="$(printf '%s\n' "$code" \
+    | grep -oE "(^|[^_[:alnum:]])pod[[:space:]]*\(?[[:space:]]*['\"][^'\"]+['\"]" \
+    | grep -oE "['\"][^'\"]+['\"]" | tr -d "\"'" | sort -u)"
+
+  if [ -z "$names" ]; then
+    fail "the Podfile declares no pod at all — this check read nothing, which is not a pass"
+    return
+  fi
+
+  extra="$(printf '%s\n' "$names" | grep -v '^LibSignalClient$' || true)"
+  if [ -n "$extra" ]; then
+    fail "the Podfile declares a dependency other than LibSignalClient: $(printf '%s' "$extra" | tr '\n' ',') — every dependency is an exfiltration path and a supply-chain risk (THREAT_MODEL.md §4.1), and a crash reporter is specifically forbidden (§4.4)"
+  else
+    pass "LibSignalClient is the only declared dependency"
+  fi
+}
+
 # check_lock_records_the_audited_commit asserts what the last resolution actually
 # produced, which is a different question from what the Podfile asks for.
 check_lock_records_the_audited_commit() {
@@ -128,6 +178,7 @@ check_no_retired_snapshot() {
 
 run_offline_checks() {
   check_podfile_pins_a_commit "$1"
+  check_libsignal_is_the_only_pod "$1"
   check_lock_records_the_audited_commit "$1"
   check_no_retired_snapshot "$1"
 }
@@ -207,6 +258,31 @@ EOF
   printf 'PODS:\n  - LibSignalClient (%s)\nCHECKOUT OPTIONS:\n    :commit: %s\n' \
     "$LIBSIGNAL_VERSION" "0000000000000000000000000000000000000000" >"$tmp/Podfile.lock"
   expect fail "a lockfile pinning an unaudited commit"
+
+  # THREAT_MODEL.md §4.1 / §4.4, both directions. A second pod is refused, and so
+  # is a Podfile with none at all — otherwise "found nothing forbidden" and "read
+  # nothing" would be the same verdict.
+  cat >"$tmp/Podfile" <<EOF
+pod 'LibSignalClient', git: PINS['LIBSIGNAL_GIT_URL'], commit: PINS['LIBSIGNAL_COMMIT']
+pod 'FirebaseCrashlytics'
+EOF
+  expect fail "a second pod beside libsignal"
+
+  # The parenthesised form is Ruby's other calling convention for the same DSL
+  # method, and the first version of this check matched only the space-separated
+  # one — so `pod('FirebaseCrashlytics')` was reported as "LibSignalClient is the
+  # only declared dependency". Found in review, and pinned here so it cannot
+  # return: a false negative here ships the SDK.
+  cat >"$tmp/Podfile" <<EOF
+pod 'LibSignalClient', git: PINS['LIBSIGNAL_GIT_URL'], commit: PINS['LIBSIGNAL_COMMIT']
+pod('FirebaseCrashlytics')
+EOF
+  expect fail "a second pod declared with parentheses"
+
+  : >"$tmp/Podfile"
+  expect fail "a Podfile declaring no pod at all"
+
+  good_podfile
 
   good_lock
   : >"$tmp/libsignal-main.zip"
