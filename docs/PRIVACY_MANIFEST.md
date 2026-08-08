@@ -1,7 +1,8 @@
 # Required-reason API enumeration
 
-**Closes:** AUDIT 6.1 · **Plan step:** P1.S11 (finishes in P8.S05)
+**Closes:** AUDIT 6.1 · **Plan step:** P1.S11, re-checked and finished in P8.S05
 **Verified:** 2026-07-28, against libsignal `v0.99.1` / `97801d22dcf9f5bf714f7b8fa3212cdc973ae1c8`
+**Re-verified:** 2026-08-08 (P8.S05) — see [Re-check](#re-check-2026-08-08-p8s05)
 **Enforced by:** [`Scripts/verify-privacy-manifest.sh`](../Scripts/verify-privacy-manifest.sh),
 invoked by [`Scripts/verify-all.sh`](../Scripts/verify-all.sh)
 
@@ -81,5 +82,61 @@ detected, which usually means the dependency changed under us.
 Re-run the Swift source grep by hand on a bump; it is not automated because it depends on
 `Pods/` being present, and the useful half (the C symbols) is already covered mechanically.
 
-**Still outstanding for submission** — neither is an engineering determination:
-`ITSAppUsesNonExemptEncryption` (AUDIT 6.3) and the libsignal acknowledgements screen (AUDIT 6.2).
+**Still outstanding for submission:** `ITSAppUsesNonExemptEncryption` (AUDIT 6.3), which is a legal
+determination rather than an engineering one. The libsignal acknowledgements screen shipped in
+P8.S07 and AUDIT 6.2 is closed.
+
+---
+
+## Re-check 2026-08-08 (P8.S05)
+
+P8.S05 is a re-check rather than unfinished work: P1.S11 closed 6.1 outright. Three things were
+asked, and all three hold.
+
+### The dependency has not moved
+
+`Vendor/libsignal/PINS.env` still pins `LIBSIGNAL_VERSION=0.99.1` and
+`LIBSIGNAL_COMMIT=97801d22dcf9f5bf714f7b8fa3212cdc973ae1c8` — byte for byte the version the
+enumeration above was performed against. "Re-verify against whatever libsignal version ships" has
+the strongest possible answer here: it is the same one, so the July findings describe the current
+bundle rather than a predecessor of it. The Swift source grep was therefore not re-run by hand; the
+note above makes that conditional on a bump, and there has not been one.
+
+### Judgement call 1 — `C617.1` for libsignal's `fstat` — still holds
+
+It holds "only while Cipher never hands libsignal a path", so that is what was re-checked rather
+than the reasoning restated. Every file importing `LibSignalClient` was searched for `URL`,
+`contentsOf`, `.path` and `FileManager`: **every hit is either Cipher's own container URL**
+(`CryptoEngine.root`, `defaultContainer`, `destroyPersistedState`) **or `Data.append(contentsOf:)`**,
+which is a byte append and not a path. No libsignal call takes a path. `MessageBackup`,
+`ComparableBackup` and `validateBackup` — the realistic future breakers named above — appear nowhere
+in the tree.
+
+**The step most likely to have broken this since July was P6.S04**, which added attachments and
+therefore files. It did not: `AttachmentCipher` imports `CryptoKit`, not `LibSignalClient`, so the
+blob path never approaches the crypto library.
+
+### Judgement call 2 — `clock_gettime` and `gettimeofday` still off Apple's list — still holds
+
+Checked against Apple's live documentation rather than from memory, and the check found that
+**Apple has restructured the page**. "Describing use of required reason API" no longer inlines the
+per-category API lists; it now says they "are described in the documentation for the dictionary
+keys", and the lists live under `NSPrivacyAccessedAPIType`. Recorded because a future re-check that
+looks only at the old article will find no lists at all and could mistake that for the requirement
+having gone away.
+
+Against the current page: all five category names are still present, and so are `mach_absolute_time`,
+`systemUptime`, `fstat`, `statfs`, `getattrlist` and `activeInputModes` — the symbols the enumeration
+reasoned about are all still on their lists. **`clock_gettime` and `gettimeofday` appear nowhere on
+it.** The search was a whole-document match rather than one scoped to a rendering node type, so a
+symbol named through a link rather than as code would still have been found, and it carried a
+control in both directions: a token that must be present was found, and a fabricated one was not.
+
+Apple's own wording on that page is the reason this re-check is scheduled at all: *"Apple continually
+reviews the list of required reason APIs and reasons for usage, and will update this article from
+time to time."*
+
+### The gate, against the Release build
+
+`Scripts/verify-privacy-manifest.sh` run against `Release-iphoneos/Cipher.app` exits **0**: three
+Mach-O binaries scanned, two categories found, two declared.
