@@ -50,7 +50,11 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
     /// how three tests here first "failed" against correct production code, and exactly the shape
     /// of a test harness that reports the wrong culprit.
     nonisolated(unsafe) private static var routes: [String: [Reply]] = [:]
-    nonisolated(unsafe) private(set) static var received: [(route: String, body: Data)] = []
+    /// `authorization` is the raw `Authorization` header, recorded so a test can assert *which*
+    /// credential a request carried rather than only that the route was reached (P6.S05). Test
+    /// tokens only — nothing here ever sees a real one.
+    nonisolated(unsafe) private(set) static var received:
+        [(route: String, body: Data, authorization: String?)] = []
     nonisolated(unsafe) private static var blockedRoute: String?
     nonisolated(unsafe) private static var blocksRemaining = 0
     private static let routeStarted = DispatchSemaphore(value: 0)
@@ -74,6 +78,11 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
 
     static func requests(_ route: String) -> [Data] {
         stateLock.withLock { received.filter { matches($0.route, route) }.map(\.body) }
+    }
+
+    /// The `Authorization` headers seen on a route, in order.
+    static func authorizations(_ route: String) -> [String?] {
+        stateLock.withLock { received.filter { matches($0.route, route) }.map(\.authorization) }
     }
 
     static func count(_ route: String) -> Int { requests(route).count }
@@ -160,8 +169,9 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
         // `httpBody` is nil for a body set on an upload task; these requests all set it
         // directly, and `bodyStreamData` covers the case where URLSession converted it.
         let body = request.httpBody ?? Self.bodyStreamData(request) ?? Data()
+        let authorization = request.value(forHTTPHeaderField: "Authorization")
         let (reply, shouldBlock): (Reply, Bool) = Self.stateLock.withLock {
-            Self.received.append((route, body))
+            Self.received.append((route, body, authorization))
             let match = Self.routes
                 .filter { Self.matches(route, $0.key) }
                 .max { $0.key.count < $1.key.count }

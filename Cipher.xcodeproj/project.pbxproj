@@ -28,6 +28,7 @@
 		3E30D3D43CA5CA698EF66F86 /* ZeroizationRealityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 323F9EC08DCEA062B0E6744B /* ZeroizationRealityTests.swift */; };
 		4095C946EBDC8A98D931B170 /* CipherCrypto.framework in Embed CipherCrypto */ = {isa = PBXBuildFile; fileRef = 27EE9F4D2EFA47454597A13F /* CipherCrypto.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		42444794203CDA405F1F4371 /* RecordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1DF201C6145D494A7D1ADBAE /* RecordStoreTests.swift */; };
+		4525FC93522E509C81066832 /* SessionRevocationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8137513A9D13EAB098201D80 /* SessionRevocationTests.swift */; };
 		46FAADBFFF4E0C3AAC1CDAEA /* CryptoEngine.swift in Sources */ = {isa = PBXBuildFile; fileRef = D46484753741BE4F05CD2A0C /* CryptoEngine.swift */; };
 		49473F83884C8E7F8EE33B3D /* Foundation.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 8CF345C885BFDA0D8BD6942C /* Foundation.framework */; };
 		4982E20FD79AAF70F4A33C2E /* DisappearingMessageTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7E63F2B8727ED042BA2CE100 /* DisappearingMessageTests.swift */; };
@@ -154,6 +155,7 @@
 		6EF09E7309429B1C09D08A24 /* PublishedKeys.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PublishedKeys.swift; path = CipherCrypto/Sources/Engine/PublishedKeys.swift; sourceTree = SOURCE_ROOT; };
 		770D65600DB8D4BFC2347640 /* ConversationArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/ConversationArchiveTests.swift; sourceTree = SOURCE_ROOT; };
 		7E63F2B8727ED042BA2CE100 /* DisappearingMessageTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/DisappearingMessageTests.swift; sourceTree = SOURCE_ROOT; };
+		8137513A9D13EAB098201D80 /* SessionRevocationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/SessionRevocationTests.swift; sourceTree = SOURCE_ROOT; };
 		8CF345C885BFDA0D8BD6942C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		92B1E7C0CE0ECC8CAF4C76F8 /* Pods-CipherTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CipherTests.release.xcconfig"; path = "Target Support Files/Pods-CipherTests/Pods-CipherTests.release.xcconfig"; sourceTree = "<group>"; };
 		9709CFFEEA416EEFA7150FEF /* Envelope.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Envelope.swift; path = CipherCrypto/Sources/Wire/Envelope.swift; sourceTree = SOURCE_ROOT; };
@@ -269,6 +271,7 @@
 				22FCDC82AD1D238DDE0A000B /* RelayTransportTests.swift */,
 				7E63F2B8727ED042BA2CE100 /* DisappearingMessageTests.swift */,
 				031D0ECC3B1C1C4FAF1A9904 /* AttachmentTests.swift */,
+				8137513A9D13EAB098201D80 /* SessionRevocationTests.swift */,
 			);
 			path = CipherTests;
 			sourceTree = "<group>";
@@ -763,6 +766,7 @@
 				AABC215130C4E06664A499C7 /* RelayTransportTests.swift in Sources */,
 				4982E20FD79AAF70F4A33C2E /* DisappearingMessageTests.swift in Sources */,
 				22FA119E18F369D5B9CEAF31 /* AttachmentTests.swift in Sources */,
+				4525FC93522E509C81066832 /* SessionRevocationTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

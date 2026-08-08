@@ -23,8 +23,16 @@ is updated in the same commit.
 was found. What matters going forward is what must stay true and what would notice if it stopped
 being true. Compressed 2026-07-29; the narratives are recoverable from git history.
 
-Last reviewed: 2026-08-08, after P6.S04 built attachments that are encrypted before they are
-uploaded. **No finding changed status, and no new one was opened.** Two things are worth recording
+Last reviewed: 2026-08-08, after P6.S05 closed the block-list and device-revoke step by finding
+both halves of its own definition of done already satisfied. **No finding changed status.** Two
+things it recorded. `revokeDevice` was a `MockStore` method and went with the mock in **P5.S10**
+— the only remaining mention of it anywhere was the roadmap row asking for its removal, which is
+worth noticing as a class: a step can be completed as a side effect and stay open on paper for
+three phases. And **3.6**'s locked single-device decision is what makes "revoke observable
+server-side" mean the *session token* rather than a second device; that call existed, was made on
+the account-cleanup path, and was asserted by nothing until now — the same shape as **5.36**,
+where a launch-time retry was dead code that read as live. Before it, P6.S04 built attachments
+that are encrypted before they are uploaded. **No finding changed status, and no new one was opened.** Two things are worth recording
 anyway. The relay half needed nothing: **5.22**'s byte quota and **5.23**'s delete limit were
 already enforced, so the client was built against a store that already refused what it should.
 And **5.21** grew a second instalment rather than reopening: the full-screen media viewer carried a

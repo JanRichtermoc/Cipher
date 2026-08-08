@@ -111,12 +111,12 @@ struct CallRecord: Identifiable, Hashable {
     }
 }
 
-struct LinkedDevice: Identifiable, Hashable {
-    let id: UUID
-    var name: String
-    var lastActiveLabel: String
-    var isCurrent: Bool
-}
+// `LinkedDevice` was removed in P6.S05. It modelled a row in a fabricated device list whose
+// Revoke button called a `MockStore.revokeDevice` that no longer exists (retired with the mock
+// itself in P5.S10), and nothing had constructed one since. Single device is a locked decision
+// — `Envelope` carries no `deviceId` at all (plan §0.2.5, AUDIT 3.6) — so a type describing a
+// second device is not a placeholder for future work, it is a shape the wire format has no room
+// for. `LinkedDevicesView` says exactly that and lists nothing.
 
 struct SearchHit: Identifiable, Hashable {
     let id: UUID
