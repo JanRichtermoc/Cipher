@@ -319,6 +319,18 @@ Violating any of these is a security regression regardless of what it enables:
 3. **No server-side contact discovery.**
 4. **No crash reporting that can capture plaintext or key material** — none, or a redacting pipeline
    that provably cannot.
+   - **Decided 2026-08-08 (P8.S08): none.** Not "none for now" — the redacting-pipeline option was
+     considered and rejected, because a reporter that provably cannot capture plaintext is a much
+     harder thing to build than it sounds. A crash report is a stack walk plus register and heap
+     state, and this process holds the identity private key, the record key, decrypted message
+     bodies and session tokens in memory by design; "provably cannot" would mean proving a
+     third-party symbolicator never receives any of it, across every future version of that SDK.
+     The alternative on offer is a device-side `os_log` that never leaves the phone, which Cipher
+     already has, and losing crash telemetry costs a five-person circle a debugging convenience.
+   - **Enforced where a dependency actually enters**: `verify-supply-chain.sh` refuses a `Podfile`
+     that declares anything but LibSignalClient, which is prohibition 1 above and this one at the
+     same choke point. Recognising reporter SDKs by name would be a list that ages; refusing every
+     dependency does not.
 5. **No phone or email identifiers** (§3.4).
 6. **Never log** private keys, session or ratchet state, plaintext, tokens, invite codes, safety
    numbers, or raw `ProtocolAddress`.
