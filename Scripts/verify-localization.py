@@ -157,6 +157,14 @@ DENY_EXACT = [
     ("Skupiny", "Czech rendering of the empty production groups filter"),
     ("No Groups", "the production groups filter can only be empty (AUDIT 3.7, 5.30)"),
     ("Žádné skupiny", "Czech rendering of the empty production groups result"),
+    # Both forms are recovered from the tree rather than guessed: the retired control was
+    # `Button("Revoke", role: .destructive) { store.revokeDevice(device.id) }` over a
+    # fabricated device list, and the catalog carried "Odvolat" beside it until P5.S10
+    # removed the mock with `MockStore`. Exact rather than substring, because the honest
+    # replacement copy legitimately says there is "nothing here to revoke".
+    ("Revoke", "single device is a locked decision; there is no second device to revoke "
+               "(plan §0.2.5, AUDIT 3.6)"),
+    ("Odvolat", "Czech rendering of the retired device-revoke control"),
 ]
 
 # Terms honest only in a sentence someone has read. Every occurrence — each translation
@@ -500,6 +508,24 @@ SELF_TESTS = [
         {"Skip to App": (True, "X.swift:1")},
         {"Skip to App": {"localizations": {"cs": {"stringUnit": {"value": "Přeskočit do aplikace"}}}}},
         "used only behind #if DEBUG",
+    ),
+    (
+        # P6.S05. The English label and its translation are separate defects: removing the
+        # button leaves the Czech stringUnit behind, which is AUDIT 5.4's exact shape.
+        "C: retired device-revoke control",
+        {"Revoke": (False, "X.swift:1")},
+        {"Revoke": {}},
+        "'Revoke'",
+    ),
+    (
+        "C: retired Czech device-revoke control",
+        {"Revoke access": (False, "X.swift:1")},
+        {
+            "Revoke access": {
+                "localizations": {"cs": {"stringUnit": {"value": "Odvolat"}}}
+            }
+        },
+        "'Odvolat'",
     ),
     (
         "C: retired claim in the source language",
