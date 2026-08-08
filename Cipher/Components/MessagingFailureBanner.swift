@@ -64,6 +64,11 @@ struct MessagingFailureBanner: View {
             return "You blocked this contact. Unblock them to send."
         case .messageTooLarge:
             return "That message is too long to send."
+        case .attachmentUnavailable:
+            // One sentence for a blob that is gone and for one that failed its integrity
+            // check, because the recipient can act on neither and the distinction is exactly
+            // what a hostile relay would like to learn from this device (P6.S04).
+            return "That attachment could not be opened. It may have expired on the relay."
         case .rateLimited:
             return "The relay is rate-limiting this device. Wait a few minutes."
         case .unreachable:

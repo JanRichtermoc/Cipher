@@ -45,6 +45,7 @@ actor MessageRepository {
     private let archive: ConversationArchive
     private let directory: RelayKeyDirectory
     private let mailbox: RelayMailbox
+    private let blobs: RelayBlobStore
     private let sessions: SessionStore
     private let now: @Sendable () -> Date
     /// Serialises operations which span the relay, crypto actor and archive. Actor isolation
@@ -74,6 +75,7 @@ actor MessageRepository {
         archive: ConversationArchive? = nil,
         directory: RelayKeyDirectory = RelayKeyDirectory(),
         mailbox: RelayMailbox = RelayMailbox(),
+        blobs: RelayBlobStore = RelayBlobStore(),
         sessions: SessionStore = SessionStore(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
@@ -81,6 +83,7 @@ actor MessageRepository {
         self.archive = archive ?? ConversationArchive(engine: engine)
         self.directory = directory
         self.mailbox = mailbox
+        self.blobs = blobs
         self.sessions = sessions
         self.now = now
     }
@@ -119,6 +122,13 @@ actor MessageRepository {
         case relayRefused
         /// The sealed container could not be read or written. Nothing was acknowledged.
         case storageUnavailable
+        /// The attachment could not be produced or opened (P6.S04): the blob is gone from the
+        /// relay, or the bytes it answered with are not the ones the message describes.
+        ///
+        /// Deliberately one case for both. A recipient can act on neither, and separating
+        /// "expired" from "failed its integrity check" would let a hostile relay learn which
+        /// of its answers this device rejected and why.
+        case attachmentUnavailable
     }
 
     // MARK: - Registration
@@ -455,11 +465,26 @@ actor MessageRepository {
     /// an app killed for a week must delete on the way back up, before anything is drawn.
     @discardableResult
     func sweepExpiredMessages() async throws -> Int {
+        let deleted: Int
         do {
-            return try await archive.deleteExpiredMessages(now: Self.milliseconds(now()))
+            deleted = try await archive.deleteExpiredMessages(now: Self.milliseconds(now()))
         } catch {
             throw Failure.storageUnavailable
         }
+        // The media half of the same deletion, in the same call rather than left to the caller
+        // (P6.S04). A message that disappeared while its cached attachment stayed on disk would
+        // be exactly the "hide rather than delete" this feature exists to avoid — the row is
+        // what held the key, so the file is unopenable, but unreachable is not gone.
+        if deleted > 0 {
+            do {
+                _ = try await wipeOrphanedAttachments()
+            } catch {
+                // The rows are gone and their keys with them, so the retry that matters has
+                // already happened. The launch sweep finishes the unlink.
+                AppLog.store.error("expired attachments were not unlinked; the next sweep retries")
+            }
+        }
+        return deleted
     }
 
     func setNickname(_ nickname: String?, for peer: UUID) async throws {
@@ -602,6 +627,234 @@ actor MessageRepository {
             AppLog.store.error("could not record a send as delivered to the relay")
         }
         return stored
+    }
+
+    // MARK: - Attachments (P6.S04)
+
+    /// Encrypts `bytes`, uploads the ciphertext, and sends a message pointing at it.
+    ///
+    /// ## Encrypt, then upload — never the other way round
+    ///
+    /// `AttachmentCipher.seal` runs first and the relay only ever receives its output. The
+    /// anti-goal the roadmap names is "upload then encrypt", which is the ordering that reads
+    /// as an optimisation and hands the plaintext to a host the threat model assumes is
+    /// seizable. `RelayBlobStore` cannot express the wrong order — its parameter is ciphertext
+    /// and it has no way to make any — but the ordering is stated here because this is where it
+    /// would be reversed.
+    ///
+    /// ## Why this one is not "durable first"
+    ///
+    /// A text send stores before it transmits, so a message the user typed survives a network
+    /// failure. An attachment cannot: the stored message *is* a pointer, and there is no id to
+    /// point at until the upload commits. Storing first would mean a bubble that can never
+    /// resolve, on a device that has no copy of the bytes either. The source image is still in
+    /// the user's library, so a failed upload loses nothing that cannot be repeated — which is
+    /// the opposite of the text case, where the composed text existed nowhere else.
+    ///
+    /// The ciphertext is cached locally **before** the message is stored, so a sender can see
+    /// its own photo without downloading back what it just uploaded.
+    @discardableResult
+    func sendAttachment(bytes: Data, to peer: UUID) async throws
+        -> ConversationArchive.StoredMessage {
+        try await operationGate.withExclusiveAccess {
+            try await sendAttachmentExclusively(bytes: bytes, to: peer)
+        }
+    }
+
+    private func sendAttachmentExclusively(bytes: Data, to peer: UUID) async throws
+        -> ConversationArchive.StoredMessage {
+        let credential = try activeCredential()
+        let token = credential.token
+        guard await localAci() == credential.aci else { throw Failure.accountMismatch }
+
+        let conversation = try await startConversation(with: peer, nickname: nil)
+        guard !conversation.isBlocked else { throw Failure.blocked }
+
+        // The session comes **before** the upload, which is the opposite order to a text send
+        // and is deliberate.
+        //
+        // A text send that is refused leaves nothing behind. This one would leave a blob on the
+        // relay: a week of ciphertext nobody holds a key for, charged to this account's daily
+        // quota, for a message that was never sent. Establishing first means the two refusals
+        // that are known before any bytes are encrypted — a peer with no published bundle, and
+        // a changed identity key the user has not accepted (locked decision §0.2.1, raised by
+        // `startSession`) — cost nothing on the relay.
+        //
+        // **The residual, stated:** a key that changes on an *already established* session is
+        // not seen here, because there is no bundle to process. `encrypt` below still refuses
+        // it, after the upload. Closing that would need a local trust pre-check, and this build
+        // has no way to test one — both engines in the app test fixture share a Keychain
+        // identity, so a changed peer key cannot be constructed at that layer.
+        try await establishSessionIfNeeded(with: peer, token: token)
+
+        let sealed: AttachmentCipher.Sealed
+        do {
+            sealed = try AttachmentCipher.seal(bytes)
+        } catch AttachmentCipherError.tooLarge {
+            throw Failure.messageTooLarge
+        } catch {
+            throw Failure.attachmentUnavailable
+        }
+
+        let blobId: UUID
+        do {
+            blobId = try await blobs.upload(ciphertext: sealed.ciphertext, token: token)
+        } catch let failure as RelayBlobStore.Failure {
+            throw Self.mapped(failure)
+        }
+
+        // Cached before the message that names it, and a cache failure is not fatal: the blob
+        // is on the relay and this device can fetch it back like any recipient would. Refusing
+        // the send here would throw away an upload that has already succeeded.
+        do {
+            try await engine.storeAttachment(id: blobId, ciphertext: sealed.ciphertext)
+        } catch {
+            AppLog.store.error("an uploaded attachment could not be cached locally")
+        }
+
+        let ttlSeconds = conversation.disappearingSeconds.flatMap {
+            $0 > 0 ? UInt32(exactly: $0) : nil
+        }
+        let sentAtMs = Self.milliseconds(now())
+
+        let payload: Data
+        do {
+            payload = try MessagePayload(content: .attachment(MessagePayload.Attachment(
+                blobId: blobId, key: sealed.key, digest: sealed.digest,
+                byteCount: sealed.plaintextByteCount, ttlSeconds: ttlSeconds))).encode()
+        } catch {
+            throw Failure.attachmentUnavailable
+        }
+
+        var stored: ConversationArchive.StoredMessage
+        do {
+            stored = try await archive.append(
+                to: peer, direction: .outgoing, text: "",
+                timestampMs: sentAtMs, state: .sending,
+                expiresAtMs: ttlSeconds.map { sentAtMs + UInt64($0) * 1000 },
+                attachment: ConversationArchive.StoredAttachment(
+                    blobId: blobId, key: sealed.key, digest: sealed.digest,
+                    byteCount: sealed.plaintextByteCount))
+        } catch {
+            throw Failure.storageUnavailable
+        }
+
+        do {
+            let envelope = try await engine.encrypt(payload, to: PeerAddress(aci: peer))
+            try await mailbox.send(envelope: envelope, to: peer, token: token)
+        } catch {
+            stored.state = .failed
+            try? await archive.updateMessage(stored, in: peer)
+            throw Self.mapped(error)
+        }
+
+        stored.state = .sent
+        do {
+            try await archive.updateMessage(stored, in: peer)
+        } catch {
+            AppLog.store.error("could not record a send as delivered to the relay")
+        }
+        return stored
+    }
+
+    /// The decrypted bytes of the attachment on one message, fetching the blob if this device
+    /// does not already hold it.
+    ///
+    /// ## Fetched on first open, not on receive
+    ///
+    /// The receive path files the pointer and stops. Downloading there would mean every device
+    /// pulls every attachment sent to it whether or not anyone looks at one, which spends the
+    /// recipient's bandwidth and — worse — tells the relay that a specific account fetched a
+    /// specific blob at the moment it was delivered. Fetching on open decouples the two.
+    ///
+    /// ## The relay's copy is deleted once this device holds it
+    ///
+    /// The recipient is the caller `BACKEND.md` describes for `DELETE /v1/blobs/{id}`: once the
+    /// bytes are verified and cached locally, the relay's copy is retention with no remaining
+    /// purpose, and ending it early is strictly better than waiting out the seven-day TTL on a
+    /// host assumed seizable. Best-effort — a failure leaves the TTL to do it.
+    ///
+    /// **The sender never deletes**, and that asymmetry is deliberate: a sender whose own copy
+    /// expired cannot know whether the recipient has fetched yet, so deleting there would be a
+    /// way to destroy an attachment that was still in flight.
+    func attachmentBytes(ordinal: Int, in peer: UUID) async throws -> Data {
+        let stored: ConversationArchive.StoredMessage?
+        do {
+            stored = try await archive.message(ordinal: ordinal, in: peer)
+        } catch {
+            throw Failure.storageUnavailable
+        }
+        guard let attachment = stored?.attachment else { throw Failure.attachmentUnavailable }
+
+        if let cached = try? await engine.attachmentCiphertext(id: attachment.blobId) {
+            return try Self.open(cached, with: attachment)
+        }
+
+        let credential = try activeCredential()
+        let ciphertext: Data
+        do {
+            ciphertext = try await blobs.download(
+                id: attachment.blobId,
+                expectedByteCount: AttachmentCipher.ciphertextSize(
+                    forPlaintext: attachment.byteCount),
+                token: credential.token)
+        } catch let failure as RelayBlobStore.Failure {
+            throw Self.mapped(failure)
+        }
+
+        // Opened before it is cached, so bytes that fail their integrity checks never reach
+        // the disk in the first place.
+        let plaintext = try Self.open(ciphertext, with: attachment)
+
+        do {
+            try await engine.storeAttachment(id: attachment.blobId, ciphertext: ciphertext)
+            // Only now, and only because this device is holding a verified copy.
+            try? await blobs.delete(id: attachment.blobId, token: credential.token)
+        } catch {
+            AppLog.store.error("a downloaded attachment could not be cached locally")
+        }
+        return plaintext
+    }
+
+    private static func open(
+        _ ciphertext: Data, with attachment: ConversationArchive.StoredAttachment
+    ) throws -> Data {
+        do {
+            return try AttachmentCipher.open(
+                ciphertext: ciphertext, key: attachment.key, digest: attachment.digest,
+                plaintextByteCount: attachment.byteCount)
+        } catch {
+            // Undifferentiated, as `AttachmentCipher` documents: which check refused is not
+            // something the relay may learn from this device's behaviour.
+            throw Failure.attachmentUnavailable
+        }
+    }
+
+    /// Unlinks cached attachment ciphertext that no stored message points at any more.
+    ///
+    /// The second half of "wiped on delete or disappear". The first half is already done by the
+    /// time this runs: the key lived in the message row, so removing the row left ciphertext no
+    /// key on this device can open. This removes the ciphertext as well, because unreachable is
+    /// not the same as gone (`THREAT_MODEL.md` §3.1) — the whole reason the relay's own
+    /// retention policy deletes rather than flags.
+    ///
+    /// Driven by the caller rather than by a timer, and only where something can have been
+    /// orphaned: after a sweep or a deletion that removed rows, and once at launch, which is
+    /// also what finishes an unlink a previous run was killed during.
+    ///
+    /// - Returns: how many cached blobs went.
+    @discardableResult
+    func wipeOrphanedAttachments() async throws -> Int {
+        do {
+            // The cheap half first. A device with no cached attachments — every device until
+            // someone sends one — pays a directory listing and nothing else, where deriving
+            // the live set means decoding every message row in the archive.
+            guard try await !engine.cachedAttachmentIds().isEmpty else { return 0 }
+            let live = try await archive.attachmentIdsInUse()
+            return try await engine.removeAttachments(except: live).count
+        } catch {
+            throw Failure.storageUnavailable
+        }
     }
 
     /// Ensures a session exists, fetching the peer's bundle if not.
@@ -796,6 +1049,20 @@ actor MessageRepository {
             case .unreachable: return .unreachable
             case .serverUnavailable: return .relayUnavailable
             case .malformedResponse: return .relayRefused
+            }
+        }
+
+        if let failure = error as? RelayBlobStore.Failure {
+            switch failure {
+            case .unauthenticated: return .sessionRejected
+            case .rateLimited: return .rateLimited
+            case .unreachable: return .unreachable
+            case .serverUnavailable: return .relayUnavailable
+            case .tooLarge: return .messageTooLarge
+            // A blob that is gone and a blob the relay answered wrongly for are the same
+            // outcome to the caller, and `attachmentUnavailable` says so without inviting a
+            // retry that cannot succeed.
+            case .notFound, .malformedResponse: return .attachmentUnavailable
             }
         }
 

@@ -123,6 +123,14 @@ struct MessageBubbleView: View {
                 .font(.body)
         case .emoji:
             EmptyView()
+        case .photo:
+            Button {
+                onOpenMedia?()
+            } label: {
+                AttachmentImageView(
+                    message: message, thumbnailSize: CGSize(width: 200, height: 140))
+            }
+            .buttonStyle(.plain)
         case .image(let systemName, let caption):
             VStack(alignment: .leading, spacing: 8) {
                 Button {

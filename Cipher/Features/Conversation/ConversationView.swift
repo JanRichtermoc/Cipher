@@ -3,6 +3,7 @@
 //  Cipher
 //
 
+import PhotosUI
 import SwiftUI
 
 struct ConversationView: View {
@@ -11,6 +12,7 @@ struct ConversationView: View {
 
     @State private var draft = ""
     @State private var showAttach = false
+    @State private var pickedPhoto: PhotosPickerItem?
     @State private var showInfo = false
     @State private var showForward = false
     @State private var forwardingMessage: Message?
@@ -159,12 +161,25 @@ struct ConversationView: View {
                 #endif
             }
         }
-        #if DEBUG
-        .sheet(isPresented: $showAttach) {
-            AttachmentSheet()
-                .presentationDetents([.medium])
+        // The system picker, not a custom sheet, and that is a privacy decision as much as a
+        // convenience one: `PhotosPicker` runs out of process and hands back only what the user
+        // selected, so Cipher never holds photo-library authorisation and there is no usage
+        // description to justify. A camera, files, location and contact source used to sit
+        // beside this one as controls that dismissed and did nothing; they are gone rather than
+        // reimplemented, because the step that adds one is the step that makes it work.
+        .photosPicker(
+            isPresented: $showAttach, selection: $pickedPhoto, matching: .images,
+            photoLibrary: .shared())
+        .onChange(of: pickedPhoto) { _, item in
+            guard let item else { return }
+            // Cleared immediately so re-picking the same photo is still a change, and so the
+            // item does not outlive the send.
+            pickedPhoto = nil
+            Task {
+                guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+                await store.sendPhoto(data, to: chatID)
+            }
         }
-        #endif
         .sheet(isPresented: $showForward) {
             ForwardMessageView(message: forwardingMessage) {
                 showForward = false
@@ -206,47 +221,6 @@ struct ConversationView: View {
         return dict.keys.sorted().map { DayGroup(day: $0, messages: dict[$0]!.sorted { $0.date < $1.date }) }
     }
 }
-
-// Attachments have no client path: the relay's blob endpoints exist (P4.S08) but nothing here
-// uploads, encrypts, or references one, and `MessagePayload` carries text only. The sheet listed
-// five sources and dismissed — five controls that did nothing — so it is DEBUG-only until the
-// payload type and the upload exist.
-#if DEBUG
-struct AttachmentSheet: View {
-    @Environment(\.dismiss) private var dismiss
-
-    private var items: [(LocalizedStringKey, String)] {
-        [
-            ("Photo Library", "photo.on.rectangle"),
-            ("Camera", "camera"),
-            ("File", "doc"),
-            ("Location", "location"),
-            ("Contact", "person.crop.circle"),
-        ]
-    }
-
-    var body: some View {
-        NavigationStack {
-            List {
-                ForEach(Array(items.enumerated()), id: \.offset) { _, item in
-                    Button {
-                        dismiss()
-                    } label: {
-                        Label(item.0, systemImage: item.1)
-                    }
-                }
-            }
-            .navigationTitle("Attach")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Close") { dismiss() }
-                }
-            }
-        }
-    }
-}
-#endif
 
 #if DEBUG
 #Preview {

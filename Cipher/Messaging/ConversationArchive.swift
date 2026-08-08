@@ -208,7 +208,8 @@ actor ConversationArchive {
     }
 
     nonisolated struct StoredMessage: Codable, Sendable, Equatable, SchemaVersioned {
-        /// **2 since P6.S03**, which added `expiresAtMs`.
+        /// **3 since P6.S04**, which added `attachment`; 2 since P6.S03, which added
+        /// `expiresAtMs`.
         ///
         /// Bumped rather than added as a quietly-defaulting optional, and the direction is the
         /// point. An older build reading a schema-2 record would decode every field it knows
@@ -222,8 +223,8 @@ actor ConversationArchive {
         /// one that costs anything: schema 1 is still read (`supportedSchemas`), because a
         /// message written before timers existed has exactly one correct interpretation — no
         /// timer — and refusing it would discard the entire archive on upgrade.
-        static let expectedSchema = 2
-        static let supportedSchemas: Set<Int> = [1, 2]
+        static let expectedSchema = 3
+        static let supportedSchemas: Set<Int> = [1, 2, 3]
 
         enum Direction: String, Codable, Sendable {
             case outgoing
@@ -272,6 +273,31 @@ actor ConversationArchive {
         /// read receipts on the wire (see `State`), so "read" is not a fact either side can act
         /// on. Stated rather than approximated.
         var expiresAtMs: UInt64?
+        /// The attachment this message carries, or nil for a text message (P6.S04).
+        var attachment: StoredAttachment?
+    }
+
+    /// Where an attachment's key lives at rest.
+    ///
+    /// **This record is the erase.** The blob's bytes are cached as ciphertext in a file
+    /// (`CryptoEngine.storeAttachment`) and the key exists only here, inside a sealed row under
+    /// the one Keychain item whose deletion destroys everything. So deleting the message — by
+    /// timer, by hand, by clearing the chat, or by erasing the account — already makes the
+    /// cached blob unopenable; unlinking the file afterwards is the second half of the wipe and
+    /// not the thing that makes it safe.
+    ///
+    /// Nothing here is ever logged. `key` is secret, and `blobId` is the capability to fetch or
+    /// delete the attachment on the relay (`BACKEND.md` §2.8), so a log line carrying either
+    /// would outlive every deletion this design performs.
+    nonisolated struct StoredAttachment: Codable, Sendable, Equatable {
+        /// The relay slot. Also the cache file name.
+        var blobId: UUID
+        /// AES-256 for this attachment only.
+        var key: Data
+        /// SHA-256 of the uploaded ciphertext.
+        var digest: Data
+        /// Plaintext length, which bounds the download and is re-checked after decryption.
+        var byteCount: Int
     }
 
     /// The durable result of one inbound envelope. Unsupported payloads and blocked peers are
@@ -391,7 +417,8 @@ actor ConversationArchive {
         state: StoredMessage.State,
         senderIdentityKey: Data? = nil,
         establishedSession: Bool = false,
-        expiresAtMs: UInt64? = nil
+        expiresAtMs: UInt64? = nil,
+        attachment: StoredAttachment? = nil
     ) async throws -> StoredMessage {
         try await ensureMigrated()
         let group = Self.group(peer)
@@ -408,7 +435,7 @@ actor ConversationArchive {
                     timestampMs: timestampMs, state: state,
                     senderIdentityKey: senderIdentityKey,
                     establishedSession: establishedSession, expiresAtMs: expiresAtMs,
-                    quota: quota, transaction: transaction)
+                    attachment: attachment, quota: quota, transaction: transaction)
             }
         }
     }
@@ -464,13 +491,31 @@ actor ConversationArchive {
                     // a shortened one, which errs toward the reader keeping what was sent to
                     // them.
                     let expiresAtMs: UInt64?
+                    // The pointer and key for an attachment, filed with the message. Nothing
+                    // is fetched here: this runs inside the decrypt-and-store transaction, and
+                    // a network round trip inside it would hold the ratchet open for as long
+                    // as the relay took. The blob is downloaded when the attachment is first
+                    // opened, which is also the only moment it is needed.
+                    let attachment: StoredAttachment?
                     switch payload.content {
                     case .text(let value):
                         text = value
                         expiresAtMs = nil
+                        attachment = nil
                     case .expiringText(let value, let ttlSeconds):
                         text = value
                         expiresAtMs = timestampMs + UInt64(ttlSeconds) * 1000
+                        attachment = nil
+                    case .attachment(let pointer):
+                        // No caption on the wire: an attachment carries bytes and nothing to
+                        // read, so there is no text to store and none to render.
+                        text = ""
+                        expiresAtMs = pointer.ttlSeconds.map {
+                            timestampMs + UInt64($0) * 1000
+                        }
+                        attachment = StoredAttachment(
+                            blobId: pointer.blobId, key: pointer.key,
+                            digest: pointer.digest, byteCount: pointer.byteCount)
                     }
 
                     _ = try Self.append(
@@ -478,7 +523,7 @@ actor ConversationArchive {
                         timestampMs: timestampMs, state: .received,
                         senderIdentityKey: decrypted.senderIdentityKey,
                         establishedSession: decrypted.establishedSession,
-                        expiresAtMs: expiresAtMs, quota: quota,
+                        expiresAtMs: expiresAtMs, attachment: attachment, quota: quota,
                         transaction: transaction)
                     return .stored
                 }
@@ -508,6 +553,7 @@ actor ConversationArchive {
         senderIdentityKey: Data?,
         establishedSession: Bool,
         expiresAtMs: UInt64?,
+        attachment: StoredAttachment?,
         quota: StorageQuota,
         transaction: SealedRowTransaction
     ) throws -> StoredMessage {
@@ -525,7 +571,8 @@ actor ConversationArchive {
             state: state,
             senderIdentityKey: senderIdentityKey,
             establishedSession: establishedSession,
-            expiresAtMs: expiresAtMs)
+            expiresAtMs: expiresAtMs,
+            attachment: attachment)
 
         try transaction.store(
             namespace: Namespace.message, group: group, ordinal: message.ordinal,
@@ -647,6 +694,19 @@ actor ConversationArchive {
             .map { try Self.decode(StoredMessage.self, from: $0.value) }
     }
 
+    /// One stored message, or nil if that ordinal holds nothing.
+    ///
+    /// Reading a single row rather than the conversation, because the one caller wants an
+    /// attachment's key and reading the whole conversation to find it would unseal every other
+    /// message's body to reach it.
+    func message(ordinal: Int, in peer: UUID) async throws -> StoredMessage? {
+        try await ensureMigrated()
+        guard let bytes = try await engine.loadSealedRow(
+            namespace: Namespace.message, group: Self.group(peer), ordinal: ordinal)
+        else { return nil }
+        return try Self.decode(StoredMessage.self, from: bytes)
+    }
+
     /// Replaces a stored message in place. Used for the send status transition only.
     func updateMessage(_ message: StoredMessage, in peer: UUID) async throws {
         try await ensureMigrated()
@@ -711,6 +771,34 @@ actor ConversationArchive {
                 return deleted
             }
         }
+    }
+
+    // MARK: - Attachments (P6.S04)
+
+    /// Every blob id a stored message still points at.
+    ///
+    /// The input to the cache wipe (`CryptoEngine.removeAttachments(except:)`), and deliberately
+    /// derived rather than maintained. A running set of "live attachments" would be a second
+    /// record that has to be updated by every path that removes a message — including the two
+    /// that remove rows in bulk without decoding them, retention trimming and quota eviction —
+    /// and the first one that forgot would leave ciphertext on disk with nothing that could
+    /// ever find it again.
+    ///
+    /// One pass over the message rows. Only run when something was actually deleted or at
+    /// launch, and the caller skips it entirely when the cache is empty, so the common case
+    /// costs nothing.
+    func attachmentIdsInUse() async throws -> Set<UUID> {
+        try await ensureMigrated()
+        var ids: Set<UUID> = []
+        for group in try await conversations().map({ Self.group($0.peer) }) {
+            for row in try await engine.listSealedRows(
+                namespace: Namespace.message, group: group)
+            {
+                let message = try Self.decode(StoredMessage.self, from: row.value)
+                if let blobId = message.attachment?.blobId { ids.insert(blobId) }
+            }
+        }
+        return ids
     }
 
     func removeMessage(ordinal: Int, in peer: UUID) async throws {

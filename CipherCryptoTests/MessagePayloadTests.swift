@@ -229,4 +229,106 @@ final class MessagePayloadTests: XCTestCase {
         backing.append(try payload.encode())
         XCTAssertEqual(try MessagePayload.decode(backing.dropFirst(3)), payload)
     }
+
+    // MARK: Attachments (P6.S04)
+
+    private func attachment(
+        byteCount: Int = 4096, ttlSeconds: UInt32? = nil
+    ) -> MessagePayload.Attachment {
+        MessagePayload.Attachment(
+            blobId: UUID(uuidString: "4e0d2c1a-0000-4000-8000-0123456789ab")!,
+            key: Data(repeating: 0xA1, count: AttachmentCipher.keyBytes),
+            digest: Data(repeating: 0xB2, count: AttachmentCipher.digestBytes),
+            byteCount: byteCount, ttlSeconds: ttlSeconds)
+    }
+
+    func testAnAttachmentPointerRoundTripsWithAndWithoutATimer() throws {
+        for ttl in [nil, UInt32(3600)] {
+            let payload = MessagePayload(content: .attachment(attachment(ttlSeconds: ttl)))
+            XCTAssertEqual(try MessagePayload.decode(try payload.encode()), payload)
+        }
+    }
+
+    func testAnAttachmentIsItsOwnTypeAndAFixedWidth() throws {
+        let encoded = try MessagePayload(content: .attachment(attachment())).encode()
+        XCTAssertEqual(encoded[encoded.startIndex], MessagePayload.version)
+        // A new type rather than a version bump: an older build refuses one kind of message
+        // instead of all of them.
+        XCTAssertEqual(encoded[encoded.startIndex + 1], 3)
+        XCTAssertEqual(encoded.count, 2 + MessagePayload.attachmentBodySize)
+    }
+
+    func testAnAttachmentBodyOfTheWrongWidthIsRefused() throws {
+        let encoded = try MessagePayload(content: .attachment(attachment())).encode()
+
+        for mutated in [encoded.dropLast(), encoded + Data([0x00])] {
+            XCTAssertThrowsError(try MessagePayload.decode(Data(mutated))) { error in
+                XCTAssertEqual(error as? MessagePayloadError, .malformedAttachment)
+            }
+        }
+    }
+
+    func testAPeerCannotNameALengthThisBuildWouldAllocateFor() throws {
+        // The value that would size a download and a buffer, chosen by an untrusted party. Both
+        // ends of the range, because zero is as wrong as enormous — an attachment with no bytes
+        // is a fetch that can never satisfy its own length check.
+        let encoded = try MessagePayload(content: .attachment(attachment())).encode()
+        let lengthOffset = encoded.count - 4
+
+        for hostile in [UInt32(0), UInt32(AttachmentCipher.maxPlaintextBytes) + 1] {
+            var mutated = encoded
+            withUnsafeBytes(of: hostile.bigEndian) { bytes in
+                for (index, byte) in bytes.enumerated() {
+                    mutated[mutated.startIndex + lengthOffset + index] = byte
+                }
+            }
+            XCTAssertThrowsError(try MessagePayload.decode(mutated)) { error in
+                XCTAssertEqual(
+                    error as? MessagePayloadError, .malformedAttachment,
+                    "a declared length of \(hostile) was accepted")
+            }
+        }
+    }
+
+    func testTheLargestLegalAttachmentLengthIsStillAccepted() throws {
+        // The positive control for the bound above.
+        let payload = MessagePayload(
+            content: .attachment(attachment(byteCount: AttachmentCipher.maxPlaintextBytes)))
+        XCTAssertEqual(try MessagePayload.decode(try payload.encode()), payload)
+    }
+
+    func testAnAttachmentTimerIsHeldToTheSameCeilingAsText() throws {
+        var encoded = try MessagePayload(content: .attachment(attachment())).encode()
+        let hostile = MessagePayload.maxExpirySeconds + 1
+        withUnsafeBytes(of: hostile.bigEndian) { bytes in
+            for (index, byte) in bytes.enumerated() {
+                encoded[encoded.startIndex + 2 + index] = byte
+            }
+        }
+        XCTAssertThrowsError(try MessagePayload.decode(encoded)) { error in
+            XCTAssertEqual(error as? MessagePayloadError, .invalidExpiry(hostile))
+        }
+    }
+
+    func testAnAttachmentPointerThisBuildCannotHonourIsRefusedBeforeItIsSent() throws {
+        // The encoder applies the decoder's bounds to our own values, so a pointer that could
+        // be built here and refused there — a message the recipient loses for a reason the
+        // sender never saw — cannot leave this device.
+        let shortKey = MessagePayload.Attachment(
+            blobId: UUID(), key: Data(repeating: 1, count: 8),
+            digest: Data(repeating: 2, count: AttachmentCipher.digestBytes),
+            byteCount: 10, ttlSeconds: nil)
+        XCTAssertThrowsError(
+            try MessagePayload(content: .attachment(shortKey)).encode()
+        ) { error in
+            XCTAssertEqual(error as? MessagePayloadError, .malformedAttachment)
+        }
+    }
+
+    func testAnAttachmentDecodesFromASlicedBuffer() throws {
+        var backing = Data([0xFF, 0xFF, 0xFF])
+        let payload = MessagePayload(content: .attachment(attachment(ttlSeconds: 30)))
+        backing.append(try payload.encode())
+        XCTAssertEqual(try MessagePayload.decode(backing.dropFirst(3)), payload)
+    }
 }

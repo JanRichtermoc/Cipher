@@ -16,6 +16,10 @@ struct MediaViewer: View {
 
                 VStack(spacing: CipherTheme.spacingL) {
                     Spacer()
+                    if case .photo = message.kind {
+                        AttachmentImageView(message: message, thumbnailSize: nil)
+                            .padding(.horizontal, CipherTheme.spacingM)
+                    }
                     if case .image(let name, _) = message.kind {
                         Image(systemName: name)
                             .font(.system(size: 120))
@@ -38,10 +42,11 @@ struct MediaViewer: View {
                     Button("Close") { dismiss() }
                         .foregroundStyle(.white)
                 }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button {} label: { Image(systemName: "square.and.arrow.up") }
-                    Button {} label: { Image(systemName: "arrowshape.turn.up.forward") }
-                }
+                // A share sheet and a forward button used to sit here with empty actions. They
+                // were reachable only from DEBUG fixtures until P6.S04 made this screen show a
+                // real decrypted photo, at which point two controls that do nothing would be
+                // shipping — and sharing a decrypted attachment out of the app is a decision
+                // that needs a design, not a button (plan §0.6: fix deceptive UI first).
             }
             .toolbarBackground(.hidden, for: .navigationBar)
         }

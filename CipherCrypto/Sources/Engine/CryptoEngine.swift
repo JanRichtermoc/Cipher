@@ -33,6 +33,14 @@ public final class CryptoEngine {
     /// wherever the caller happens to be.
     internal let store: CipherProtocolStore
 
+    /// The container every persisted byte of this installation lives under.
+    ///
+    /// Held so the attachment cache can be a directory *inside* it rather than beside it
+    /// (`AttachmentStore`). That placement is the guarantee: `destroyAllState` removes this
+    /// root, so cached attachment ciphertext cannot survive an account erase by being
+    /// somewhere the erase did not know to look.
+    internal let root: URL
+
     /// Milliseconds since the Unix epoch, injectable so a test can assert on the timestamp a
     /// message carries rather than around it.
     internal let now: () -> UInt64
@@ -70,6 +78,7 @@ public final class CryptoEngine {
     ) throws {
         CryptoActor.assertIsolated()
         self.now = now
+        self.root = root
 
         // Ciphertext with no key left to open it is a *nameable* condition, not a generic
         // failure: it is the only open failure a user can act on, and the only one whose
