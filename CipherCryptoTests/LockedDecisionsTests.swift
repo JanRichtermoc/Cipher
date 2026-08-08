@@ -22,13 +22,19 @@
 //  |      | until acceptIdentity names the exact key    | …ButNotReceiving / …testAcceptingAStaleKeyIsRefused   |
 //  | 2    | Groups unreachable, no SenderKeyStore       | testGroupMessagingHasNoReachableState (here)          |
 //  |      |                                             | + EnvelopeTests.testRejectsSenderKeyMessages          |
+//  |      |                                             | + SealedSenderTests.testASealedGroupPayloadIsRefused  |
 //  | 3    | Envelope.sender is untrusted routing data   | testEnvelopeSenderIsNotATrustInput (here)             |
 //  | 4    | PlaintextContent refused, value 3 reserved  | testPlaintextContentStaysReservedAndNotLive (here)    |
 //  |      |                                             | + EnvelopeTests.testRefusesUnauthenticatedPlaintext…  |
+//  |      |                                             | + SealedSenderTests.testASealedPlaintextContent…      |
 //  | 5    | Wire v1 is single-device, no deviceId       | testWireVersionOneCarriesNoDeviceId (here)            |
+//  |      |                                             | + SealedSenderTests.testASealedCertificateNamingA…    |
 //  | 6    | Keychain AfterFirstUnlockThisDeviceOnly     | KeychainTests.testStoredItemsAreDeviceOnlyAnd…        |
 //  | 7    | Invite codes only: no phone number, email,  | testIdentityCarriesNoHumanIdentifier (here) — the     |
-//  |      | server-side username or verification code   | wire half only. The account model, the auth API and   |
+//  |      | server-side username or verification code   | wire half only, plus SealedSenderTests.testASealed…   |
+//  |      |                                             | CertificateCarryingAPhoneNumberIsRefused for the      |
+//  |      |                                             | e164 field libsignal's certificate has and Cipher     |
+//  |      |                                             | never fills. The account model, the auth API and      |
 //  |      |                                             | the relay schema are Go and SQL and no Swift test can |
 //  |      |                                             | reach them: Scripts/verify-identity-fields.py is that |
 //  |      |                                             | half, and verify-all.sh runs both.                    |
@@ -83,9 +89,13 @@ final class LockedDecisionsTests: XCTestCase {
             RecordKind.allCases.contains { $0.rawValue.localizedCaseInsensitiveContains("sender") },
             "a sender-key record kind appeared; see plan §0.2.2")
 
-        // And the wire enum has no group payload type to carry one.
-        XCTAssertEqual(Set(Envelope.PayloadType.allCases.map(\.rawValue)), [1, 2],
-                       "wire v1 carries exactly preKey and whisper")
+        // And the wire enum has no group payload type to carry one. `.sealed` (4) joined the
+        // set in P7.S01 and is not a third payload: it wraps one of the other two, and what
+        // it wraps goes through the same `Envelope.payloadType(for:)` refusal after the
+        // container is opened — `SealedSenderTests.testASealedGroupPayloadIsRefused` is that
+        // half, because sealing would otherwise hide the inner type from this check.
+        XCTAssertEqual(Set(Envelope.PayloadType.allCases.map(\.rawValue)), [1, 2, 4],
+                       "wire v1 carries preKey, whisper, and the sealed wrapper around them")
     }
 
     // MARK: - §0.2.3 — the sender field is data, not a credential

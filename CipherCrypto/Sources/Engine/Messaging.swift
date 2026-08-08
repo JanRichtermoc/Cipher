@@ -23,7 +23,9 @@ import LibSignalClient
 /// `claimedSender` is the envelope's routing field, kept only so a caller can log or
 /// display the discrepancy. It is attacker-controlled. It has no bearing on attribution and
 /// must never gate a security decision. It exists in this type precisely so that a reader
-/// of calling code can see which of the two a line is using.
+/// of calling code can see which of the two a line is using. It is `nil` for a sealed
+/// message, because such a frame makes no claim: there is nothing in it for a relay to
+/// rewrite, so there is no discrepancy to report.
 ///
 /// ## What "authenticated" is worth without verification
 ///
@@ -37,8 +39,19 @@ import LibSignalClient
 /// relay can therefore take a genuine first message from A and present it as arriving from
 /// an address the user knows as B — the *content* is A's and unforgeable, but the *label* is
 /// not. Nothing local detects this. It is closed by comparing safety numbers out of band
-/// (P5.S12) or by sealed-sender certificates (P7), and is recorded as AUDIT 3.8 until then.
-/// Callers must treat `senderIdentityKey`, not `sender`, as the thing a user verified.
+/// (P5.S12), and is recorded as AUDIT 3.8 until then. Callers must treat
+/// `senderIdentityKey`, not `sender`, as the thing a user verified.
+///
+/// **Sealed sender narrows that, and it is worth being exact about how much.** On a sealed
+/// frame the address lives inside the ciphertext, so a *relay* cannot relabel a first message
+/// at all: it can neither read the certificate nor replace it, and re-wrapping the payload
+/// under a name of its own is refused because the certificate's key would not be the key the
+/// session authenticated (`EnvelopeError.sealedSenderKeyMismatch`). What stays open is the
+/// *sender's* own claim — the certificate is self-issued
+/// (`CryptoEngine.selfIssuedSenderCertificate`), so an account can still name itself anything,
+/// which is what comparing safety numbers is for — and the addressed receive path, which is
+/// still accepted for compatibility and carries the old weakness unchanged. AUDIT 3.8
+/// therefore stays open, with a smaller surface than before.
 public struct DecryptedMessage: Sendable, Equatable {
 
     /// The address whose session authenticated this ciphertext.
@@ -51,8 +64,9 @@ public struct DecryptedMessage: Sendable, Equatable {
     public let plaintext: Data
 
     /// The envelope's sender field: a routing hint, attacker-controlled, never attribution.
-    /// Differs from `sender` only if something rewrote it in flight.
-    public let claimedSender: ServiceIdentifier
+    /// Differs from `sender` only if something rewrote it in flight, and is `nil` when the
+    /// frame was sealed and therefore named nobody.
+    public let claimedSender: ServiceIdentifier?
 
     /// The envelope's timestamp: untrusted, milliseconds since the Unix epoch. Retained for
     /// gross-skew detection and display ordering. Must never gate a cryptographic decision.
@@ -213,33 +227,149 @@ extension CryptoEngine {
     /// `MessagingError.identityNotAccepted` — a distinct case precisely so a caller cannot
     /// mistake it for a transport failure and retry. See that case for why it is no longer
     /// libsignal's own error type.
+    ///
+    /// ## Every message is sealed (P7.S01, AUDIT 3.4)
+    ///
+    /// There is no unsealed send path and no negotiation. A per-peer choice would be worse
+    /// than useless: the choice itself would be visible to the relay as the difference
+    /// between a `.sealed` frame and an addressed one, so the accounts still sending in the
+    /// open would be exactly the ones the metadata is about. **Receiving** still accepts
+    /// addressed frames, so a message already in flight across the upgrade is not lost; a
+    /// peer that cannot yet read a `.sealed` frame refuses it, which is the cost of a new
+    /// payload type rather than a `wireVersion` bump and is why this is a private-circle
+    /// build decision rather than a compatibility scheme.
     public func encrypt(_ plaintext: Data, to peer: PeerAddress) throws -> Data {
         try requireLive()
         let localAddress = try requireLocalAddress()
+        let context = NullContext()
 
         let message: CiphertextMessage
+        let sealed: Data
         do {
             message = try signalEncrypt(
                 message: plaintext,
                 for: try peer.makeProtocolAddress(),
                 localAddress: try localAddress.makeProtocolAddress(),
-                sessionStore: store, identityStore: store, context: NullContext())
+                sessionStore: store, identityStore: store, context: context)
+
+            // The wire-boundary refusals apply to what is being sealed, not to the wrapper,
+            // so they run here — before the payload becomes opaque to every later check.
+            // `signalEncrypt` cannot currently produce either refused type, which is exactly
+            // why the check belongs here: it is the assertion that keeps that true.
+            _ = try Envelope.payloadType(for: message.messageType)
+
+            let content = try UnidentifiedSenderMessageContent(
+                message,
+                from: try selfIssuedSenderCertificate(for: localAddress),
+                contentHint: .default,
+                // Empty: groups are unreachable (§0.2.2), and this field is where a group id
+                // would travel. Sent empty and refused non-empty on the way back in.
+                groupId: Data())
+
+            sealed = try sealedSenderEncrypt(
+                content, for: try peer.makeProtocolAddress(),
+                identityStore: store, context: context)
         } catch {
             throw Self.boundaryError(error) ?? error
         }
 
-        let ciphertext = message.serialize()
-        guard ciphertext.count <= Envelope.maxCiphertextBytes else {
-            // Reported against the plaintext, which is the number a caller can act on.
+        guard sealed.count <= Envelope.maxCiphertextBytes else {
+            // Reported against the plaintext, which is the number a caller can act on. The
+            // sealed container's overhead comes out of the same 64 KiB budget; a payload is
+            // capped at 32 KiB (`MessagePayload.maxEncodedBytes`), so there is room for it.
             throw MessagingError.messageTooLarge(plaintext.count)
         }
 
         return try Envelope(
-            type: try Envelope.payloadType(for: message.messageType),
-            sender: localAddress.serviceId,
-            timestamp: now(),
-            ciphertext: ciphertext
+            type: .sealed, sender: nil, timestamp: now(), ciphertext: sealed
         ).encode()
+    }
+
+    // MARK: Sealed sender
+
+    private static let senderCertificateKey = "sealed-sender-certificate"
+
+    /// A sender certificate this account issues to itself, because the relay cannot issue one.
+    ///
+    /// ## Why it is self-issued
+    ///
+    /// libsignal's sealed-sender container requires a `SenderCertificate`; there is no way to
+    /// build an `UnidentifiedSenderMessageContent` without one. Signal's server mints it, and
+    /// P7.S01 was written expecting Cipher's to do the same. It cannot: those certificates are
+    /// signed with **XEd25519 over Curve25519 keys**, the relay is Go, and neither its
+    /// dependency set nor the standard library can produce that signature. The two ways to
+    /// change that — writing the scheme in Go, or linking libsignal into the relay — are a
+    /// standing prohibition (plan §0.6, "do not invent cryptography") and a supply-chain
+    /// change that needs its own approval. So the certificate is minted here.
+    ///
+    /// ## What it therefore is, and is not
+    ///
+    /// **The identifier it carries authenticates nothing.** Anyone can mint one naming any
+    /// ACI, exactly as anyone can write any value into the cleartext `sender` field it
+    /// replaces (§0.2.3). It is not a credential, nothing validates it against a trust root on
+    /// the way in — there is no trust root to validate against — and no code path treats the
+    /// name in it as evidence. Attribution is still the session that decrypted the inner
+    /// message.
+    ///
+    /// The **key** it carries is a different matter, and not because of the signature: sealing
+    /// binds it. libsignal refuses a container whose certificate names a key its sealer does
+    /// not hold, and the receive path then refuses one whose key is not the key that peer's
+    /// session authenticated. Between them, the account that sealed a message is the account
+    /// whose session opens it.
+    ///
+    /// What sealing buys is who can *read* the address. Today it is seventeen cleartext bytes
+    /// in every stored envelope; sealed, it is inside a ciphertext only the recipient's
+    /// identity key opens. That is the property `THREAT_MODEL.md` §3.2 asks for — a seized
+    /// database holds no record of who sent what — and it is the whole of what this delivers.
+    /// The live relay still learns the sender from the bearer token on `POST /v1/messages`;
+    /// that residual is AUDIT 3.9, not something this pretends to cover.
+    ///
+    /// ## The issuing keys are generated and dropped
+    ///
+    /// The trust root and server key exist only inside this function. Nothing persists them,
+    /// so no key survives that anyone could later present as an authority — which is the
+    /// honest shape for a signature that is structural rather than meaningful.
+    private func selfIssuedSenderCertificate(for localAddress: PeerAddress) throws
+        -> SenderCertificate {
+        let identity = try store.identityKeyPair(context: NullContext())
+        let identityKey = identity.identityKey.publicKey
+
+        // Re-minted rather than repaired if any of the three facts it binds has moved. The
+        // local address is write-once and the identity key lives as long as the installation,
+        // so this is a restored-container guard, not an expected path.
+        if let stored = try store.metadata(Self.senderCertificateKey),
+           let certificate = try? SenderCertificate(stored),
+           certificate.senderUuid == localAddress.serviceId.canonicalString,
+           certificate.senderE164 == nil,
+           certificate.deviceId == localAddress.deviceId,
+           certificate.publicKey.serialize() == identityKey.serialize() {
+            return certificate
+        }
+
+        let trustRoot = PrivateKey.generate()
+        let serverKey = PrivateKey.generate()
+        let serverCertificate = try ServerCertificate(
+            keyId: 1, publicKey: serverKey.publicKey, trustRoot: trustRoot)
+
+        let certificate = try SenderCertificate(
+            sender: try SealedSenderAddress(
+                // Explicitly no phone number (§0.2.7). libsignal's certificate has a field for
+                // one; Cipher has never had a value to put in it, and the receive path refuses
+                // a certificate that carries one so the field cannot become a channel.
+                e164: nil,
+                uuidString: localAddress.serviceId.canonicalString,
+                deviceId: localAddress.deviceId),
+            publicKey: identityKey,
+            // No expiry. An expiry is a control only when something trustworthy signs the
+            // certificate; nothing signs this one, so a finite value would be a date the
+            // holder can reissue past at will — a control in appearance only.
+            expiration: UInt64.max,
+            signerCertificate: serverCertificate,
+            signerKey: serverKey)
+
+        try store.setMetadata(Self.senderCertificateKey, certificate.serialize())
+        CipherLog.session.info("sealed-sender certificate minted")
+        return certificate
     }
 
     // MARK: Receiving
@@ -292,31 +422,97 @@ extension CryptoEngine {
         }
     }
 
+    /// A frame reduced to the Signal ciphertext a session can open, once any sealing has been
+    /// removed. Modelled with a `Bool` rather than an `Envelope.PayloadType` because that enum
+    /// now carries `.sealed`, which is a wrapper and not something a ratchet can decrypt —
+    /// keeping it here would add a branch that cannot be reached and cannot be tested.
+    private struct InboundPayload {
+        /// Where to look for a session. Read out of the sealed certificate when there was
+        /// one, and out of the envelope's routing field when there was not. Neither is
+        /// evidence; both are hints that the ciphertext then has to justify.
+        let sender: PeerAddress
+        let establishesSession: Bool
+        let ciphertext: Data
+        /// The identity key the sealed certificate claimed, if the frame was sealed. Checked
+        /// against the session's own key after decryption, never trusted in its place.
+        let certificateKey: Data?
+    }
+
+    /// Removes the sealed-sender wrapper and applies every boundary refusal to what was inside.
+    ///
+    /// The refusals are the point. Sealing makes the payload opaque to every other layer, so a
+    /// container that was opened and then handed straight to a session would be a way to reach
+    /// the two payload types the wire refuses (§0.2.2 sender-key, §0.2.4 `PlaintextContent`)
+    /// and the multi-device addressing wire v1 does not have (§0.2.5). Each is refused here,
+    /// before any session, prekey or ratchet state is touched.
+    private func openSealedContainer(_ ciphertext: Data, context: NullContext) throws
+        -> InboundPayload {
+        let content = try UnidentifiedSenderMessageContent(
+            message: ciphertext, identityStore: store, context: context)
+
+        guard content.groupId == nil else { throw EnvelopeError.groupMessagingNotSupported }
+
+        let inner = try Envelope.payloadType(for: content.messageType)
+
+        let certificate = content.senderCertificate
+        guard certificate.senderE164 == nil else {
+            throw EnvelopeError.sealedSenderIdentifierRefused
+        }
+        guard certificate.deviceId == PeerAddress.primaryDevice else {
+            throw EnvelopeError.sealedSenderDeviceRefused(certificate.deviceId)
+        }
+        guard let aci = certificate.senderAci else {
+            throw EnvelopeError.sealedSenderIdentifierRefused
+        }
+
+        return InboundPayload(
+            sender: PeerAddress(serviceId: ServiceIdentifier(aci)),
+            establishesSession: inner == .preKey,
+            ciphertext: content.contents,
+            certificateKey: certificate.publicKey.serialize())
+    }
+
     private func decryptMessage(_ envelopeBytes: Data) throws -> DecryptedMessage {
         try requireLive()
         let localAddress = try requireLocalAddress()
 
         let envelope = try Envelope.decode(envelopeBytes)
-        let candidate = PeerAddress(serviceId: envelope.sender)
-        let address = try candidate.makeProtocolAddress()
         let context = NullContext()
 
+        let payload: InboundPayload
         let plaintext: Data
         do {
             switch envelope.type {
-            case .preKey:
+            case .preKey, .whisper:
+                // Addressed frames are still accepted so nothing in flight across the sealed
+                // sender upgrade is lost. `Envelope.decode` has already refused a frame of
+                // this type with no sender, so the unwrap below cannot be the thing that
+                // fails; it is written as a refusal rather than a `!` because the invariant
+                // lives in another file.
+                guard let claimed = envelope.sender else { throw EnvelopeError.senderMissing }
+                payload = InboundPayload(
+                    sender: PeerAddress(serviceId: claimed),
+                    establishesSession: envelope.type == .preKey,
+                    ciphertext: envelope.ciphertext,
+                    certificateKey: nil)
+            case .sealed:
+                payload = try openSealedContainer(envelope.ciphertext, context: context)
+            }
+
+            let address = try payload.sender.makeProtocolAddress()
+            if payload.establishesSession {
                 plaintext = try signalDecryptPreKey(
-                    message: try PreKeySignalMessage(bytes: envelope.ciphertext),
+                    message: try PreKeySignalMessage(bytes: payload.ciphertext),
                     from: address, localAddress: try localAddress.makeProtocolAddress(),
                     sessionStore: store, identityStore: store,
                     preKeyStore: store, signedPreKeyStore: store,
                     kyberPreKeyStore: store, context: context)
-            case .whisper:
+            } else {
                 guard try store.loadSession(for: address, context: context) != nil else {
                     throw MessagingError.noSession
                 }
                 plaintext = try signalDecrypt(
-                    message: try SignalMessage(bytes: envelope.ciphertext),
+                    message: try SignalMessage(bytes: payload.ciphertext),
                     from: address, to: try localAddress.makeProtocolAddress(),
                     sessionStore: store, identityStore: store, context: context)
             }
@@ -329,16 +525,26 @@ extension CryptoEngine {
 
         // The identity key the session is bound to. Read *after* decryption, so it is the key
         // that authenticated this message rather than whatever was on file beforehand.
-        guard let identityKey = try store.identity(for: address, context: context) else {
+        guard let identityKey = try store.identity(
+            for: try payload.sender.makeProtocolAddress(), context: context) else {
             throw MessagingError.unattributableMessage
         }
 
+        // A sealed container states the sender twice: once in the certificate and once in the
+        // session its ciphertext decrypts under. libsignal has already tied the certificate's
+        // key to whoever sealed the container, so requiring the two to agree is what makes
+        // the sealer and the session owner the same account — and what stops anyone holding a
+        // plaintext Signal ciphertext from re-sealing it under a name of their choosing.
+        if let claimedKey = payload.certificateKey, claimedKey != identityKey.serialize() {
+            throw EnvelopeError.sealedSenderKeyMismatch
+        }
+
         return DecryptedMessage(
-            sender: candidate,
+            sender: payload.sender,
             senderIdentityKey: identityKey.serialize(),
             plaintext: plaintext,
             claimedSender: envelope.sender,
             envelopeTimestampMs: envelope.timestamp,
-            establishedSession: envelope.type == .preKey)
+            establishedSession: payload.establishesSession)
     }
 }

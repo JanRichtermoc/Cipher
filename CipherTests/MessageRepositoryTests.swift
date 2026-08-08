@@ -118,9 +118,15 @@ final class MessageRepositoryTests: XCTestCase {
         // in them anywhere. This is the assertion C-02 was about: the previous path appended a
         // struct to an array and called it sending.
         let envelope = try envelopeSent()
-        XCTAssertEqual(envelope.sender.uuid, fixture.localAci)
-        XCTAssertEqual(envelope.type, .preKey, "a first message must establish the session")
+        XCTAssertEqual(envelope.type, .sealed, "every outbound frame is sealed (P7.S01)")
+        XCTAssertNil(envelope.sender, "and therefore names nobody")
         XCTAssertNil(envelope.ciphertext.range(of: Data("meet at six".utf8)))
+
+        // The sender is not merely unparsed: neither its wire encoding nor its raw UUID is
+        // anywhere in the frame the relay stores (AUDIT 3.4).
+        let frame = envelope.encode()
+        let localUuid = withUnsafeBytes(of: fixture.localAci.uuid) { Data($0) }
+        XCTAssertNil(frame.range(of: localUuid), "the sender's UUID is in the relayed frame")
 
         // And the peer can actually read it — the ciphertext is a real ratchet message, not a
         // well-formed envelope around nonsense.

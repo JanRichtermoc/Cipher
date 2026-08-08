@@ -251,7 +251,7 @@ The inbox. This is the table a seizure is actually after.
 | Column | Type | Why it exists | What a seizure learns |
 |---|---|---|---|
 | `id` | `UUID PRIMARY KEY` | The acknowledgement handle: the client acks by id and the row is deleted. Random UUIDv4, **not** a sequence — a monotonic id would leak the relay's total message volume and cross-account ordering to anyone who saw one value. | Nothing. |
-| `recipient_aci` | `UUID NOT NULL REFERENCES accounts(aci) ON DELETE CASCADE` | Delivery is impossible without it. This is the irreducible metadata cost of a store-and-forward relay. | Who has mail waiting — for exactly as long as it waits. Sealed sender (§3.2 of the threat model, P7) does **not** remove this column; it removes the sender, not the recipient. |
+| `recipient_aci` | `UUID NOT NULL REFERENCES accounts(aci) ON DELETE CASCADE` | Delivery is impossible without it. This is the irreducible metadata cost of a store-and-forward relay. | Who has mail waiting — for exactly as long as it waits. Sealed sender (§3.2 of the threat model) did **not** remove this column and was never going to: it removed the sender, not the recipient. |
 | `envelope` | `BYTEA NOT NULL` | The opaque `Envelope` bytes. The server checks length only. | See the warning below. |
 | `expires_at` | `TIMESTAMPTZ NOT NULL` | Drives the TTL sweep (§4). The only lifetime field; there is no `created_at`. | When an undelivered message lapses. |
 
@@ -259,16 +259,22 @@ The inbox. This is the table a seizure is actually after.
 and which no delivery decision needs), `delivered` (delivered means deleted), `read`, `retry_count`,
 and any `archive` table.
 
-> **The limit of the ciphertext-only claim, stated plainly.**
-> `Envelope` wire format v1 carries `sender` **in cleartext at offset 2**. The relay does not read,
-> index, or store it separately — but it is inside `envelope`, so a seized database *does* reveal
-> sender→recipient pairs **for messages that were in flight at the moment of seizure**.
+> **The limit of the ciphertext-only claim, stated plainly. Amended 2026-08-08 (P7.S01).**
+> `Envelope` wire format v1 used to carry `sender` **in cleartext at offset 2**. The relay never
+> read, indexed, or stored it separately, but it was inside `envelope`, so a seized database *did*
+> reveal sender→recipient pairs for messages in flight at the moment of seizure. That was the
+> largest metadata residual in the design.
 >
-> "Ciphertext-only" means no plaintext *content*, ever, in any column. It does not yet mean no
-> sender. Two controls bound this and neither is a substitute for the other: delete-on-delivery (§4)
-> shrinks the exposed set to whatever is undelivered right now, and sealed sender (P7) removes the
-> field from the wire entirely. Until P7 lands, this is the largest metadata residual in the design
-> and it is recorded here rather than glossed.
+> It is closed. Clients now send payload type **4, `.sealed`**: the Signal ciphertext is wrapped in
+> libsignal's sealed-sender container and the seventeen sender bytes are zero. **The relay was not
+> changed for this and did not need to be** — the header is still 31 bytes, so the size bounds, this
+> table's `CHECK`, and §1's rule against parsing the envelope all hold exactly as before. That the
+> relay knows nothing about the wire format is what made a change of this size free on this side.
+>
+> Two residuals remain, and neither is this column. Delete-on-delivery (§4) still does the work of
+> bounding *recipient* exposure to whatever is undelivered right now. And a **running** relay is told
+> who is sending by the bearer token on `POST /v1/messages`, which no envelope format can hide —
+> AUDIT 3.9, unscheduled, and not to be confused with the record this paragraph used to describe.
 
 ### 2.8 `attachments`
 
@@ -900,7 +906,8 @@ from outside is never the gateway, and Nginx overwrites `X-Real-IP` on the way t
 
 | Question | Decided in |
 |---|---|
-| Sealed sender certificate issuance and rotation | P7 |
+| ~~Sealed sender certificate issuance and rotation~~ — **answered P7.S01: the relay issues none.** libsignal certificates are signed with XEd25519 over Curve25519 keys; Go cannot produce that signature without either implementing the scheme (forbidden) or linking libsignal into the relay (a supply-chain change). Clients self-issue, the certificate's *name* is worth nothing, and its *key* is bound by the container rather than by the signature. Rotation is therefore not a relay concern either. | P7.S01 |
+| Unauthenticated delivery, so a **live** relay also cannot see who is sending (AUDIT 3.9). Needs an abuse control Cipher does not have: Signal's is an access key derived from the recipient's profile key, and there are no profile keys here. | unscheduled |
 | Envelope length bucketing (`THREAT_MODEL.md` §3.5) | P7 |
 | Push token rotation cadence | P7.S03 |
 | Multi-device — needs `Envelope` `wireVersion` 2 and a `devices` table | P10 |

@@ -44,12 +44,30 @@ final class MessagingTests: XCTestCase {
         }
 
         /// Delivers an envelope the engine produced to the peer, as a relay would.
+        ///
+        /// The sealed branch takes the sender's address out of the **certificate**, because
+        /// that is the only place a real recipient could find it: the frame names nobody. A
+        /// certificate naming the wrong account would therefore fail to decrypt here rather
+        /// than produce a message under the wrong name.
         func deliverToPeer(_ envelopeBytes: Data) throws -> String {
             let envelope = try Envelope.decode(envelopeBytes)
-            return try peer.decrypt(
-                envelope.ciphertext,
-                type: envelope.type == .preKey ? .preKey : .whisper,
-                from: try local.makeProtocolAddress())
+            switch envelope.type {
+            case .sealed:
+                let content = try UnidentifiedSenderMessageContent(
+                    message: envelope.ciphertext,
+                    identityStore: peer.store, context: NullContext())
+                let certificate = content.senderCertificate
+                return try peer.decrypt(
+                    content.contents,
+                    type: content.messageType,
+                    from: try ProtocolAddress(
+                        name: certificate.senderUuid, deviceId: certificate.deviceId))
+            case .preKey, .whisper:
+                return try peer.decrypt(
+                    envelope.ciphertext,
+                    type: envelope.type == .preKey ? .preKey : .whisper,
+                    from: try local.makeProtocolAddress())
+            }
         }
 
         /// Wraps a peer's ciphertext in an envelope, as the peer's own client would.
@@ -75,8 +93,8 @@ final class MessagingTests: XCTestCase {
             try pair.connect()
 
             let outbound = try pair.engine.encrypt(Data("hello".utf8), to: pair.remote)
-            XCTAssertEqual(try Envelope.decode(outbound).type, .preKey,
-                           "the first message must establish the session")
+            XCTAssertEqual(try Envelope.decode(outbound).type, .sealed,
+                           "every outbound frame is sealed (P7.S01)")
             XCTAssertEqual(try pair.deliverToPeer(outbound), "hello")
 
             let inbound = try pair.engine.decrypt(try pair.envelopeFromPeer("and back"))
@@ -101,7 +119,7 @@ final class MessagingTests: XCTestCase {
             let envelope = try Envelope.decode(bytes)
 
             XCTAssertEqual(envelope.timestamp, 42_000)
-            XCTAssertEqual(envelope.sender, pair.local.serviceId)
+            XCTAssertNil(envelope.sender, "a sealed frame names nobody (P7.S01)")
             XCTAssertFalse(bytes.range(of: Data("plaintext marker".utf8)) != nil,
                            "the plaintext must not appear anywhere in the relayed frame")
         }.value
@@ -291,7 +309,7 @@ final class MessagingTests: XCTestCase {
             let impostor = try PeerFixture(address: try pair.remote.makeProtocolAddress())
             _ = try impostor.makeBundle()
             try processPreKeyBundle(
-                try Self.bundleForEngine(pair),
+                try EngineFixture.publishBundle(for: pair.engine, address: pair.local),
                 for: try pair.local.makeProtocolAddress(),
                 ourAddress: try pair.remote.makeProtocolAddress(),
                 sessionStore: impostor.store, identityStore: impostor.store,
@@ -337,55 +355,6 @@ final class MessagingTests: XCTestCase {
         }.value
     }
 
-    /// Publishes a bundle *for the engine*, so a peer can start a session towards it.
-    ///
-    /// The private halves must actually be stored, not merely advertised: `signalDecryptPreKey`
-    /// looks up the signed and kyber prekeys the incoming message names, and a bundle whose
-    /// keys were never persisted fails at decrypt with `invalidKeyIdentifier` — which reads
-    /// like a protocol bug and is really a fixture that published keys it did not keep.
-    @CryptoActor
-    private static func bundleForEngine(_ pair: Pair) throws -> PreKeyBundle {
-        let context = NullContext()
-        let store = pair.engine.store
-        let ids = try store.reservePreKeyIds(count: 3)
-
-        let preKey = PrivateKey.generate()
-        let signed = PrivateKey.generate()
-        let kyber = KEMKeyPair.generate()
-        let identity = try store.identityKeyPair(context: context)
-
-        let signedSignature = identity.privateKey.generateSignature(
-            message: signed.publicKey.serialize())
-        let kyberSignature = identity.privateKey.generateSignature(
-            message: kyber.publicKey.serialize())
-
-        let preKeyId = ids.lowerBound
-        let signedPreKeyId = ids.lowerBound + 1
-        let kyberPreKeyId = ids.lowerBound + 2
-
-        try store.storePreKey(
-            PreKeyRecord(id: preKeyId, privateKey: preKey), id: preKeyId, context: context)
-        try store.storeSignedPreKey(
-            SignedPreKeyRecord(
-                id: signedPreKeyId, timestamp: 1000,
-                privateKey: signed, signature: signedSignature),
-            id: signedPreKeyId, context: context)
-        try store.storeKyberPreKey(
-            KyberPreKeyRecord(
-                id: kyberPreKeyId, timestamp: 1000, keyPair: kyber, signature: kyberSignature),
-            id: kyberPreKeyId, context: context)
-
-        return try PreKeyBundle(
-            registrationId: try store.localRegistrationId(context: context),
-            deviceId: pair.local.deviceId,
-            prekeyId: preKeyId, prekey: preKey.publicKey,
-            signedPrekeyId: signedPreKeyId, signedPrekey: signed.publicKey,
-            signedPrekeySignature: signedSignature,
-            identity: identity.identityKey,
-            kyberPrekeyId: kyberPreKeyId, kyberPrekey: kyber.publicKey,
-            kyberPrekeySignature: kyberSignature)
-    }
-
     // MARK: - P2.S04 — groups stay unreachable through the façade
 
     /// Locked decision §0.2.2 holds at the API, not only at the wire type.
@@ -405,10 +374,13 @@ final class MessagingTests: XCTestCase {
             _ = try pair.deliverToPeer(try pair.engine.encrypt(Data("hi".utf8), to: pair.remote))
 
             let live = Set(Envelope.PayloadType.allCases.map(\.rawValue))
-            XCTAssertEqual(live, [1, 2], "only preKey and whisper may be live")
+            XCTAssertEqual(live, [1, 2, 4],
+                           "preKey, whisper, and the sealed wrapper around one of them")
 
             // Every other discriminator, including 3 (reserved for the unauthenticated
-            // PlaintextContent carrier) and whatever a sender-key message would claim.
+            // PlaintextContent carrier) and whatever a sender-key message would claim. The
+            // sealed wrapper is excluded here and covered by `SealedSenderTests`, which
+            // applies the same sweep to the type *inside* the container.
             for raw in UInt8(0)...UInt8(16) where !live.contains(raw) {
                 var frame = try pair.envelopeFromPeer("would be a group message")
                 frame[frame.startIndex + 1] = raw
