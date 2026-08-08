@@ -40,6 +40,14 @@ type Store interface {
 	// (AUDIT 5.28).
 	DeleteAbandonedAccounts(ctx context.Context) (int64, error)
 
+	// Push tokens are the one row here that survives every message it relates
+	// to, which is why docs/THREAT_MODEL.md §3.3 asks for rotation rather than
+	// relying on retention alone. The relay cannot mint a device token, so its
+	// half of "rotate" is to stop keeping one nothing has reasserted. Deleting
+	// by date needs no key, so this still runs on a relay that cannot read the
+	// ciphertext it is discarding.
+	DeleteStalePushTokens(ctx context.Context) (int64, error)
+
 	// Attachments are two-step: the bytes live on the filesystem and the row in
 	// Postgres, so the sweep asks for lapsed ids, removes the files, and only
 	// then removes the rows. Deleting the rows first would orphan the files —
@@ -126,6 +134,7 @@ func (s *Sweeper) once(ctx context.Context) {
 		{"messages", s.store.DeleteExpiredMessages},
 		{"sessions", s.store.DeleteExpiredSessions},
 		{"invites", s.store.DeleteExpiredInvites},
+		{"push_tokens", s.store.DeleteStalePushTokens},
 		{"accounts", s.store.DeleteAbandonedAccounts},
 	} {
 		n, err := t.run(ctx)

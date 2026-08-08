@@ -67,6 +67,16 @@ REQUIRED_INTEGRATION_TESTS=(
   # publication is invisible to them. Losing either restores that blindness.
   TestTheShippedClientsPublicationIsAccepted
   TestABodyAtTheValidatorsMaximumIsReadable
+  # Push-token hardening (P7.S03, THREAT_MODEL.md §3.3). Nothing writes this
+  # table until P8, so these are the only thing standing between the column and
+  # a plaintext device token: no read path would notice, and the symptom of
+  # losing them is a value that looks fine until a database is dumped. The
+  # refusal is listed beside the encryption on purpose — a relay with no key
+  # must refuse, never fall back to storing the token in the clear.
+  TestAPushTokenIsStoredEncrypted
+  TestARelayWithNoKeyRefusesToStoreAToken
+  TestDeletingTheAccountTakesItsPushToken
+  TestStalePushTokensAreSweptAndFreshOnesAreNot
 )
 
 # A host port distinct from the development stack's 8080, so running this never
