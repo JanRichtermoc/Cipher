@@ -322,9 +322,16 @@ final class ConversationArchiveTests: XCTestCase {
 
         // A record a future build wrote. Defaulting the fields this build does not know about is
         // how a "migration" loses data it never knew was there, so it must throw.
+        // One past what this build writes. Derived from `expectedSchema` rather than written as
+        // a literal: the literal was 2, which P6.S03 made the *current* version, and the test
+        // then asserted that a record this build writes must be refused. It failed, loudly,
+        // which is the good outcome — but a version behind the current one would have been
+        // silently accepted forever.
+        let newerSchema = ConversationArchive.StoredMessage.expectedSchema + 1
         let future = """
-        {"schema":2,"id":"\(UUID().uuidString)","ordinal":0,"direction":"incoming",\
-        "text":"from the future","timestampMs":1,"state":"received","establishedSession":false}
+        {"schema":\(newerSchema),"id":"\(UUID().uuidString)","ordinal":0,\
+        "direction":"incoming","text":"from the future","timestampMs":1,"state":"received",\
+        "establishedSession":false}
         """
         // Planted through the row store, which is where messages live since P5.S11. The
         // invariant is unchanged; only the address of a message record moved.
@@ -336,7 +343,7 @@ final class ConversationArchiveTests: XCTestCase {
             _ = try await archive.messages(peer)
             XCTFail("a newer schema must not be read")
         } catch let error as ArchiveError {
-            XCTAssertEqual(error, .unsupportedSchema(2))
+            XCTAssertEqual(error, .unsupportedSchema(newerSchema))
         }
     }
 

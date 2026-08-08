@@ -429,6 +429,39 @@ actor MessageRepository {
         try await mutate(peer) { $0.isBlocked = blocked }
     }
 
+    /// Sets the timer applied to **messages this device sends** in this conversation (P6.S03).
+    ///
+    /// Scoped to the sending direction because that is all it can honestly be. There is no wire
+    /// message that changes a conversation-level setting on the other device, so this cannot
+    /// govern what the peer sends — every message carries its own lifetime instead, which is
+    /// what makes the two copies agree without any shared state to drift. The UI says so rather
+    /// than implying a mutual setting.
+    ///
+    /// `nil` or a non-positive value turns it off. Bounded by the same ceiling the wire enforces,
+    /// so a value that could be stored but not sent cannot be set.
+    func setDisappearing(seconds: Int?, for peer: UUID) async throws {
+        let clamped: Int? = seconds.flatMap {
+            guard $0 > 0 else { return nil }
+            return min($0, Int(MessagePayload.maxExpirySeconds))
+        }
+        try await mutate(peer) { $0.disappearingSeconds = clamped }
+    }
+
+    /// Deletes every stored message whose timer has run out. Returns how many went.
+    ///
+    /// Driven by the caller — launch, foreground, and after a receive — rather than by a timer
+    /// inside this actor. A repeating timer is state that stops existing when the process does,
+    /// and the case that matters most is precisely the one where the process was not running:
+    /// an app killed for a week must delete on the way back up, before anything is drawn.
+    @discardableResult
+    func sweepExpiredMessages() async throws -> Int {
+        do {
+            return try await archive.deleteExpiredMessages(now: Self.milliseconds(now()))
+        } catch {
+            throw Failure.storageUnavailable
+        }
+    }
+
     func setNickname(_ nickname: String?, for peer: UUID) async throws {
         try await mutate(peer) { $0.nickname = nickname }
     }
@@ -504,9 +537,21 @@ actor MessageRepository {
         let conversation = try await startConversation(with: peer, nickname: nil)
         guard !conversation.isBlocked else { throw Failure.blocked }
 
+        // The conversation's timer, applied to this message and carried on the wire so the
+        // recipient deletes their copy on the same schedule (P6.S03). Read from the record that
+        // was just loaded rather than from a separate setting, so what is sent is what the
+        // screen showed.
+        let ttlSeconds = conversation.disappearingSeconds.flatMap {
+            $0 > 0 ? UInt32(exactly: $0) : nil
+        }
+        let sentAtMs = Self.milliseconds(now())
+
         let payload: Data
         do {
-            payload = try MessagePayload(content: .text(trimmed)).encode()
+            let content: MessagePayload.Content = ttlSeconds.map {
+                .expiringText(trimmed, ttlSeconds: $0)
+            } ?? .text(trimmed)
+            payload = try MessagePayload(content: content).encode()
         } catch MessagePayloadError.tooLarge {
             throw Failure.messageTooLarge
         } catch {
@@ -515,11 +560,24 @@ actor MessageRepository {
 
         // Durable first. See the type comment: everything after this point can fail, and a
         // message the user typed must not disappear because the network did.
+        //
+        // The local copy is filed with the same *interval* the payload carries, started here.
+        // The two devices do not expire at the same instant and cannot: the recipient's timer
+        // starts when they file the message, so their copy outlives this one by however long
+        // the trip took. That asymmetry is deliberate and is the safe direction — it errs
+        // toward the reader keeping what was sent to them rather than toward a message vanishing
+        // before it was read. Taking the sender's clock instead would mean trusting a timestamp
+        // the relay chooses, which is how a hostile relay would delete a message on arrival.
+        //
+        // Deriving the expiry here rather than after the send is also deliberate: a send that
+        // fails leaves a message the user can see and retry, and that copy must still expire —
+        // otherwise a failed send is a way to keep a message that was meant to disappear.
         var stored: ConversationArchive.StoredMessage
         do {
             stored = try await archive.append(
                 to: peer, direction: .outgoing, text: trimmed,
-                timestampMs: Self.milliseconds(now()), state: .sending)
+                timestampMs: sentAtMs, state: .sending,
+                expiresAtMs: ttlSeconds.map { sentAtMs + UInt64($0) * 1000 })
         } catch {
             throw Failure.storageUnavailable
         }

@@ -193,9 +193,29 @@ final class ConversationStore {
     func start() async {
         guard !isPreviewOnly else { return }
 
+        // Before anything is loaded or drawn. A message whose timer ran out while the app was
+        // not running must not be on screen for the instant it takes the sweep to reach it, and
+        // this is the only ordering that guarantees that (P6.S03).
+        await sweepExpiredMessages()
         await refresh()
         await maintainKeys()
         await receive()
+    }
+
+    /// Deletes messages whose timers have run out, then reloads if anything went.
+    ///
+    /// Failures are logged rather than surfaced: the sweep runs on every foreground, so a
+    /// transient storage error corrects itself, and a banner over the conversation list would
+    /// report a background task the user cannot influence. A *persistent* failure is visible in
+    /// the only way that matters — the messages are still there.
+    private func sweepExpiredMessages() async {
+        guard !isPreviewOnly else { return }
+        do {
+            let deleted = try await repository().sweepExpiredMessages()
+            if deleted > 0 { await refresh() }
+        } catch {
+            AppLog.store.error("expired-message sweep did not complete; it will be retried")
+        }
     }
 
     /// Retries an unfinished publication and rotates this installation's prekeys when either is
@@ -270,7 +290,13 @@ final class ConversationStore {
         do {
             let stored = try await repository().receive()
             failure = nil
-            if stored > 0 { await refresh() }
+            // Swept here as well as at launch. Not because an inbound message can arrive
+            // overdue — it cannot, since its timer starts when this device files it — but
+            // because a fetch can take a long time on a device that has been away, and other
+            // conversations' messages fall due while it runs. One refresh covers both, so a
+            // sweep that deletes nothing costs a query and no redraw.
+            let deleted = (try? await repository().sweepExpiredMessages()) ?? 0
+            if stored > 0 || deleted > 0 { await refresh() }
         } catch {
             record(error)
         }
@@ -472,6 +498,20 @@ final class ConversationStore {
         await mutate { try await $0.deleteMessage(ordinal: ordinal, in: chatID) }
     }
 
+    /// Sets the timer for messages this device sends in `chatID` (P6.S03).
+    ///
+    /// The options a screen may offer, and the reason they are a list rather than a free field:
+    /// a timer is carried on the wire, so an arbitrary value would be a fingerprint of the
+    /// sender. A short shared set is one fewer thing that distinguishes one member of a small
+    /// circle from another.
+    static let disappearingOptions: [Int] = [
+        30, 5 * 60, 60 * 60, 8 * 60 * 60, 24 * 60 * 60, 7 * 24 * 60 * 60,
+    ]
+
+    func setDisappearing(seconds: Int?, chatID: UUID) async {
+        await mutate { try await $0.setDisappearing(seconds: seconds, for: chatID) }
+    }
+
     func toggleBlock(_ peer: UUID) async {
         let blocked = blockedContactIDs.contains(peer)
         await mutate { try await $0.setBlocked(!blocked, for: peer) }
@@ -593,7 +633,8 @@ final class ConversationStore {
                 isMuted: conversation.isMuted,
                 isVerified: verifiedPeers.contains(conversation.peer),
                 avatarInitials: Self.initials(for: conversation),
-                accentHue: Self.hue(for: conversation.peer))
+                accentHue: Self.hue(for: conversation.peer),
+                disappearingSeconds: conversation.disappearingSeconds)
         }
         .sorted {
             if $0.isPinned != $1.isPinned { return $0.isPinned && !$1.isPinned }

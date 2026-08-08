@@ -143,7 +143,11 @@ anything they legitimately received. What *is* in scope:
 - They cannot read messages for other pairs — sessions are pairwise.
 - They cannot impersonate another member without triggering a safety-number change.
 - Disappearing messages are a **courtesy, not a control**, against a hostile recipient. Never
-  presented as one.
+  presented as one. Built in P6.S03 and unchanged by it: the timer travels inside the ciphertext
+  and both devices delete the row, which is real against an honest client and worth nothing
+  against someone who screenshots, or who runs a build that ignores the field. The setting's own
+  footer says so — it claims deletion of both copies and explicitly disclaims stopping anyone
+  saving a message another way.
 
 ---
 

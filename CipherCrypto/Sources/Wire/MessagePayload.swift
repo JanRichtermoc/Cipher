@@ -39,13 +39,41 @@ public struct MessagePayload: Sendable, Equatable {
     /// Wire discriminators. **Raw values are wire-visible**: changing one reinterprets every
     /// message in flight, and 0 is deliberately unused so an all-zero buffer is never a valid
     /// payload.
-    internal enum ContentType: UInt8 {
+    internal enum ContentType: UInt8, CaseIterable {
         case text = 1
+        /// Text that both devices delete when its timer runs out (P6.S03).
+        case expiringText = 2
     }
 
     public enum Content: Sendable, Equatable {
         case text(String)
+        /// Text carrying its own lifetime, in seconds from the moment it was sent.
+        ///
+        /// **The timer is on the message, not on the conversation**, and that is a deliberate
+        /// choice rather than a simplification. A conversation-level timer is state that two
+        /// devices have to agree about, and they cannot: there is no wire message that changes
+        /// it, so the two copies would drift the first time one was set while the other device
+        /// was offline — and a message that survives on one side because of a stale setting is
+        /// the exact failure a disappearing-message feature exists to prevent. A message that
+        /// states its own fate cannot disagree with itself.
+        ///
+        /// The visible consequence, which the UI has to say rather than hide: setting a timer
+        /// governs **the messages you send**. It does not reach into what the other person
+        /// sends you, because nothing here can make their client do anything.
+        case expiringText(String, ttlSeconds: UInt32)
     }
+
+    /// The longest lifetime a peer may name: four weeks.
+    ///
+    /// A bound rather than a policy. Anything larger is refused at the boundary so a hostile
+    /// peer cannot hand over a value that overflows a date computation downstream; anything
+    /// this size or under is honoured even if no UI offers it, because refusing a legal-looking
+    /// timer from a future build would drop the message rather than the timer.
+    ///
+    /// There is deliberately **no minimum**. A peer who sets a one-second timer makes their own
+    /// message unreadable, which is theirs to do; enforcing a floor here would refuse the
+    /// message outright and lose content to protect the reader from an inconvenience.
+    public static let maxExpirySeconds: UInt32 = 4 * 7 * 24 * 60 * 60
 
     /// Format version. A payload written by a newer build is refused rather than guessed at.
     public static let version: UInt8 = 1
@@ -59,6 +87,8 @@ public struct MessagePayload: Sendable, Equatable {
     public static let maxEncodedBytes = 32 * 1024
 
     private static let headerSize = 2
+    /// Width of the big-endian timer that precedes the text in an `.expiringText` body.
+    private static let expirySize = 4
 
     public let content: Content
 
@@ -75,6 +105,15 @@ public struct MessagePayload: Sendable, Equatable {
         case .text(let text):
             type = .text
             body = Data(text.utf8)
+        case .expiringText(let text, let ttlSeconds):
+            guard ttlSeconds > 0, ttlSeconds <= Self.maxExpirySeconds else {
+                throw MessagePayloadError.invalidExpiry(ttlSeconds)
+            }
+            type = .expiringText
+            var encoded = Data(capacity: Self.expirySize + text.utf8.count)
+            withUnsafeBytes(of: ttlSeconds.bigEndian) { encoded.append(contentsOf: $0) }
+            encoded.append(Data(text.utf8))
+            body = encoded
         }
 
         let total = Self.headerSize + body.count
@@ -115,6 +154,31 @@ public struct MessagePayload: Sendable, Equatable {
                 throw MessagePayloadError.malformed
             }
             return MessagePayload(content: .text(text))
+        case .expiringText:
+            // Four bytes of timer, then the text. A body too short to hold the timer is
+            // malformed rather than treated as a zero-length one: the alternative is reading a
+            // message with no lifetime as one that never expires, which turns a truncated
+            // payload into a message that outlives what its sender asked for.
+            guard body.count >= Self.expirySize else { throw MessagePayloadError.malformed }
+            let start = body.startIndex
+
+            var ttlSeconds: UInt32 = 0
+            for offset in 0..<Self.expirySize {
+                ttlSeconds = (ttlSeconds << 8) | UInt32(body[start + offset])
+            }
+            // The same bounds the encoder enforces, applied to an attacker-chosen value. Zero
+            // is refused because it is the one value that would be ambiguous with `.text`, and
+            // a payload that can be read two ways is a payload that will be.
+            guard ttlSeconds > 0, ttlSeconds <= Self.maxExpirySeconds else {
+                throw MessagePayloadError.invalidExpiry(ttlSeconds)
+            }
+
+            guard let text = String(
+                data: Data(body[(start + Self.expirySize)...]), encoding: .utf8)
+            else {
+                throw MessagePayloadError.malformed
+            }
+            return MessagePayload(content: .expiringText(text, ttlSeconds: ttlSeconds))
         }
     }
 }
@@ -126,6 +190,13 @@ public enum MessagePayloadError: Error, Equatable, Sendable {
     case unsupportedVersion(UInt8)
     /// A content type this build does not implement — a newer peer, or a peer probing.
     /// Refused rather than rendered as text.
+    ///
+    /// **This is where a build predating P6.S03 meets an expiring message**, and the cost is
+    /// worth naming: the receive path acknowledges a payload it cannot parse and drops it, so
+    /// that message is lost rather than delayed. The alternative was bumping `version`, which
+    /// would have done the same thing to *every* message instead of only timed ones.
     case unsupportedContent(UInt8)
     case tooLarge(Int)
+    /// A timer of zero, or longer than `MessagePayload.maxExpirySeconds`.
+    case invalidExpiry(UInt32)
 }

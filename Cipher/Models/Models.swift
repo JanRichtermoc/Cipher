@@ -34,6 +34,9 @@ struct Chat: Identifiable, Hashable {
     var isVerified: Bool
     var avatarInitials: String
     var accentHue: Double
+    /// The timer applied to messages **this device sends** here, or nil when off (P6.S03).
+    /// Not a mutual setting: nothing on the wire changes the peer's, so this cannot claim to.
+    var disappearingSeconds: Int?
 
     var accentColor: Color {
         Color(hue: accentHue, saturation: 0.45, brightness: 0.72)

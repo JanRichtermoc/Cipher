@@ -208,7 +208,22 @@ actor ConversationArchive {
     }
 
     nonisolated struct StoredMessage: Codable, Sendable, Equatable, SchemaVersioned {
-        static let expectedSchema = 1
+        /// **2 since P6.S03**, which added `expiresAtMs`.
+        ///
+        /// Bumped rather than added as a quietly-defaulting optional, and the direction is the
+        /// point. An older build reading a schema-2 record would decode every field it knows
+        /// and default the one it does not — leaving a message that was supposed to disappear
+        /// sitting in the archive forever, with nothing anywhere reporting that a timer had
+        /// been dropped. `ArchiveCoding` already argues this ("defaulting them is how a
+        /// 'migration' loses data it never knew was there") and `PeerIdentityRecord.knownFlags`
+        /// sets the precedent. **The cost, stated:** a downgrade past this build cannot read
+        /// message records written by it, and a conversation containing one fails to load
+        /// rather than loading without it. That is the *downgrade* direction, and it is the only
+        /// one that costs anything: schema 1 is still read (`supportedSchemas`), because a
+        /// message written before timers existed has exactly one correct interpretation — no
+        /// timer — and refusing it would discard the entire archive on upgrade.
+        static let expectedSchema = 2
+        static let supportedSchemas: Set<Int> = [1, 2]
 
         enum Direction: String, Codable, Sendable {
             case outgoing
@@ -243,6 +258,20 @@ actor ConversationArchive {
         /// True when this message established the session. Held to a weaker standard: the
         /// address it arrived under is chosen by whoever relayed it (AUDIT 3.8).
         var establishedSession: Bool = false
+        /// When this message must be gone, or nil if it has no timer (P6.S03).
+        ///
+        /// **Absolute, and derived from `timestampMs` at the moment the message was filed**,
+        /// rather than a duration this device counts down. A duration needs something to count
+        /// from that survives being killed, and the only such thing is a stored instant — so
+        /// storing the instant directly removes the step that could be got wrong. It also means
+        /// the sweep is a comparison rather than a schedule: nothing has to have been running
+        /// for a message to be overdue when the app comes back.
+        ///
+        /// The clock is the **sending** device's, carried in `timestampMs`. Starting it at read
+        /// time would be closer to what people expect, and is not implementable: there are no
+        /// read receipts on the wire (see `State`), so "read" is not a fact either side can act
+        /// on. Stated rather than approximated.
+        var expiresAtMs: UInt64?
     }
 
     /// The durable result of one inbound envelope. Unsupported payloads and blocked peers are
@@ -361,7 +390,8 @@ actor ConversationArchive {
         timestampMs: UInt64,
         state: StoredMessage.State,
         senderIdentityKey: Data? = nil,
-        establishedSession: Bool = false
+        establishedSession: Bool = false,
+        expiresAtMs: UInt64? = nil
     ) async throws -> StoredMessage {
         try await ensureMigrated()
         let group = Self.group(peer)
@@ -377,8 +407,8 @@ actor ConversationArchive {
                     to: peer, group: group, direction: direction, text: text,
                     timestampMs: timestampMs, state: state,
                     senderIdentityKey: senderIdentityKey,
-                    establishedSession: establishedSession, quota: quota,
-                    transaction: transaction)
+                    establishedSession: establishedSession, expiresAtMs: expiresAtMs,
+                    quota: quota, transaction: transaction)
             }
         }
     }
@@ -425,15 +455,30 @@ actor ConversationArchive {
                     }
 
                     let text: String
+                    // The sender's timer, honoured as sent (P6.S03). Measured from
+                    // `timestampMs`, which is *this* device's receive clock rather than the
+                    // sender's claimed one: the envelope timestamp is chosen by whoever relayed
+                    // it, so taking it would let a hostile relay backdate a message into
+                    // immediate deletion, or forward-date it into never expiring. Using the
+                    // local clock means a delayed message gets its full timer here rather than
+                    // a shortened one, which errs toward the reader keeping what was sent to
+                    // them.
+                    let expiresAtMs: UInt64?
                     switch payload.content {
-                    case .text(let value): text = value
+                    case .text(let value):
+                        text = value
+                        expiresAtMs = nil
+                    case .expiringText(let value, let ttlSeconds):
+                        text = value
+                        expiresAtMs = timestampMs + UInt64(ttlSeconds) * 1000
                     }
 
                     _ = try Self.append(
                         to: peer, group: group, direction: .incoming, text: text,
                         timestampMs: timestampMs, state: .received,
                         senderIdentityKey: decrypted.senderIdentityKey,
-                        establishedSession: decrypted.establishedSession, quota: quota,
+                        establishedSession: decrypted.establishedSession,
+                        expiresAtMs: expiresAtMs, quota: quota,
                         transaction: transaction)
                     return .stored
                 }
@@ -462,6 +507,7 @@ actor ConversationArchive {
         state: StoredMessage.State,
         senderIdentityKey: Data?,
         establishedSession: Bool,
+        expiresAtMs: UInt64?,
         quota: StorageQuota,
         transaction: SealedRowTransaction
     ) throws -> StoredMessage {
@@ -478,7 +524,8 @@ actor ConversationArchive {
             timestampMs: timestampMs,
             state: state,
             senderIdentityKey: senderIdentityKey,
-            establishedSession: establishedSession)
+            establishedSession: establishedSession,
+            expiresAtMs: expiresAtMs)
 
         try transaction.store(
             namespace: Namespace.message, group: group, ordinal: message.ordinal,
@@ -609,6 +656,60 @@ actor ConversationArchive {
                 group: Self.group(peer),
                 ordinal: message.ordinal,
                 value: try Self.encode(message))
+        }
+    }
+
+    // MARK: - Disappearing messages (P6.S03)
+
+    /// Deletes every stored message whose timer has run out, and reports how many went.
+    ///
+    /// ## A sweep, not a schedule
+    ///
+    /// Nothing counts down. Each message carries the instant it is due (`expiresAtMs`), and this
+    /// compares that instant to now — so a device that was killed, backgrounded for a week, or
+    /// restored from a state where no timer was ever running still deletes exactly what is
+    /// overdue the next time it runs. A countdown would have to survive process death to be
+    /// worth anything, and the only thing that survives process death is what was written down.
+    ///
+    /// ## Deleted, not hidden
+    ///
+    /// The row is removed. `SealedRecordDatabase` opens with `secure_delete = ON` and verifies
+    /// it, so the page image is scrubbed rather than merely unlinked from the b-tree, and the
+    /// WAL is checkpoint-truncated (P5.S11). Filtering expired messages out of `messages(_:)`
+    /// instead would be the "hide rather than delete" this step names as its anti-goal: the
+    /// plaintext would still be in the container for anyone who later obtained the key.
+    ///
+    /// ## Ordinals are not touched
+    ///
+    /// A message deleted from the middle leaves a hole, and that is correct. `nextOrdinal` never
+    /// rewinds and `firstOrdinal` only rises, so reusing the freed slot would file a new message
+    /// where an AEAD-bound predecessor may still exist. Reading is a list, not a range, so holes
+    /// cost nothing.
+    ///
+    /// One transaction across every conversation: a partial sweep is not wrong — the next run
+    /// finishes it — but a single commit means the observable state never has half a batch.
+    @discardableResult
+    func deleteExpiredMessages(now nowMs: UInt64) async throws -> Int {
+        try await ensureMigrated()
+        let groups = try await conversations().map { Self.group($0.peer) }
+        guard !groups.isEmpty else { return 0 }
+
+        return try await gate.withExclusiveAccess {
+            try await engine.withSealedTransaction { transaction in
+                var deleted = 0
+                for group in groups {
+                    for row in try transaction.list(
+                        namespace: Namespace.message, group: group)
+                    {
+                        let message = try Self.decode(StoredMessage.self, from: row.value)
+                        guard let due = message.expiresAtMs, due <= nowMs else { continue }
+                        try transaction.remove(
+                            namespace: Namespace.message, group: group, ordinal: row.ordinal)
+                        deleted += 1
+                    }
+                }
+                return deleted
+            }
         }
     }
 
@@ -871,7 +972,22 @@ actor ConversationArchive {
 
 nonisolated protocol SchemaVersioned {
     var schema: Int { get }
+    /// The version this build **writes**.
     static var expectedSchema: Int { get }
+    /// Every version this build can **read**, which is not always just the one it writes.
+    ///
+    /// The two directions are not symmetric and conflating them is a data-loss bug. Refusing a
+    /// *newer* record is right: it has fields this build would silently default, and defaulting
+    /// them is how a "migration" loses data it never knew was there. Refusing an *older* one is
+    /// only right when this build cannot interpret it — and for an additive change it can,
+    /// completely, because the absent field has exactly one meaning.
+    ///
+    /// Defaulted to `[expectedSchema]`, so a type that says nothing keeps the strict behaviour.
+    static var supportedSchemas: Set<Int> { get }
+}
+
+nonisolated extension SchemaVersioned {
+    static var supportedSchemas: Set<Int> { [expectedSchema] }
 }
 
 /// The one codec for everything sealed in this container.
@@ -898,6 +1014,13 @@ nonisolated enum ArchiveCoding {
     /// is still a refusal and not a repair — a record from a newer build has fields this one
     /// would silently default, and defaulting them is how a "migration" loses data it never
     /// knew was there.
+    ///
+    /// It checks membership of `supportedSchemas` rather than equality with `expectedSchema`,
+    /// because those answer different questions and equality answers the wrong one for an
+    /// additive field. P6.S03 found that the hard way: bumping `StoredMessage` to 2 for
+    /// `expiresAtMs` made this build refuse **every message written by every earlier build**,
+    /// including the ones the P5.S10 migration reads, which is a total history loss on upgrade
+    /// rather than the downgrade cost it was reasoned about as.
     static func decode<T: Decodable & SchemaVersioned>(
         _ type: T.Type, from bytes: Data
     ) throws -> T {
@@ -907,7 +1030,7 @@ nonisolated enum ArchiveCoding {
         } catch {
             throw ArchiveError.malformedRecord
         }
-        guard value.schema == type.expectedSchema else {
+        guard type.supportedSchemas.contains(value.schema) else {
             throw ArchiveError.unsupportedSchema(value.schema)
         }
         return value
