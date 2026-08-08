@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+
+	"cipher.relay/internal/pushtoken"
 )
 
 // migrationFS embeds the SQL so the binary carries its own schema.
@@ -38,14 +40,50 @@ var migrationFS embed.FS
 // reading one package.
 type DB struct {
 	pool *pgxpool.Pool
+
+	// pushCipher encrypts APNs device tokens at rest (P7.S03). Nil when the
+	// service has no key configured, which is the current deployment: push does
+	// not exist until P8. Nil means the push-token calls refuse — never that
+	// they fall back to storing a token in the clear.
+	pushCipher *pushtoken.Cipher
 }
+
+// Option configures a DB at Open time.
+//
+// Variadic rather than more parameters on Open: every existing caller — main,
+// the integration suite, the fast tests — opens a database that has no push key
+// and should not have to say so.
+type Option func(*DB)
+
+// WithPushTokenKey enables encrypted push-token storage.
+//
+// An empty or short secret is not an error here and does not disable the check
+// downstream: `pushtoken.New` refuses it, the cipher stays nil, and every
+// push-token call then returns ErrNoPushTokenKey. A misconfigured key must not
+// be the reason a token is stored unencrypted.
+func WithPushTokenKey(secret []byte) Option {
+	return func(db *DB) {
+		if len(secret) == 0 {
+			return
+		}
+		cipher, err := pushtoken.New(secret)
+		if err != nil {
+			return
+		}
+		db.pushCipher = cipher
+	}
+}
+
+// HasPushTokenKey reports whether encrypted push-token storage is available.
+// Operational and test support; it says nothing about the key itself.
+func (db *DB) HasPushTokenKey() bool { return db.pushCipher != nil }
 
 // Open connects and verifies the connection before returning.
 //
 // pgxpool is lazy: NewWithConfig succeeds against a database that does not
 // exist. A constructor that returns a handle to nothing turns a configuration
 // error into a runtime error at the first request, so this pings.
-func Open(ctx context.Context, url string) (*DB, error) {
+func Open(ctx context.Context, url string, opts ...Option) (*DB, error) {
 	cfg, err := pgxpool.ParseConfig(url)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
@@ -72,7 +110,11 @@ func Open(ctx context.Context, url string) (*DB, error) {
 		return nil, fmt.Errorf("ping database: %w", err)
 	}
 
-	return &DB{pool: pool}, nil
+	db := &DB{pool: pool}
+	for _, opt := range opts {
+		opt(db)
+	}
+	return db, nil
 }
 
 // Close releases the pool.

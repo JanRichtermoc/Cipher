@@ -23,7 +23,17 @@ is updated in the same commit.
 was found. What matters going forward is what must stay true and what would notice if it stopped
 being true. Compressed 2026-07-29; the narratives are recoverable from git history.
 
-Last reviewed: 2026-08-08, after P7.S02 bucketed the relayed length. **No finding changed status**,
+Last reviewed: 2026-08-08, after P7.S03 hardened the push token. **No finding changed status**, and
+**6.10 is worth re-reading rather than re-opening**: it recorded that §3.3's "store it hashed" was
+unbuildable, and this is the step that built the amended position instead. What it found is the same
+shape as **5.36** and P6.S05 — `push_tokens` was fully specified in `0001_init.sql` and `BACKEND.md`
+§2.9 and **no Go had ever touched it**, so "a dump holds no plaintext token" was true only because no
+token could be stored at all. It is now encrypted under a key held in the environment, refused
+outright when that key is absent, swept at 30 days, and cascaded with the account — each pinned by a
+test required by name. The documented cipher was unbuildable for the second time this phase: a
+libsignal-free XChaCha20-Poly1305 is not in Go's standard library, so AES-256-GCM was used and
+migration `0002` narrowed the nonce CHECK. **This is the phase's first change that needs a deploy.**
+Before it, P7.S02 bucketed the relayed length. **No finding changed status**,
 because there was never a row for message length: the leak was recorded in `THREAT_MODEL.md` §3.5 as
 a decision rather than here as a defect, and it is closed on the same terms. Two things it recorded.
 The roadmap said *pad the ciphertext*, and that is the one place padding cannot go — a Signal

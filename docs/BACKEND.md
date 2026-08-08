@@ -296,9 +296,24 @@ catch up.
 | Column | Type | Why it exists | What a seizure learns |
 |---|---|---|---|
 | `aci` | `UUID PRIMARY KEY REFERENCES accounts(aci) ON DELETE CASCADE` | The token has to map to an account to be useful, and the cascade is what makes §3.3's "delete it with the account" actually happen. | That an account has push enabled. |
-| `token_ciphertext` | `BYTEA NOT NULL` | The APNs device token, encrypted with XChaCha20-Poly1305 under a key held **only in the service's environment, never in Postgres**. | Nothing from a database dump alone. From a full host compromise, the token. |
-| `token_nonce` | `BYTEA NOT NULL` | Per-row nonce for the above. Stored because it must be, and it is not secret. | Nothing. |
-| `rotated_at` | `DATE NOT NULL` | Drives the rotation policy in §3.3 of the threat model. Day resolution. | The day a token was last rotated. |
+| `token_ciphertext` | `BYTEA NOT NULL` | The APNs device token, encrypted with **AES-256-GCM** under a key held **only in the service's environment, never in Postgres** (`RELAY_PUSH_TOKEN_KEY`). The account's `aci` is the AEAD's additional data, so a row lifted into another account does not open. | Nothing from a database dump alone. From a full host compromise, the token. |
+| `token_nonce` | `BYTEA NOT NULL` | Per-row 96-bit nonce for the above, fresh on every write. Stored because it must be, and it is not secret. | Nothing. |
+| `rotated_at` | `DATE NOT NULL` | Drives the rotation policy in §3.3 of the threat model. Day resolution. The sweep discards rows older than `store.PushTokenMaxAge` (30 days). | The day a token was last rotated. |
+
+> **Amended 2026-08-08 (P7.S03): the cipher is AES-256-GCM, not the XChaCha20-Poly1305 this
+> section first specified.** That algorithm is not reachable from the Go standard library —
+> `chacha20poly1305` ships inside the toolchain only as the standard library's own vendored copy and
+> cannot be imported by this module — so building it as written would have meant adding
+> `golang.org/x/crypto` as the relay's first cryptographic dependency. That is a supply-chain
+> decision rather than an implementation detail, and it was not taken for one field. AES-GCM is in
+> `crypto/cipher`, and its nonce is 96 bits, so **migration `0002` narrows the column's CHECK from 24
+> bytes to 12**. The table had never held a row, so nothing was re-encrypted and nothing was lost.
+> `internal/pushtoken` carries the argument; `TestThePushTokenNonceWidthMatchesTheCipher` fails if
+> the constraint and the cipher ever disagree.
+>
+> **Absent key means refuse, never fall back.** `RELAY_PUSH_TOKEN_KEY` is optional and is unset on
+> the current deployment, because push does not exist until P8 and nothing writes this table yet.
+> With no key the push-token calls return an error; they do not store the token in the clear.
 
 > **Why encryption rather than hashing.** The token must be replayed verbatim to APNs, so a one-way
 > function cannot be used. Calling the stored value “hashed” would promise a stronger guarantee than
@@ -360,6 +375,7 @@ The highest-value control on the server, and nearly free at schema-design time.
 | Invite | Redeemed, or expiry sweep |
 | Session token | Expiry sweep, sign-out, or account deletion (cascade) |
 | Attachment blob + row | Fetched-and-acked, or TTL sweep at **7 days** |
+| Push token | Turned off by the user, rotation sweep at **30 days** since `rotated_at`, or account deletion (cascade) |
 | Account and everything cascading from it | Explicit deletion, or abandonment sweep at **180 days** of no `last_seen` |
 | Request logs | 24 h (§7) |
 

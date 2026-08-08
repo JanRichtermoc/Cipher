@@ -16,8 +16,11 @@ import (
 	"io/fs"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
+
+	"cipher.relay/internal/pushtoken"
 )
 
 // documentedTables is the exact set justified in docs/BACKEND.md §2.
@@ -206,5 +209,33 @@ func TestAttachmentsRecordNoOwner(t *testing.T) {
 				"and the ownership edge is deliberately not recorded (BACKEND.md §2.8)",
 				forbidden)
 		}
+	}
+}
+
+// TestThePushTokenNonceWidthMatchesTheCipher pins the two halves of P7.S03 to
+// each other.
+//
+// The column's CHECK and `pushtoken.NonceBytes` have to agree, and nothing else
+// would notice if they stopped: a wider constraint accepts a nonce the cipher
+// will never produce, and a narrower one turns every registration into a
+// constraint violation at runtime — on a table the fast gate never touches,
+// because it needs a database.
+//
+// 0001 specified XChaCha20-Poly1305 and 24 bytes; 0002 narrows it to AES-GCM's
+// 96 bits. Both statements are in the embedded SQL, so this asserts the *last*
+// one wins rather than that the string appears somewhere.
+func TestThePushTokenNonceWidthMatchesTheCipher(t *testing.T) {
+	sql := migrationCode(t)
+
+	widths := regexp.MustCompile(`octet_length\(token_nonce\)\s*=\s*(\d+)`).
+		FindAllStringSubmatch(sql, -1)
+	if len(widths) == 0 {
+		t.Fatal("no CHECK constrains token_nonce; the column accepts any width")
+	}
+
+	last := widths[len(widths)-1][1]
+	if last != strconv.Itoa(pushtoken.NonceBytes) {
+		t.Errorf("the final token_nonce CHECK is %s bytes, but pushtoken.NonceBytes is %d",
+			last, pushtoken.NonceBytes)
 	}
 }

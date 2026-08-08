@@ -139,7 +139,7 @@ func runIssueInvite() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	db, err := store.Open(ctx, cfg.DatabaseURL)
+	db, err := store.Open(ctx, cfg.DatabaseURL, store.WithPushTokenKey(cfg.PushTokenKey))
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}
@@ -182,7 +182,7 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
-	db, err := store.Open(ctx, cfg.DatabaseURL)
+	db, err := store.Open(ctx, cfg.DatabaseURL, store.WithPushTokenKey(cfg.PushTokenKey))
 	if err != nil {
 		return fmt.Errorf("postgres: %w", err)
 	}

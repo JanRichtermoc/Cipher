@@ -52,6 +52,9 @@ func (f *fakeStore) DeleteExpiredSessions(context.Context) (int64, error) {
 func (f *fakeStore) DeleteAbandonedAccounts(context.Context) (int64, error) {
 	return f.run("accounts")
 }
+func (f *fakeStore) DeleteStalePushTokens(context.Context) (int64, error) {
+	return f.run("push_tokens")
+}
 func (f *fakeStore) ExpiredAttachmentIDs(context.Context, int) ([]uuid.UUID, error) {
 	return nil, nil
 }
@@ -75,7 +78,9 @@ func TestOnePassSweepsEveryTable(t *testing.T) {
 	store := newFakeStore()
 	quietSweeper(store).once(context.Background())
 
-	for _, table := range []string{"messages", "sessions", "invites", "accounts"} {
+	for _, table := range []string{
+		"messages", "sessions", "invites", "push_tokens", "accounts",
+	} {
 		if store.called[table] != 1 {
 			t.Errorf("the %s sweep ran %d times in one pass, want exactly 1",
 				table, store.called[table])
@@ -95,7 +100,7 @@ func TestAFailingSweepDoesNotSkipTheOthers(t *testing.T) {
 
 	quietSweeper(store).once(context.Background())
 
-	for _, table := range []string{"sessions", "invites", "accounts"} {
+	for _, table := range []string{"sessions", "invites", "push_tokens", "accounts"} {
 		if store.called[table] != 1 {
 			t.Errorf("the %s sweep did not run after an earlier task failed", table)
 		}

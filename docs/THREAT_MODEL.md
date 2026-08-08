@@ -233,6 +233,27 @@ on its own. It does **not** defeat §1.1 host seizure, where the environment is 
 Rotation and deletion-with-the-account are what do the real work there, and they were always the
 substance of this position. Schema in [`BACKEND.md`](BACKEND.md) §2.9.
 
+**Built 2026-08-08 (P7.S03).** Three things, and the second is the one that was only a document
+until now.
+
+**Encryption at rest**, AES-256-GCM under `RELAY_PUSH_TOKEN_KEY`, with the account's `aci` as the
+AEAD's additional data so a row moved between accounts does not open — otherwise write access to the
+table would be enough to point one person's notifications at another person's device. Not the
+XChaCha20-Poly1305 §2.9 first specified: that is unreachable from Go's standard library and building
+it would have meant the relay's first cryptographic dependency. **A missing key makes the write
+refuse**, never fall back to plaintext.
+
+**Rotation**, which is narrower than the word suggests and is worth stating plainly: only a device
+can mint a device token, so the relay cannot rotate one. What it can do is stop keeping a token that
+nothing has reasserted, and rewrite the row under a fresh nonce every time one is. The sweep discards
+rows older than 30 days.
+
+**Deletion with the account** is the schema's cascade, now actually exercised by a test rather than
+assumed from the DDL.
+
+The limit is unchanged and is the reason this section was amended in the first place: none of it
+defeats seizure of a running host, where the key is in the environment that is seized.
+
 ### 3.4 Identifiers — invite codes only
 
 **Decision:** never phone numbers, never email. Not a UX preference — an identifier you did not

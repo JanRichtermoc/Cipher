@@ -88,6 +88,25 @@ type Config struct {
 	// resets every bucket once, which is the same effect a restart used to have.
 	RateLimitPepper []byte
 
+	// PushTokenKey encrypts APNs device tokens at rest (P7.S03,
+	// docs/THREAT_MODEL.md §3.3).
+	//
+	// **Optional, and absent is the correct state today**: push does not exist
+	// until P8, so nothing writes a token and a relay with no key has nothing to
+	// protect. It is not a startup failure for the same reason — a required
+	// variable for a feature that is not built yet is a variable that gets set to
+	// a placeholder and then never revisited.
+	//
+	// What absence does mean is that the push-token calls **refuse**. A missing
+	// key must never be the reason a token is stored in the clear, which is the
+	// failure this whole step exists to prevent.
+	//
+	// Rotating it makes every stored ciphertext unopenable. That is survivable by
+	// design rather than by accident: the sweep discards tokens older than
+	// `store.PushTokenMaxAge` and clients re-register, so a rotation costs at most
+	// one refresh cycle of notifications and never a stuck row.
+	PushTokenKey []byte
+
 	// TrustedProxies are the peers whose X-Real-IP header may be believed.
 	//
 	// **Empty means trust nobody**, which is the P4 behaviour: the header is
@@ -239,6 +258,9 @@ func Load() (Config, error) {
 
 		// 32 characters, matching the 32 random bytes the fallback generates.
 		RateLimitPepper: secret("RELAY_RATELIMIT_PEPPER", 32),
+
+		// Same floor, same reasoning: a short value looks configured and is not.
+		PushTokenKey: secret("RELAY_PUSH_TOKEN_KEY", 32),
 
 		// No default, and no error when absent: running with no proxy in front
 		// is a legitimate configuration (it is how the integration suite and
