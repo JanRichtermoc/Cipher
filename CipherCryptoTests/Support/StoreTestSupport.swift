@@ -272,19 +272,44 @@ internal struct PeerFixture {
     }
 
     /// Encrypts to `recipient` from this peer, returning wire bytes and the message type.
+    ///
+    /// Takes the plaintext verbatim: whether it carries P7.S02 padding is the caller's
+    /// decision, because both a padded and an unpadded peer are things a test needs to build.
     internal func encrypt(_ text: String, to recipient: ProtocolAddress) throws
         -> (bytes: Data, type: CiphertextMessage.MessageType) {
+        try encrypt(Data(text.utf8), to: recipient)
+    }
+
+    internal func encrypt(_ plaintext: Data, to recipient: ProtocolAddress) throws
+        -> (bytes: Data, type: CiphertextMessage.MessageType) {
         let message = try signalEncrypt(
-            message: Array(text.utf8),
+            message: plaintext,
             for: recipient, localAddress: address,
             sessionStore: store, identityStore: store, context: NullContext())
         return (message.serialize(), message.messageType)
     }
 
     /// Decrypts a message that arrived from `sender`.
+    ///
+    /// `padded` says whether these bytes came through `CryptoEngine.encrypt`, which pads
+    /// (P7.S02), or straight out of `Local.encrypt`, which is the raw store path and does not.
+    /// Deliberately without a default: the far side of these tests stands in for a real client,
+    /// and guessing wrong leaves the terminator and its zero fill on the end of every message —
+    /// valid UTF-8, so the failure would be an invisible one.
     internal func decrypt(
-        _ bytes: Data, type: CiphertextMessage.MessageType, from sender: ProtocolAddress
+        _ bytes: Data, type: CiphertextMessage.MessageType, from sender: ProtocolAddress,
+        padded: Bool
     ) throws -> String {
+        let plaintext = try decryptData(bytes, type: type, from: sender)
+        let content = padded ? try MessagePadding.strip(plaintext) : plaintext
+        return String(decoding: content, as: UTF8.self)
+    }
+
+    /// The same, without stripping or decoding — for a test that needs the bytes a session
+    /// actually produced.
+    internal func decryptData(
+        _ bytes: Data, type: CiphertextMessage.MessageType, from sender: ProtocolAddress
+    ) throws -> Data {
         let context = NullContext()
         let plaintext: Data
         switch type {
@@ -301,7 +326,7 @@ internal struct PeerFixture {
                 from: sender, to: address,
                 sessionStore: store, identityStore: store, context: context)
         }
-        return String(decoding: plaintext, as: UTF8.self)
+        return plaintext
     }
 }
 

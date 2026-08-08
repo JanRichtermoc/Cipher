@@ -23,7 +23,16 @@ is updated in the same commit.
 was found. What matters going forward is what must stay true and what would notice if it stopped
 being true. Compressed 2026-07-29; the narratives are recoverable from git history.
 
-Last reviewed: 2026-08-08, after P7.S01 sealed the sender. **3.4 is CLOSED** — a relayed frame
+Last reviewed: 2026-08-08, after P7.S02 bucketed the relayed length. **No finding changed status**,
+because there was never a row for message length: the leak was recorded in `THREAT_MODEL.md` §3.5 as
+a decision rather than here as a defect, and it is closed on the same terms. Two things it recorded.
+The roadmap said *pad the ciphertext*, and that is the one place padding cannot go — a Signal
+ciphertext is authenticated, so appended bytes fail to decrypt, and making them strippable would mean
+carrying the real length beside the padded one in cleartext. It goes on the plaintext. And padding is
+coupled to sealing: a frame is padded exactly when it is `.sealed`, so the receive path decides by
+frame type rather than by sniffing, which matters because padding bytes are valid UTF-8 and a wrong
+guess would return them as content with nothing downstream noticing. Before it, P7.S01 sealed the
+sender. **3.4 is CLOSED** — a relayed frame
 carries seventeen zero bytes where it used to carry the sender, so a seized database can no longer
 say who sent anything — and the half it did not cover was split out as **3.9** rather than closed by
 omission, the same move P5.S14 made with 5.1 and 5.35: a live relay still learns the sender from the

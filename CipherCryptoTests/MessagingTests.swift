@@ -61,12 +61,17 @@ final class MessagingTests: XCTestCase {
                     content.contents,
                     type: content.messageType,
                     from: try ProtocolAddress(
-                        name: certificate.senderUuid, deviceId: certificate.deviceId))
+                        name: certificate.senderUuid, deviceId: certificate.deviceId),
+                    padded: true)
             case .preKey, .whisper:
+                // Addressed frames reach this fixture only when a test hand-builds one, and
+                // a hand-built frame carries whatever the test put in it — never padding,
+                // since `CryptoEngine.encrypt` always seals.
                 return try peer.decrypt(
                     envelope.ciphertext,
                     type: envelope.type == .preKey ? .preKey : .whisper,
-                    from: try local.makeProtocolAddress())
+                    from: try local.makeProtocolAddress(),
+                    padded: false)
             }
         }
 
@@ -228,6 +233,87 @@ final class MessagingTests: XCTestCase {
             XCTAssertNil(
                 try pair.engine.loadSealedRow(
                     namespace: "checkpoint-probe", group: "group", ordinal: 0))
+        }.value
+    }
+
+    // MARK: - P7.S02 — the relayed length says as little as possible
+
+    /// The property length bucketing exists for, measured on the bytes a relay would store.
+    ///
+    /// Every message here goes out on the same established session, so the only thing that
+    /// varies is the text — which means any variation in frame length is variation the relay
+    /// could read. Three assertions, in increasing strength: the set of lengths is small, two
+    /// very different messages inside one bucket are byte-for-byte the same size, and the
+    /// length changes *only* when a bucket boundary is crossed.
+    ///
+    /// `MessagePaddingTests` covers the scheme itself. This covers the thing an observer sees,
+    /// and it is the one that fails if padding is ever applied in the wrong place.
+    func testTheRelayedLengthTakesOneOfASmallFixedSetOfValues() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+            // Drive a message each way first. A sender keeps sending session-establishing
+            // messages until it hears back, and those carry prekeys — so without the reply
+            // every frame below would be a preKey message and the test would be measuring a
+            // different, much larger, constant.
+            _ = try pair.deliverToPeer(try pair.engine.encrypt(Data("open".utf8), to: pair.remote))
+            _ = try pair.engine.decrypt(try pair.envelopeFromPeer("and back"))
+
+            @CryptoActor func frameLength(ofTextOf length: Int) throws -> Int {
+                let text = Data(repeating: UInt8(ascii: "a"), count: length)
+                return try Envelope.decode(try pair.engine.encrypt(text, to: pair.remote))
+                    .ciphertext.count
+            }
+
+            // Spread across four buckets, including both sides of each boundary.
+            let lengths = [1, 2, 100, 200, 254, 255, 256, 300, 511, 512, 700, 1023, 1024, 1500]
+            var byInput: [Int: Int] = [:]
+            for length in lengths {
+                byInput[length] = try frameLength(ofTextOf: length)
+            }
+
+            // The bucket each input *should* land in, derived from the ladder rather than
+            // written out — so the expectation cannot drift away from the implementation while
+            // still looking like an independent check of it.
+            func bucket(for length: Int) -> Int {
+                MessagePadding.buckets.first { $0 > length } ?? -1
+            }
+
+            XCTAssertEqual(
+                Set(byInput.values).count, Set(lengths.map(bucket(for:))).count,
+                "\(lengths.count) messages spanning \(Set(lengths.map(bucket(for:))).count) "
+                    + "buckets produced \(Set(byInput.values).count) different wire lengths")
+
+            // The strong form: two messages have the same wire length exactly when they share a
+            // bucket. Equality alone would pass on a scheme that padded everything to one size
+            // and lost the large messages; inequality alone would pass on no padding at all.
+            for a in lengths {
+                for b in lengths where a < b {
+                    if bucket(for: a) == bucket(for: b) {
+                        XCTAssertEqual(byInput[a], byInput[b],
+                                       "\(a) and \(b) bytes share a bucket and must be the same "
+                                           + "length on the wire")
+                    } else {
+                        XCTAssertNotEqual(byInput[a], byInput[b],
+                                          "\(a) and \(b) bytes are in different buckets")
+                    }
+                }
+            }
+
+            // And the boundary is where it is claimed to be: 255 bytes fits the first bucket
+            // (255 content plus one terminator byte), 256 does not.
+            XCTAssertEqual(bucket(for: 255), 256)
+            XCTAssertEqual(bucket(for: 256), 512)
+
+            // The payload still arrives intact: bucketing must not be visible to the peer.
+            let sent = String(repeating: "a", count: 300)
+            XCTAssertEqual(
+                try pair.deliverToPeer(
+                    try pair.engine.encrypt(Data(sent.utf8), to: pair.remote)),
+                sent)
         }.value
     }
 

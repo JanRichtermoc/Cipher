@@ -82,20 +82,30 @@ final class SealedSenderTests: XCTestCase {
             let text = try fixture.decrypt(
                 content.contents, type: content.messageType,
                 from: try ProtocolAddress(
-                    name: certificate.senderUuid, deviceId: certificate.deviceId))
+                    name: certificate.senderUuid, deviceId: certificate.deviceId),
+                padded: true)
             return (text, certificate)
         }
 
         /// Builds a sealed frame from the peer, with every part of the container overridable
         /// so a test can construct precisely the thing being refused.
+        ///
+        /// The text is padded first (P7.S02), because a sealed frame carries a padded plaintext
+        /// and a fixture that skipped that would be modelling a client Cipher does not ship.
+        /// `padded: false` builds the frame such a client *would* send, which is refused —
+        /// `testASealedFrameWithoutPaddingIsRefused`.
         func sealFromPeer(
             _ text: String,
             certificate: SenderCertificate? = nil,
             groupId: Data = Data(),
             type: CiphertextMessage.MessageType? = nil,
-            contents: Data? = nil
+            contents: Data? = nil,
+            padded: Bool = true
         ) throws -> Data {
-            let message = try peer.encrypt(text, to: try local.makeProtocolAddress())
+            let body = padded
+                ? try MessagePadding.pad(Data(text.utf8))
+                : Data(text.utf8)
+            let message = try peer.encrypt(body, to: try local.makeProtocolAddress())
             let content = try UnidentifiedSenderMessageContent(
                 contents ?? message.bytes,
                 type: type ?? message.type,
@@ -286,6 +296,35 @@ final class SealedSenderTests: XCTestCase {
             XCTAssertEqual(decrypted.sender, pair.remote)
             XCTAssertTrue(decrypted.establishedSession,
                           "the inner type must still be visible after unsealing")
+        }.value
+    }
+
+    /// A sealed frame carries a padded plaintext (P7.S02), and one that does not is refused
+    /// rather than delivered.
+    ///
+    /// The two features are coupled on purpose — a frame is padded exactly when it is sealed,
+    /// so the receive path needs no heuristic — and this is the edge that coupling creates: a
+    /// peer that seals without padding. Refusing costs that message. Accepting would mean
+    /// returning the terminator and its zero fill to the caller as content, and those bytes are
+    /// valid UTF-8, so nothing further downstream would notice.
+    func testASealedFrameWithoutPaddingIsRefused() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+
+            XCTAssertThrowsError(
+                try pair.engine.decrypt(try pair.sealFromPeer("unpadded", padded: false))
+            ) { error in
+                XCTAssertEqual(error as? MessagingError, .malformedPadding)
+            }
+
+            // Positive control: the same peer, padding as a shipped client does, is accepted.
+            XCTAssertEqual(
+                try pair.engine.decrypt(try pair.sealFromPeer("padded")).plaintext,
+                Data("padded".utf8))
         }.value
     }
 
@@ -528,7 +567,8 @@ final class SealedSenderTests: XCTestCase {
             // frame, re-sealed by `otherPeer` under a certificate that names the peer
             // correctly and carries `otherPeer`'s key — the only key it could carry.
             let captured = try pair.peer.encrypt(
-                "genuinely from the peer", to: try pair.local.makeProtocolAddress())
+                try MessagePadding.pad(Data("genuinely from the peer".utf8)),
+                to: try pair.local.makeProtocolAddress())
             let content = try UnidentifiedSenderMessageContent(
                 captured.bytes, type: captured.type,
                 from: try Self.mintCertificate(
