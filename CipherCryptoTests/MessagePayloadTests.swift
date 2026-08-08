@@ -65,7 +65,18 @@ final class MessagePayloadTests: XCTestCase {
     func testAnUnknownContentTypeIsRefusedRatherThanRenderedAsText() {
         // The whole point: a future receipt or reaction type must not display as a message a
         // human appears to have written. Sweeps the byte space rather than picking one value.
-        for type in UInt8(2)...UInt8(255) {
+        //
+        // The *implemented* set is subtracted rather than a boundary being hardcoded. This test
+        // began as `for type in 2...255`, which was correct until P6.S03 made 2 a real type —
+        // at which point it failed, loudly, which is the good outcome. The next addition would
+        // have moved the same boundary again. Deriving the exclusion from the enum keeps the
+        // covered set maximal by construction, and cannot hide a gap the way R5 warns about:
+        // what it excludes is exactly what is supported, and that support is separately pinned
+        // by the round-trip tests naming each case as a literal.
+        let implemented = Set(MessagePayload.ContentType.allCases.map(\.rawValue))
+        XCTAssertFalse(implemented.isEmpty, "an empty content-type set would vacuously pass")
+
+        for type in UInt8.min...UInt8.max where !implemented.contains(type) {
             var bytes = Data([MessagePayload.version, type])
             bytes.append(contentsOf: Array("looks like a message".utf8))
 
@@ -73,10 +84,9 @@ final class MessagePayloadTests: XCTestCase {
                 XCTAssertEqual(error as? MessagePayloadError, .unsupportedContent(type))
             }
         }
-        // Type 0 too, separately, because an all-zero buffer is the cheapest thing to send.
-        XCTAssertThrowsError(try MessagePayload.decode(Data([MessagePayload.version, 0, 0]))) {
-            XCTAssertEqual($0 as? MessagePayloadError, .unsupportedContent(0))
-        }
+        // Type 0 is in that sweep, and is called out here too because an all-zero buffer is the
+        // cheapest thing to send and 0 is deliberately never assigned.
+        XCTAssertFalse(implemented.contains(0))
     }
 
     func testInvalidUTF8IsRefusedRatherThanRepaired() {
@@ -123,5 +133,100 @@ final class MessagePayloadTests: XCTestCase {
 
         let decoded = try MessagePayload.decode(backing.dropFirst(3))
         XCTAssertEqual(decoded, MessagePayload(content: .text("sliced")))
+    }
+
+    // MARK: - Expiring text (P6.S03)
+
+    func testExpiringTextRoundTripsWithItsTimer() throws {
+        let payload = MessagePayload(content: .expiringText("gone soon", ttlSeconds: 3600))
+        let decoded = try MessagePayload.decode(try payload.encode())
+        XCTAssertEqual(decoded, payload)
+    }
+
+    func testAnExpiringPayloadIsADistinctWireTypeFromText() throws {
+        // Not a version bump, deliberately: a version this build does not know is refused for
+        // *every* message, while an unknown type costs only the messages that use it. The type
+        // byte is what makes that containment possible, so it has to be the thing that differs.
+        let timed = try MessagePayload(content: .expiringText("x", ttlSeconds: 30)).encode()
+        let plain = try MessagePayload(content: .text("x")).encode()
+        XCTAssertEqual(timed[timed.startIndex], MessagePayload.version)
+        XCTAssertEqual(plain[plain.startIndex], MessagePayload.version)
+        XCTAssertNotEqual(timed[timed.startIndex + 1], plain[plain.startIndex + 1])
+        // Four bytes of timer between the header and the text.
+        XCTAssertEqual(timed.count, plain.count + 4)
+    }
+
+    func testATimerOfZeroIsRefusedInBothDirections() throws {
+        // Zero is the one value that would be ambiguous with `.text`, and a payload that can be
+        // read two ways is a payload that will be.
+        XCTAssertThrowsError(
+            try MessagePayload(content: .expiringText("x", ttlSeconds: 0)).encode()
+        ) { error in
+            XCTAssertEqual(error as? MessagePayloadError, .invalidExpiry(0))
+        }
+
+        var hostile = Data([MessagePayload.version, 2])
+        hostile.append(contentsOf: [0, 0, 0, 0])
+        hostile.append(Data("x".utf8))
+        XCTAssertThrowsError(try MessagePayload.decode(hostile)) { error in
+            XCTAssertEqual(error as? MessagePayloadError, .invalidExpiry(0))
+        }
+    }
+
+    func testATimerBeyondTheCeilingIsRefused() throws {
+        let tooLong = MessagePayload.maxExpirySeconds + 1
+        XCTAssertThrowsError(
+            try MessagePayload(content: .expiringText("x", ttlSeconds: tooLong)).encode()
+        ) { error in
+            XCTAssertEqual(error as? MessagePayloadError, .invalidExpiry(tooLong))
+        }
+
+        // And from a hostile peer, which is the direction that matters: an unbounded value here
+        // reaches a date computation downstream.
+        var hostile = Data([MessagePayload.version, 2])
+        withUnsafeBytes(of: UInt32.max.bigEndian) { hostile.append(contentsOf: $0) }
+        hostile.append(Data("x".utf8))
+        XCTAssertThrowsError(try MessagePayload.decode(hostile)) { error in
+            XCTAssertEqual(error as? MessagePayloadError, .invalidExpiry(.max))
+        }
+    }
+
+    func testTheCeilingItselfIsAccepted() throws {
+        // The positive control for the bound above. A gate that refuses everything is not a
+        // bound, and refusing a legal-looking timer from a future build would drop the message
+        // rather than the timer.
+        let payload = MessagePayload(
+            content: .expiringText("x", ttlSeconds: MessagePayload.maxExpirySeconds))
+        XCTAssertEqual(try MessagePayload.decode(try payload.encode()), payload)
+    }
+
+    func testABodyTooShortToHoldATimerIsMalformed() throws {
+        // Read as a zero-length timer this would become a message that never expires — a
+        // truncated payload outliving what its sender asked for.
+        for length in 0..<4 {
+            var truncated = Data([MessagePayload.version, 2])
+            truncated.append(Data(repeating: 0x01, count: length))
+            XCTAssertThrowsError(try MessagePayload.decode(truncated)) { error in
+                XCTAssertEqual(
+                    error as? MessagePayloadError, .malformed,
+                    "a \(length)-byte timer must be malformed, not defaulted")
+            }
+        }
+    }
+
+    func testAnExpiringPayloadWithInvalidUTF8IsRefused() throws {
+        var hostile = Data([MessagePayload.version, 2])
+        withUnsafeBytes(of: UInt32(30).bigEndian) { hostile.append(contentsOf: $0) }
+        hostile.append(Data([0xFF, 0xFE]))
+        XCTAssertThrowsError(try MessagePayload.decode(hostile)) { error in
+            XCTAssertEqual(error as? MessagePayloadError, .malformed)
+        }
+    }
+
+    func testAnExpiringPayloadDecodesFromASlicedBuffer() throws {
+        var backing = Data([0xFF, 0xFF, 0xFF])
+        let payload = MessagePayload(content: .expiringText("sliced", ttlSeconds: 90))
+        backing.append(try payload.encode())
+        XCTAssertEqual(try MessagePayload.decode(backing.dropFirst(3)), payload)
     }
 }

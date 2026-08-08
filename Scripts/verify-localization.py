@@ -114,11 +114,18 @@ DENY = [
     ),
     ("Reply", "messages carry no reply reference (AUDIT 5.30)"),
     ("Odpovědět", "Czech rendering of the local-only reply control"),
-    (
-        "Disappearing messages",
-        "no deletion mechanism enforces a disappearing timer (AUDIT 5.30)",
-    ),
-    ("Mizící zprávy", "Czech rendering of the unenforced disappearing-message control"),
+    # "Disappearing messages" and "Mizící zprávy" were on this list because the control that
+    # carried those words set a preference nothing read: no mechanism deleted anything, so the
+    # claim was false in every language (AUDIT 5.30). P6.S03 built the mechanism -- a per-message
+    # timer on the wire, an absolute expiry stored beside each message, and a sweep that removes
+    # the row from a container opened with secure_delete. The words are legitimate now, so
+    # banning them would ban the truth, which is how a denylist starts costing more than it
+    # protects (the same retirement P5.S12 made for "Safety Number").
+    #
+    # What replaces the ban is behaviour, not another string rule: a denylist can only stop a
+    # retired claim from returning, never a new invention. `DisappearingMessageTests` and
+    # `MessageRepositoryTests` are the guard, and "Default Timer" stays banned below because the
+    # *global* preference it named still does not exist -- this control is per conversation.
     # The affordance AUDIT 5.4 actually retired, kept banned now that the words around it
     # are legitimate again: a button that claims to record a verification the user never
     # performed. The real control asks them to confirm they compared the digits.
@@ -871,22 +878,6 @@ SELF_TESTS = [
             }
         },
         "'Odpovědět'",
-    ),
-    (
-        "C: retired unenforced disappearing-message control",
-        {"Disappearing Messages": (False, "X.swift:1")},
-        {"Disappearing Messages": {}},
-        "'Disappearing messages'",
-    ),
-    (
-        "C: retired Czech disappearing-message control",
-        {"Retention": (False, "X.swift:1")},
-        {
-            "Retention": {
-                "localizations": {"cs": {"stringUnit": {"value": "Mizící zprávy"}}}
-            }
-        },
-        "'Mizící zprávy'",
     ),
     (
         "C: retired empty groups filter",

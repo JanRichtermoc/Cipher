@@ -97,10 +97,30 @@ struct ChatInfoView: View {
             }
             #endif
 
-            Section("Options") {
+            Section {
                 Toggle(isOn: muteBinding(chat)) {
                     Label("Mute", systemImage: "bell.slash")
                 }
+                Picker(selection: disappearingBinding(chat)) {
+                    Text("Off").tag(Int?.none)
+                    ForEach(ConversationStore.disappearingOptions, id: \.self) { seconds in
+                        Text(Self.disappearingLabel(seconds)).tag(Int?.some(seconds))
+                    }
+                } label: {
+                    Label("Disappearing Messages", systemImage: "timer")
+                }
+            } header: {
+                Text("Options")
+            } footer: {
+                // Precise about who it governs and what it cannot promise, because both halves
+                // are load-bearing. The timer travels with each message this device sends, so
+                // the recipient's copy goes too — but nothing here changes what *they* send,
+                // and nothing anywhere can stop someone screenshotting what they were given.
+                // `THREAT_MODEL.md` §1.5 calls this a courtesy rather than a control, and this
+                // is where the app has to say so.
+                Text(
+                    "Applies to messages you send. Both copies are deleted when the timer ends. "
+                        + "It cannot stop someone saving a message another way.")
             }
 
             Section {
@@ -138,6 +158,26 @@ struct ChatInfoView: View {
             get: { chat.isMuted },
             set: { _ in Task { await store.toggleMute(chatID: chat.id) } }
         )
+    }
+
+    private func disappearingBinding(_ chat: Chat) -> Binding<Int?> {
+        Binding(
+            get: { chat.disappearingSeconds },
+            set: { seconds in
+                Task { await store.setDisappearing(seconds: seconds, chatID: chat.id) }
+            }
+        )
+    }
+
+    /// The duration, spelled out by `DateComponentsFormatter` rather than by a hand-written
+    /// literal, so the units follow the reader's locale instead of an English assumption. One
+    /// unit only: "1 day" reads as a choice, "1 day, 0 hours" reads as a bug.
+    private static func disappearingLabel(_ seconds: Int) -> String {
+        let formatter = DateComponentsFormatter()
+        formatter.allowedUnits = [.day, .hour, .minute, .second]
+        formatter.unitsStyle = .full
+        formatter.maximumUnitCount = 1
+        return formatter.string(from: TimeInterval(seconds)) ?? "\(seconds)s"
     }
 
 }

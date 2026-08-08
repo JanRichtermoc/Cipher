@@ -286,6 +286,13 @@ struct MessagingFixture {
     /// The device publishes prekeys, the peer starts a session from that publication, and the
     /// result is a `PreKeySignalMessage` — exactly what a first inbound message is.
     func envelopeFromPeer(_ text: String) async throws -> Data {
+        try await envelopeFromPeer(content: .text(text))
+    }
+
+    /// The same, for a payload that is not plain text — an expiring message (P6.S03), and
+    /// whatever comes after it. One bundle-assembly path rather than two, so a test about
+    /// content cannot accidentally diverge on how the session was established.
+    func envelopeFromPeer(content: MessagePayload.Content) async throws -> Data {
         let published = try await engine.generatePublishedKeys(oneTimeCount: 1)
         let bundle = PeerKeyBundle(
             registrationId: try await engine.localRegistrationId,
@@ -300,7 +307,7 @@ struct MessagingFixture {
             kyberPreKeySignature: published.kyberPreKeys[0].signature)
 
         try await peerEngine.startSession(with: PeerAddress(aci: localAci), bundle: bundle)
-        let payload = try MessagePayload(content: .text(text)).encode()
+        let payload = try MessagePayload(content: content).encode()
         return try await peerEngine.encrypt(payload, to: PeerAddress(aci: localAci))
     }
 
