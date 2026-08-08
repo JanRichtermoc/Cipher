@@ -51,8 +51,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=17
-[ "$FAST" -eq 1 ] && TOTAL=14
+TOTAL=18
+[ "$FAST" -eq 1 ] && TOTAL=15
 
 step() {
   STEP=$((STEP + 1))
@@ -74,7 +74,7 @@ fail() {
 # registered account that is a silent, mid-run, irreversible wipe: 68 "all local protocol
 # state destroyed" lines, the app back at the invite screen, and a message already in flight
 # to it left permanently undecryptable. Observed, then reproduced with `--fast`, which does
-# not avoid it because gate 13 *is* the app-hosted run. This check therefore ignores `--fast`
+# not avoid it because gate 14 *is* the app-hosted run. This check therefore ignores `--fast`
 # and `--offline` entirely.
 #
 # Refusing to run is deliberately the default, and that is also precisely the failure mode
@@ -133,7 +133,7 @@ selftest_container_probe() {
   local probe cases=0
   probe="$(mktemp -d)"
 
-  # Fires on a real account: a sealed store is exactly what gate 13 would take.
+  # Fires on a real account: a sealed store is exactly what gate 14 would take.
   mkdir -p "$probe/populated/Library/Application Support/CipherCrypto"
   : >"$probe/populated/Library/Application Support/CipherCrypto/records.sqlite3"
   container_holds_account "$probe/populated" ||
@@ -236,13 +236,13 @@ EOF
 
 if [ -z "$named_simulators" ]; then
   # Not a pass by inspection — there was nothing to inspect. Said out loud rather than
-  # printed as "ok", because gate 13 will fail on the destination anyway and this line is
+  # printed as "ok", because gate 14 will fail on the destination anyway and this line is
   # what explains why nothing was checked.
   echo "  —     no simulator named '$SIMULATOR' exists; nothing to protect"
 else
   case "$(account_verdict "$at_risk" "${CIPHER_ALLOW_SIMULATOR_WIPE:-0}")" in
   clear)
-    echo "  ok    no registered Cipher account on '$SIMULATOR' — gate 13 has nothing to destroy"
+    echo "  ok    no registered Cipher account on '$SIMULATOR' — gate 14 has nothing to destroy"
     ;;
   override)
     printf '  !     CIPHER_ALLOW_SIMULATOR_WIPE=1 — proceeding, and these WILL be wiped:\n%s' "$at_risk"
@@ -380,14 +380,23 @@ step "product and documentation honesty"
 ./Scripts/verify-doc-key-boundary.py --self-test || fail "the documentation key-boundary gate cannot be trusted"
 ./Scripts/verify-doc-key-boundary.py || fail "documentation collapsed public, private E2E, or operational server keys"
 
-# --- 12. Module boundary -----------------------------------------------------
+# --- 12. Third-party licence obligations (AUDIT 6.2) -------------------------
+# libsignal is AGPL-3.0 and NOTICE.md obligation 3 is to surface its acknowledgements in the
+# app. Placed beside the honesty gate above rather than near the build gates, because the
+# failure it catches is the same kind: something the product claims, or is obliged to say,
+# quietly stopping being true. A pod update that changed a licence would otherwise ship the
+# previous one with nobody looking.
+step "third-party licences ship with the app (AUDIT 6.2)"
+./Scripts/verify-acknowledgements.sh || fail "the app does not ship libsignal's licence — NOTICE.md obligation 3"
+
+# --- 13. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
 ./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
 
-# --- 13. Crypto tests --------------------------------------------------------
+# --- 14. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -511,7 +520,7 @@ grep -q "SessionCredentialTests" "$LOG" ||
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
 
-# --- 14. App builds ----------------------------------------------------------
+# --- 15. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -524,7 +533,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 15. Release device build ------------------------------------------------
+# --- 16. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then
@@ -540,7 +549,7 @@ if [ "$FAST" -eq 0 ]; then
     fail "Release device build"
   echo "  ok    release arm64 builds"
 
-  # --- 16. No debug affordance or retired claim survives into Release --------
+  # --- 17. No debug affordance or retired claim survives into Release --------
   # Fencing the *buttons* that drive a debug switch is not the same as fencing the switch:
   # `debugSkipToMain` was a live authentication bypass in Release for exactly that reason
   # (AUDIT 5.6). This asserts against the built artifact, which is the only place the
@@ -629,7 +638,7 @@ if [ "$FAST" -eq 0 ]; then
   [ "$leaked" -eq 0 ] || fail "a debug affordance or retired claim ships in Release (AUDIT 5.6, 5.11, 5.19, 5.30)"
   echo "  ok    no debug affordance or retired claim anywhere in the Release bundle"
 
-  # --- 17. Required-reason APIs are declared ---------------------------------
+  # --- 18. Required-reason APIs are declared ---------------------------------
   # Same bundle, different question. libsignal is a *dynamic* framework, so its whole symbol
   # surface ships whether Cipher calls it or not — a required-reason API can appear with no
   # source change on our side, and the first sign would otherwise be App Review.

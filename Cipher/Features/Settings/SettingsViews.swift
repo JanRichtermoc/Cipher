@@ -267,6 +267,15 @@ struct AboutView: View {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
+            Section {
+                NavigationLink {
+                    AcknowledgementsView()
+                } label: {
+                    SettingsRow(title: "Acknowledgements", systemImage: "doc.text.fill", tint: .gray)
+                }
+            } footer: {
+                Text("Cipher is built on open-source software.")
+            }
         }
         .navigationTitle("About")
     }
@@ -280,6 +289,87 @@ struct AboutView: View {
 
     private static var build: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—"
+    }
+}
+
+/// The third-party licences Cipher is obliged to surface (P8.S07, AUDIT 6.2).
+///
+/// libsignal is AGPL-3.0, and obligation 3 in `NOTICE.md` is to show its
+/// acknowledgements here. This is the discharge of a licence term, not a nicety, so
+/// the text is rendered rather than summarised and the licence is shown in full.
+///
+/// ## The content is CocoaPods', not ours
+///
+/// `Acknowledgements.plist` is a byte-identical copy of what CocoaPods generates into
+/// `Pods/Target Support Files/`, which is outside the app bundle and therefore
+/// unreadable at runtime. `Scripts/verify-acknowledgements.sh` fails when the two
+/// stop matching, so a dependency bump that changes a licence cannot leave the
+/// previous one on this screen — the copy is kept honest by a gate rather than by
+/// somebody remembering.
+struct AcknowledgementsView: View {
+
+    private let libraries = Acknowledgement.load()
+
+    var body: some View {
+        List {
+            if libraries.isEmpty {
+                // Never silently empty. An acknowledgements screen that renders
+                // nothing looks identical to one that has nothing to acknowledge,
+                // and the difference is a licence violation.
+                Section {
+                    Text("Acknowledgements are unavailable in this build.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            ForEach(libraries) { library in
+                Section(library.name) {
+                    Text(library.licence)
+                        .font(.caption2.monospaced())
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .navigationTitle("Acknowledgements")
+    }
+}
+
+/// One library and its licence, as read from the bundled plist.
+///
+/// `nonisolated` deliberately: this file's default isolation is the main actor, and reading a
+/// bundle resource has nothing to do with the main actor. Leaving it inferred would mean the
+/// licence text could only be examined from the main actor — including by a test, which is the
+/// only thing that checks the obligation is met at all.
+nonisolated struct Acknowledgement: Identifiable, Sendable {
+    let name: String
+    let licence: String
+    var id: String { name }
+
+    /// Reads the plist CocoaPods generated.
+    ///
+    /// The header and footer entries CocoaPods adds are dropped: the first is a
+    /// sentence introducing the list, the last is its own attribution, and neither is
+    /// a library. Everything else is kept exactly as generated — an entry this code
+    /// did not recognise would be one whose licence went unshown.
+    static func load() -> [Acknowledgement] {
+        guard let url = Bundle.main.url(forResource: "Acknowledgements", withExtension: "plist"),
+              let data = try? Data(contentsOf: url),
+              let plist = try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil) as? [String: Any],
+              let entries = plist["PreferenceSpecifiers"] as? [[String: Any]]
+        else {
+            return []
+        }
+
+        return entries.compactMap { entry in
+            guard let name = entry["Title"] as? String, !name.isEmpty,
+                  name != "Acknowledgements",
+                  let licence = entry["FooterText"] as? String, !licence.isEmpty
+            else {
+                return nil
+            }
+            return Acknowledgement(name: name, licence: licence)
+        }
     }
 }
 
