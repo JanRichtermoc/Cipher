@@ -305,6 +305,62 @@ internal struct PeerFixture {
     }
 }
 
+// MARK: - Publishing a bundle for a real engine
+
+@CryptoActor
+internal enum EngineFixture {
+
+    /// Publishes a bundle *for the engine*, so a peer can start a session towards it.
+    ///
+    /// The private halves must actually be stored, not merely advertised: `signalDecryptPreKey`
+    /// looks up the signed and kyber prekeys the incoming message names, and a bundle whose
+    /// keys were never persisted fails at decrypt with `invalidKeyIdentifier` — which reads
+    /// like a protocol bug and is really a fixture that published keys it did not keep.
+    internal static func publishBundle(
+        for engine: CryptoEngine, address: PeerAddress
+    ) throws -> PreKeyBundle {
+        let context = NullContext()
+        let store = engine.store
+        let ids = try store.reservePreKeyIds(count: 3)
+
+        let preKey = PrivateKey.generate()
+        let signed = PrivateKey.generate()
+        let kyber = KEMKeyPair.generate()
+        let identity = try store.identityKeyPair(context: context)
+
+        let signedSignature = identity.privateKey.generateSignature(
+            message: signed.publicKey.serialize())
+        let kyberSignature = identity.privateKey.generateSignature(
+            message: kyber.publicKey.serialize())
+
+        let preKeyId = ids.lowerBound
+        let signedPreKeyId = ids.lowerBound + 1
+        let kyberPreKeyId = ids.lowerBound + 2
+
+        try store.storePreKey(
+            PreKeyRecord(id: preKeyId, privateKey: preKey), id: preKeyId, context: context)
+        try store.storeSignedPreKey(
+            SignedPreKeyRecord(
+                id: signedPreKeyId, timestamp: 1000,
+                privateKey: signed, signature: signedSignature),
+            id: signedPreKeyId, context: context)
+        try store.storeKyberPreKey(
+            KyberPreKeyRecord(
+                id: kyberPreKeyId, timestamp: 1000, keyPair: kyber, signature: kyberSignature),
+            id: kyberPreKeyId, context: context)
+
+        return try PreKeyBundle(
+            registrationId: try store.localRegistrationId(context: context),
+            deviceId: address.deviceId,
+            prekeyId: preKeyId, prekey: preKey.publicKey,
+            signedPrekeyId: signedPreKeyId, signedPrekey: signed.publicKey,
+            signedPrekeySignature: signedSignature,
+            identity: identity.identityKey,
+            kyberPrekeyId: kyberPreKeyId, kyberPrekey: kyber.publicKey,
+            kyberPrekeySignature: kyberSignature)
+    }
+}
+
 // MARK: - Local side helpers
 
 @CryptoActor

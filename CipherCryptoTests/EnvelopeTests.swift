@@ -70,8 +70,62 @@ final class EnvelopeTests: XCTestCase {
 
     func testRoundTripForEveryPayloadType() throws {
         for type in Envelope.PayloadType.allCases {
-            let env = try Envelope(type: type, sender: aci, timestamp: 1, ciphertext: Data([0x01]))
-            XCTAssertEqual(try Envelope.decode(env.encode()).type, type)
+            // `.sealed` names nobody; the other two must. Driven off the type rather than
+            // listed, so a new payload type has to state which side of that line it is on.
+            let sender: ServiceIdentifier? = type == .sealed ? nil : aci
+            let env = try Envelope(
+                type: type, sender: sender, timestamp: 1, ciphertext: Data([0x01]))
+            let decoded = try Envelope.decode(env.encode())
+            XCTAssertEqual(decoded.type, type)
+            XCTAssertEqual(decoded.sender, sender)
+        }
+    }
+
+    // MARK: - Sealed frames name nobody (P7.S01)
+
+    /// The seventeen sender bytes of a sealed frame are zero, and that is checked on the way
+    /// in rather than assumed. A frame the parser merely *ignored* would leave a relay a place
+    /// to write, and would make "sealed carries no sender" a promise instead of a property.
+    func testSealedEnvelopesCarryZeroWhereASenderWouldBe() throws {
+        let encoded = try Envelope(
+            type: .sealed, sender: nil, timestamp: timestamp, ciphertext: ciphertext).encode()
+
+        XCTAssertEqual(encoded[1], 4, "type = sealed")
+        XCTAssertEqual(Data(encoded[2..<19]), Data(repeating: 0, count: 17))
+        XCTAssertEqual(encoded.count, Envelope.headerSize + ciphertext.count,
+                       "the layout is unchanged, so the relay's size bounds still hold")
+        XCTAssertNil(try Envelope.decode(encoded).sender)
+    }
+
+    func testSealedEnvelopeCarryingASenderIsRefused() throws {
+        var encoded = try Envelope(
+            type: .sealed, sender: nil, timestamp: 1, ciphertext: ciphertext).encode()
+        encoded.replaceSubrange(2..<19, with: aci.fixedWidthBinary)
+
+        XCTAssertThrowsError(try Envelope.decode(encoded)) { error in
+            XCTAssertEqual(error as? EnvelopeError, .senderPresentOnSealedEnvelope)
+        }
+
+        // A single non-zero byte is enough — the check is on all seventeen, not on the kind.
+        var oneByte = try Envelope(
+            type: .sealed, sender: nil, timestamp: 1, ciphertext: ciphertext).encode()
+        oneByte[18] = 0x01
+        XCTAssertThrowsError(try Envelope.decode(oneByte)) { error in
+            XCTAssertEqual(error as? EnvelopeError, .senderPresentOnSealedEnvelope)
+        }
+    }
+
+    /// The same invariant on the encoding side, so a frame this module produces can never be
+    /// one it would refuse to read.
+    func testConstructionEnforcesTheSenderRuleInBothDirections() {
+        XCTAssertThrowsError(
+            try Envelope(type: .sealed, sender: aci, timestamp: 1, ciphertext: ciphertext)
+        ) { XCTAssertEqual($0 as? EnvelopeError, .senderPresentOnSealedEnvelope) }
+
+        for addressed: Envelope.PayloadType in [.preKey, .whisper] {
+            XCTAssertThrowsError(
+                try Envelope(type: addressed, sender: nil, timestamp: 1, ciphertext: ciphertext)
+            ) { XCTAssertEqual($0 as? EnvelopeError, .senderMissing) }
         }
     }
 
@@ -99,7 +153,7 @@ final class EnvelopeTests: XCTestCase {
                                    timestamp: 7, ciphertext: Data([0x01]))
             let decoded = try Envelope.decode(env.encode())
             XCTAssertEqual(decoded.sender, ours)
-            XCTAssertEqual(decoded.sender.canonicalString, reference.serviceIdString,
+            XCTAssertEqual(decoded.sender?.canonicalString, reference.serviceIdString,
                            "the store slot a peer maps to must match libsignal's naming")
         }
     }
@@ -131,8 +185,8 @@ final class EnvelopeTests: XCTestCase {
                                   timestamp: 7, ciphertext: Data([0x01])).encode()
 
         XCTAssertNotEqual(aciEnv, pniEnv, "the kind byte must distinguish them")
-        XCTAssertEqual(try Envelope.decode(aciEnv).sender.kind, .aci)
-        XCTAssertEqual(try Envelope.decode(pniEnv).sender.kind, .pni)
+        XCTAssertEqual(try Envelope.decode(aciEnv).sender?.kind, .aci)
+        XCTAssertEqual(try Envelope.decode(pniEnv).sender?.kind, .pni)
     }
 
     func testRejectsUnknownServiceIdKind() throws {
@@ -178,8 +232,9 @@ final class EnvelopeTests: XCTestCase {
         }
     }
 
+    /// 4 is absent from this list because it became `.sealed` in P7.S01. 3 stays reserved.
     func testRejectsReservedAndUnknownPayloadTypes() throws {
-        for raw: UInt8 in [0, 4, 5, 200, 255] {
+        for raw: UInt8 in [0, 5, 6, 200, 255] {
             var encoded = try sample().encode()
             encoded[1] = raw
             XCTAssertThrowsError(try Envelope.decode(encoded)) { error in
@@ -251,9 +306,10 @@ final class EnvelopeTests: XCTestCase {
     }
 
     /// `PlaintextContent` carries `DecryptionErrorMessage` and does not go through
-    /// `signalEncrypt`, so nothing authenticates its sender while sealed sender is
-    /// deferred. Accepting it would give a malicious relay a session-reset primitive it
-    /// could aim at any peer. It must be refused on both the encode and decode side.
+    /// `signalEncrypt`, so nothing authenticates its sender — and P7.S01 did not change that,
+    /// because Cipher's sealed-sender certificate is self-issued. Accepting it would give a
+    /// malicious relay a session-reset primitive it could aim at any peer. It must be refused
+    /// on both the encode and decode side.
     func testRefusesUnauthenticatedPlaintextContent() throws {
         XCTAssertThrowsError(try Envelope.payloadType(for: .plaintext)) { error in
             XCTAssertEqual(error as? EnvelopeError, .unauthenticatedPayloadRefused)

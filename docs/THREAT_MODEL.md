@@ -49,8 +49,8 @@ The defining adversary. Has the disk, the memory, the database, and can compel f
 | | |
 |---|---|
 | **Pre-relay baseline (2026-07-28)** | Nothing — no server had been deployed. Historical, not current state. |
-| **Required exposure bound** | Public identity and prekey material; undelivered ciphertext still in flight; recipient identifiers for those; push tokens; account existence and activity dates. |
-| **Residual / accepted exception** | Coarse timing and volume of *undelivered* traffic. The live database deletes delivered messages (§3.1), but the accepted provider-snapshot residual means this is not host-wide deletion (AUDIT 4.8). After sealed sender lands (AUDIT 3.4), the sender of an undelivered message is not visible (§3.2). |
+| **Required exposure bound** | Public identity and prekey material; undelivered ciphertext still in flight; **recipient** identifiers for those; push tokens; account existence and activity dates. **Sender identifiers are no longer in this list** — sealed sender landed 2026-08-08 (AUDIT 3.4, §3.2), so a relayed frame names nobody and `messages` has no sender column. |
+| **Residual / accepted exception** | Coarse timing and volume of *undelivered* traffic. The live database deletes delivered messages (§3.1), but the accepted provider-snapshot residual means this is not host-wide deletion (AUDIT 4.8). **A seized-but-running box is a different question from a seized disk:** it authenticates every send, so it can observe who is sending to whom from that moment on even though it holds no such record (AUDIT 3.9). That is the compelled-future-cooperation case immediately below, and sealed sender does not reach it. |
 
 Compelled *future* cooperation is the case that no amount of deletion fixes: a seized-but-running
 box can be made to log going forward. The controls are pinning (a substituted server cannot
@@ -196,6 +196,27 @@ libsignal already ships sealed sender (`Pods/LibSignalClient/swift/Sources/LibSi
 server-issued sender-certificate scheme — **not new cryptography**. The wire format was designed for
 it: `Envelope`'s `wireVersion` plus its reserved type space exists precisely so sealed sender can
 arrive without a break.
+
+**Amended 2026-08-08 (P7.S01, AUDIT 3.4/3.9).** Two corrections, both discovered while building it.
+
+**The server-issued scheme is not available here.** A libsignal sender certificate is signed with
+XEd25519 over Curve25519 keys. The relay is Go, its standard library has no XEdDSA, and the pin in
+`Vendor/libsignal/PINS.env` is a prebuilt **iOS** artifact with no Linux build and no Go binding.
+Issuing certificates server-side would mean implementing the signature scheme by hand, which the
+plan's §0.6 forbids outright, or linking libsignal into the relay, which is a supply-chain change
+requiring its own review. The certificate is therefore issued by the sending account to itself. Its
+*name* proves nothing — anyone can mint one naming anyone, exactly as anyone could write any value
+into the cleartext field it replaces. Its *key* is bound, because libsignal refuses a container whose
+certificate names a key its sealer does not hold; requiring that key to be the one the session
+authenticated is what stops a relay re-wrapping a captured payload under a name of its own.
+
+**And sealing the frame is not the same as hiding the sender from the relay.** What it removes is the
+*record*: a stored envelope no longer names anyone, which is what this section argued for. A live
+relay still authenticates every send, so it sees sender and recipient in the same request. Signal
+closes that with unauthenticated delivery gated on an unidentified-access key derived from the
+recipient's profile key; Cipher has no profile keys and no way to hand a peer an access token before
+the first message, so an anonymous send endpoint would need an abuse control that does not exist.
+That residual is **AUDIT 3.9**, and it is unscheduled rather than quietly folded into this decision.
 
 ### 3.3 Push-token linkage
 
