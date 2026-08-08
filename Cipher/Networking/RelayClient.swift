@@ -55,6 +55,18 @@ nonisolated struct RelayClient: Sendable {
     /// backoff rather than two minutes of a spinner. Blob transfer overrides this.
     static let requestTimeout: TimeInterval = 30
 
+    /// What one attachment transfer may take (P6.S04).
+    ///
+    /// The 30-second figure above is sized for a request whose body is a JSON object; an
+    /// attachment is up to `AttachmentCipher.maxPlaintextBytes`, which on a slow mobile link
+    /// legitimately takes longer than that. Leaving it at 30 would not have bounded anything
+    /// useful — it would have made a large photo unsendable on exactly the connections where
+    /// sending one matters.
+    ///
+    /// Still under Nginx's own 120 s read timeout, so the client is still the side that gives
+    /// up first.
+    static let blobTimeout: TimeInterval = 90
+
     /// Ceiling on a whole call including retries.
     ///
     /// `URLSessionConfiguration.timeoutIntervalForResource` bounds **one task**, and a call
@@ -63,6 +75,10 @@ nonisolated struct RelayClient: Sendable {
     /// `ContinuousClock`, which is monotonic: a clock correction cannot extend or collapse a
     /// call already in flight.
     static let resourceTimeout: TimeInterval = 120
+
+    /// The whole-call ceiling a blob transfer needs, since ``resourceTimeout`` is barely more
+    /// than one ``blobTimeout`` attempt and would cut the second one short.
+    static let blobResourceTimeout: TimeInterval = 300
 
     /// Attempts, not retries: 1 means "try once, never retry".
     static let maxAttempts = 3
@@ -180,8 +196,8 @@ nonisolated struct RelayClient: Sendable {
             }
 
             do {
-                let response = try await perform(request,
-                                                 timeout: min(Self.requestTimeout, remaining))
+                let response = try await perform(
+                    request, timeout: min(request.attemptTimeout, remaining))
 
                 guard Self.isRetryable(status: response.status), request.isIdempotent else {
                     return response
@@ -312,6 +328,12 @@ nonisolated struct RelayRequest: Sendable {
     let isIdempotent: Bool
     /// Bytes this request's response may occupy. See ``BoundedResponseLoader``.
     let responseByteCeiling: Int
+    /// How long **one attempt** at this request may take.
+    ///
+    /// Per request rather than per client because the two kinds of call this relay serves have
+    /// genuinely different shapes: a JSON round trip that is stuck at 30 seconds is stuck, and
+    /// an attachment transfer at 30 seconds is a large photo on a train.
+    let attemptTimeout: TimeInterval
 
     init(method: String,
          path: String,
@@ -319,7 +341,8 @@ nonisolated struct RelayRequest: Sendable {
          contentType: String? = "application/json",
          bearerToken: String? = nil,
          isIdempotent: Bool,
-         responseByteCeiling: Int = RelayClient.defaultResponseCeiling) {
+         responseByteCeiling: Int = RelayClient.defaultResponseCeiling,
+         attemptTimeout: TimeInterval = RelayClient.requestTimeout) {
         self.method = method
         self.path = path
         self.body = body
@@ -327,6 +350,7 @@ nonisolated struct RelayRequest: Sendable {
         self.bearerToken = bearerToken
         self.isIdempotent = isIdempotent
         self.responseByteCeiling = responseByteCeiling
+        self.attemptTimeout = attemptTimeout
     }
 
     enum BuildError: Error, Equatable {

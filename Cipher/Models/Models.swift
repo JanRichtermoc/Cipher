@@ -46,6 +46,10 @@ struct Chat: Identifiable, Hashable {
 enum MessageKind: Hashable {
     case text(String)
     case emoji(String)
+    /// A real encrypted attachment (P6.S04). Carries only its size: the bytes are fetched and
+    /// decrypted by the view that displays them and are never held in a model, so a photo's
+    /// plaintext exists in memory for as long as it is on screen and no longer.
+    case photo(byteCount: Int)
     case image(systemName: String, caption: String?)
     case voice(duration: TimeInterval)
     case file(name: String, sizeLabel: String)

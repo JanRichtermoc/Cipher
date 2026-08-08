@@ -90,7 +90,10 @@ struct ChatInfoView: View {
                 Text("Names are stored only on this device, inside the encrypted container. Nothing is sent to the server.")
             }
 
-            // Attachments have no client path, so a media gallery could only ever be empty.
+            // Attachments exist since P6.S04, but this grid does not read them — it draws
+            // fixtures. A gallery over real attachments is a screen that has to decrypt every
+            // thumbnail it shows and decide what to keep in memory while it does, so it stays
+            // DEBUG until something builds it rather than being wired to half of it.
             #if DEBUG
             Section("Media") {
                 MediaGalleryGrid(chatID: chatID)

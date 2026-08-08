@@ -32,6 +32,13 @@ final class RoutedStubRelay: URLProtocol, @unchecked Sendable {
             self.status = status
             self.body = Data(json.utf8)
         }
+
+        /// A raw body, for the one route whose answer is not JSON: a blob download returns
+        /// `application/octet-stream` ciphertext (P6.S04).
+        init(status: Int, bytes: Data) {
+            self.status = status
+            self.body = bytes
+        }
     }
 
     /// Keyed by `"METHOD /path"`. A key ending in `/` prefix-matches, so `GET /v1/keys/` covers

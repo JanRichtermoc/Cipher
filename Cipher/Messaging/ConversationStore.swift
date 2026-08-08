@@ -197,6 +197,11 @@ final class ConversationStore {
         // not running must not be on screen for the instant it takes the sweep to reach it, and
         // this is the only ordering that guarantees that (P6.S03).
         await sweepExpiredMessages()
+        // Once per launch, and this is the run that matters most: it finishes an unlink a
+        // previous process was killed during, and it catches blobs orphaned by paths that
+        // remove message rows in bulk without being able to name them — retention trimming and
+        // quota eviction (P6.S04).
+        await wipeOrphanedAttachments()
         await refresh()
         await maintainKeys()
         await receive()
@@ -215,6 +220,21 @@ final class ConversationStore {
             if deleted > 0 { await refresh() }
         } catch {
             AppLog.store.error("expired-message sweep did not complete; it will be retried")
+        }
+    }
+
+    /// Unlinks cached attachment ciphertext no message points at any more (P6.S04).
+    ///
+    /// Logged rather than surfaced, for the same reason the expiry sweep is: the keys are
+    /// already gone with the rows that held them, so what remains is unopenable ciphertext and
+    /// a retry on the next launch costs nothing. A banner would report a background task the
+    /// user cannot influence.
+    private func wipeOrphanedAttachments() async {
+        guard !isPreviewOnly else { return }
+        do {
+            _ = try await repository().wipeOrphanedAttachments()
+        } catch {
+            AppLog.store.error("orphaned attachments were not unlinked; they will be retried")
         }
     }
 
@@ -462,6 +482,51 @@ final class ConversationStore {
         await refresh()
     }
 
+    /// Re-encodes a picked image, encrypts it, uploads the ciphertext and sends the pointer
+    /// (P6.S04).
+    ///
+    /// The re-encode happens before anything else and is not optional: it is what keeps the
+    /// photo's EXIF — including where it was taken — out of the message (`PhotoAttachment`).
+    func sendPhoto(_ data: Data, to chatID: UUID) async {
+        guard !isPreviewOnly else { return }
+
+        isSyncing = true
+        defer { isSyncing = false }
+
+        guard let prepared = PhotoAttachment.prepare(data) else {
+            record(.attachmentUnavailable)
+            return
+        }
+
+        do {
+            _ = try await repository().sendAttachment(bytes: prepared, to: chatID)
+            failure = nil
+        } catch {
+            record(error)
+        }
+        await refresh()
+    }
+
+    /// The decrypted bytes behind one attachment message, downloading the blob if this device
+    /// does not hold it yet.
+    ///
+    /// Returns them rather than caching them here. Plaintext image bytes live only in the view
+    /// that is showing them, so closing the conversation is what releases them — a store-level
+    /// cache would keep every photo the user scrolled past resident for the life of the
+    /// process, which is the opposite of what a disappearing-message feature is for.
+    func attachmentBytes(for messageID: UUID, in chatID: UUID) async -> Data? {
+        guard !isPreviewOnly else { return nil }
+        guard let ordinal = ordinal(of: messageID) else { return nil }
+        do {
+            let bytes = try await repository().attachmentBytes(ordinal: ordinal, in: chatID)
+            failure = nil
+            return bytes
+        } catch {
+            record(error)
+            return nil
+        }
+    }
+
     func togglePin(chatID: UUID) async {
         guard let chat = chat(id: chatID) else { return }
         await mutate { try await $0.setPinned(!chat.isPinned, for: chatID) }
@@ -486,16 +551,18 @@ final class ConversationStore {
     }
 
     func deleteChat(chatID: UUID) async {
-        await mutate { try await $0.deleteConversation(chatID) }
+        await mutate(wipingAttachments: true) { try await $0.deleteConversation(chatID) }
     }
 
     func clearMessages(chatID: UUID) async {
-        await mutate { try await $0.clearMessages(in: chatID) }
+        await mutate(wipingAttachments: true) { try await $0.clearMessages(in: chatID) }
     }
 
     func deleteMessage(_ messageID: UUID, in chatID: UUID) async {
         guard let ordinal = ordinal(of: messageID) else { return }
-        await mutate { try await $0.deleteMessage(ordinal: ordinal, in: chatID) }
+        await mutate(wipingAttachments: true) {
+            try await $0.deleteMessage(ordinal: ordinal, in: chatID)
+        }
     }
 
     /// Sets the timer for messages this device sends in `chatID` (P6.S03).
@@ -519,7 +586,15 @@ final class ConversationStore {
 
     /// Runs a repository mutation and reloads. Every writing path goes through here so none of
     /// them can forget to reload and leave the UI showing state the archive no longer holds.
-    private func mutate(_ body: (MessageRepository) async throws -> Void) async {
+    ///
+    /// - Parameter wipingAttachments: whether this mutation can have removed message rows, and
+    ///   with them the only reference to a cached blob. Set on the three deletion paths rather
+    ///   than on all of them, because deriving what is still referenced means decoding every
+    ///   message row and a pin or a mute cannot have orphaned anything (P6.S04).
+    private func mutate(
+        wipingAttachments: Bool = false,
+        _ body: (MessageRepository) async throws -> Void
+    ) async {
         guard !isPreviewOnly else { return }
         do {
             try await body(try await repository())
@@ -527,6 +602,7 @@ final class ConversationStore {
         } catch {
             record(error)
         }
+        if wipingAttachments { await wipeOrphanedAttachments() }
         await refresh()
     }
 
@@ -646,11 +722,20 @@ final class ConversationStore {
         _ stored: ConversationArchive.StoredMessage, peer: UUID, localAci: UUID?
     ) -> Message {
         let isMine = stored.direction == .outgoing
+        let kind: MessageKind
+        if let attachment = stored.attachment {
+            // The size, and nothing else. The key and the blob id stay in the sealed row: a
+            // view model is held in memory for as long as the conversation is on screen, and
+            // neither belongs there (P6.S04).
+            kind = .photo(byteCount: attachment.byteCount)
+        } else {
+            kind = isEmojiOnly(stored.text) ? .emoji(stored.text) : .text(stored.text)
+        }
         return Message(
             id: stored.id,
             chatID: peer,
             senderID: isMine ? (localAci ?? unregisteredPlaceholder) : peer,
-            kind: isEmojiOnly(stored.text) ? .emoji(stored.text) : .text(stored.text),
+            kind: kind,
             date: Date(timeIntervalSince1970: Double(stored.timestampMs) / 1000),
             status: Self.status(of: stored),
             isFromCurrentUser: isMine,
@@ -677,6 +762,7 @@ final class ConversationStore {
         guard let message else { return String(localized: "No messages yet") }
         switch message.kind {
         case .text(let value), .emoji(let value), .system(let value): return value
+        case .photo: return String(localized: "Photo")
         default: return String(localized: "No messages yet")
         }
     }

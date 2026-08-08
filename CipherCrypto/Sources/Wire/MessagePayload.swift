@@ -43,6 +43,8 @@ public struct MessagePayload: Sendable, Equatable {
         case text = 1
         /// Text that both devices delete when its timer runs out (P6.S03).
         case expiringText = 2
+        /// A pointer to an out-of-band encrypted blob, and the key to open it (P6.S04).
+        case attachment = 3
     }
 
     public enum Content: Sendable, Equatable {
@@ -61,6 +63,53 @@ public struct MessagePayload: Sendable, Equatable {
         /// governs **the messages you send**. It does not reach into what the other person
         /// sends you, because nothing here can make their client do anything.
         case expiringText(String, ttlSeconds: UInt32)
+        /// Everything needed to fetch and open one encrypted attachment (P6.S04).
+        case attachment(Attachment)
+    }
+
+    /// The pointer to an out-of-band blob, and the key that opens it.
+    ///
+    /// **This is the only place the attachment key ever exists on the wire**, and it is inside
+    /// the Double Ratchet ciphertext. The relay sees the blob and never sees this, which is
+    /// what makes its store a directory of opaque objects (`AttachmentCipher`).
+    ///
+    /// ## The timer is a field here rather than a second content type
+    ///
+    /// P6.S03 added `.expiringText` beside `.text` because `.text` had already shipped and its
+    /// body had no room for a timer. This type is new, so the timer is simply part of it, with
+    /// **zero meaning no timer**. That is unambiguous in a way it was not for text: there, a
+    /// zero-second timer and an absent one would have been two readings of the same bytes, and
+    /// a payload that can be read two ways is one that will be. Here the field is always
+    /// present and only its value varies.
+    ///
+    /// One content type also costs less on the receive path of an older build: an unknown type
+    /// is acknowledged and dropped, so every type added is a way for a message to be lost
+    /// rather than delayed.
+    public struct Attachment: Sendable, Equatable {
+        /// The relay's blob id — 122 bits of randomness that *is* the capability to download
+        /// it (`BACKEND.md` §2.8). Reaching the recipient only in here is what keeps the
+        /// relay from learning who is entitled to the bytes.
+        public let blobId: UUID
+        /// The AES-256 key for this attachment and no other.
+        public let key: Data
+        /// SHA-256 of the uploaded ciphertext, checked before the key is used.
+        public let digest: Data
+        /// Length of the original bytes, before encryption. Bounds the download and is
+        /// re-checked against what actually decrypts.
+        public let byteCount: Int
+        /// Seconds this message lives, or nil for no timer. Same units, same ceiling and the
+        /// same meaning as `.expiringText`.
+        public let ttlSeconds: UInt32?
+
+        public init(
+            blobId: UUID, key: Data, digest: Data, byteCount: Int, ttlSeconds: UInt32?
+        ) {
+            self.blobId = blobId
+            self.key = key
+            self.digest = digest
+            self.byteCount = byteCount
+            self.ttlSeconds = ttlSeconds
+        }
     }
 
     /// The longest lifetime a peer may name: four weeks.
@@ -87,8 +136,21 @@ public struct MessagePayload: Sendable, Equatable {
     public static let maxEncodedBytes = 32 * 1024
 
     private static let headerSize = 2
-    /// Width of the big-endian timer that precedes the text in an `.expiringText` body.
+    /// Width of the big-endian timer that precedes the text in an `.expiringText` body, and
+    /// that opens an `.attachment` body.
     private static let expirySize = 4
+
+    /// Width of the raw UUID an attachment names its blob by. The 16 bytes, not the 36-character
+    /// string: a rendering is a second thing two builds could disagree about.
+    private static let blobIdSize = 16
+    /// Width of the big-endian plaintext length that closes an `.attachment` body.
+    private static let byteCountSize = 4
+
+    /// An `.attachment` body is fixed width, so a parser can refuse a wrong length outright
+    /// instead of reading fields out of a buffer that may not hold them.
+    internal static let attachmentBodySize =
+        expirySize + blobIdSize + AttachmentCipher.keyBytes
+        + AttachmentCipher.digestBytes + byteCountSize
 
     public let content: Content
 
@@ -113,6 +175,35 @@ public struct MessagePayload: Sendable, Equatable {
             var encoded = Data(capacity: Self.expirySize + text.utf8.count)
             withUnsafeBytes(of: ttlSeconds.bigEndian) { encoded.append(contentsOf: $0) }
             encoded.append(Data(text.utf8))
+            body = encoded
+        case .attachment(let attachment):
+            // The same bounds the decoder applies to a peer's values, applied to our own. A
+            // pointer that could be built here and refused there would be a message the
+            // recipient loses for a reason the sender never saw.
+            if let ttlSeconds = attachment.ttlSeconds {
+                guard ttlSeconds > 0, ttlSeconds <= Self.maxExpirySeconds else {
+                    throw MessagePayloadError.invalidExpiry(ttlSeconds)
+                }
+            }
+            guard attachment.key.count == AttachmentCipher.keyBytes,
+                  attachment.digest.count == AttachmentCipher.digestBytes,
+                  attachment.byteCount > 0,
+                  attachment.byteCount <= AttachmentCipher.maxPlaintextBytes
+            else {
+                throw MessagePayloadError.malformedAttachment
+            }
+
+            type = .attachment
+            var encoded = Data(capacity: Self.attachmentBodySize)
+            withUnsafeBytes(of: (attachment.ttlSeconds ?? 0).bigEndian) {
+                encoded.append(contentsOf: $0)
+            }
+            withUnsafeBytes(of: attachment.blobId.uuid) { encoded.append(contentsOf: $0) }
+            encoded.append(attachment.key)
+            encoded.append(attachment.digest)
+            withUnsafeBytes(of: UInt32(attachment.byteCount).bigEndian) {
+                encoded.append(contentsOf: $0)
+            }
             body = encoded
         }
 
@@ -179,6 +270,46 @@ public struct MessagePayload: Sendable, Equatable {
                 throw MessagePayloadError.malformed
             }
             return MessagePayload(content: .expiringText(text, ttlSeconds: ttlSeconds))
+        case .attachment:
+            // Fixed width, so anything else is malformed before a single field is read. Every
+            // value below is chosen by the peer, so each is bounded here rather than by
+            // whatever eventually uses it.
+            guard body.count == Self.attachmentBodySize else {
+                throw MessagePayloadError.malformedAttachment
+            }
+            var cursor = body.startIndex
+
+            func take(_ count: Int) -> Data {
+                defer { cursor += count }
+                return Data(body[cursor..<(cursor + count)])
+            }
+            func takeBigEndian32() -> UInt32 {
+                take(4).reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
+            }
+
+            let rawTtl = takeBigEndian32()
+            // Zero is "no timer" for an attachment; see `Attachment`. Anything positive is
+            // held to the same ceiling as an expiring text.
+            guard rawTtl <= Self.maxExpirySeconds else {
+                throw MessagePayloadError.invalidExpiry(rawTtl)
+            }
+
+            let blobId = take(Self.blobIdSize).withUnsafeBytes {
+                UUID(uuid: $0.loadUnaligned(as: uuid_t.self))
+            }
+            let key = take(AttachmentCipher.keyBytes)
+            let digest = take(AttachmentCipher.digestBytes)
+            let byteCount = takeBigEndian32()
+
+            // Refused *before* anything is fetched: this is the number that would size a
+            // download and a buffer, and it arrives from an untrusted party.
+            guard byteCount > 0, byteCount <= UInt32(AttachmentCipher.maxPlaintextBytes) else {
+                throw MessagePayloadError.malformedAttachment
+            }
+
+            return MessagePayload(content: .attachment(Attachment(
+                blobId: blobId, key: key, digest: digest, byteCount: Int(byteCount),
+                ttlSeconds: rawTtl == 0 ? nil : rawTtl)))
         }
     }
 }
@@ -199,4 +330,7 @@ public enum MessagePayloadError: Error, Equatable, Sendable {
     case tooLarge(Int)
     /// A timer of zero, or longer than `MessagePayload.maxExpirySeconds`.
     case invalidExpiry(UInt32)
+    /// An attachment pointer of the wrong width, or naming a key, digest or plaintext length
+    /// this build will not act on. Refused before any blob is fetched.
+    case malformedAttachment
 }

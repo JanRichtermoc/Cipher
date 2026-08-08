@@ -38,7 +38,9 @@ struct ComposerBar: View {
 
             GlassEffectContainer(spacing: 20) {
                 HStack(alignment: .bottom, spacing: 12) {
-                    #if DEBUG
+                    // Real since P6.S04: it opens the photo picker, and what comes back is
+                    // encrypted before it is uploaded. It was DEBUG-only while it opened a
+                    // sheet of five sources that all dismissed and did nothing.
                     Button(action: onAttach) {
                         Image(systemName: "plus")
                             .font(.body.weight(.semibold))
@@ -50,7 +52,6 @@ struct ComposerBar: View {
                     .glassEffect(.regular.interactive(), in: Circle())
                     .glassEffectID("composerAttach", in: glassNamespace)
                     .accessibilityLabel("Attach")
-                    #endif
 
                     TextField("Message", text: $text, axis: .vertical)
                         .textFieldStyle(.plain)

@@ -13,6 +13,7 @@ Cipher/Features/Auth/AuthFlowView.swift
 Cipher/Features/Calls/CallsViews.swift
 Cipher/Features/Chats/ChatsListView.swift
 Cipher/Features/Chats/NewMessageView.swift
+Cipher/Features/Conversation/AttachmentImageView.swift
 Cipher/Features/Conversation/ChatInfoViews.swift
 Cipher/Features/Conversation/ComposerBar.swift
 Cipher/Features/Conversation/ConversationView.swift
@@ -28,12 +29,14 @@ Cipher/Messaging/ConversationArchive.swift
 Cipher/Messaging/ConversationStore+Preview.swift
 Cipher/Messaging/ConversationStore.swift
 Cipher/Messaging/MessageRepository.swift
+Cipher/Messaging/PhotoAttachment.swift
 Cipher/Messaging/SerialGate.swift
 Cipher/Models/Models.swift
 Cipher/Networking/BoundedResponseLoader.swift
 Cipher/Networking/CertificatePinner.swift
 Cipher/Networking/InviteCode.swift
 Cipher/Networking/InviteRedemption.swift
+Cipher/Networking/RelayBlobStore.swift
 Cipher/Networking/RelayClient.swift
 Cipher/Networking/RelayEndpoint.swift
 Cipher/Networking/RelayKeyDirectory.swift
