@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		00A296DF6F5690172B35725B /* MessagePayload.swift in Sources */ = {isa = PBXBuildFile; fileRef = E9A1059B09DADB51CB823320 /* MessagePayload.swift */; };
 		042CF938F2EE60FF79FD6052 /* SessionCredentialTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD9743B27B6E97F0986F9830 /* SessionCredentialTests.swift */; };
+		04D918D1D6925BDA61806CA3 /* MessagePadding.swift in Sources */ = {isa = PBXBuildFile; fileRef = 85FA69C45C3F89EFC8D72CFA /* MessagePadding.swift */; };
 		061808335DD4FB427F24404A /* Pods_CipherCrypto.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = EF956B52C9027CFF1D1DD1A9 /* Pods_CipherCrypto.framework */; };
 		0C2B4BC649F6996DB2BB60FE /* MessagingTestSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0BCBAD9C047C759063780502 /* MessagingTestSupport.swift */; };
 		0C7CB886FA573410CFF1FF2B /* CipherCrypto.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 27EE9F4D2EFA47454597A13F /* CipherCrypto.framework */; };
@@ -40,6 +41,7 @@
 		5932B494E62DCA6BCA384DFC /* AttachmentCipherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A686BAA65A5E2EF40249110 /* AttachmentCipherTests.swift */; };
 		5C2123EC8030E78225AB7C04 /* AppLockTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 43E7BECB317D1948AACFD6EF /* AppLockTests.swift */; };
 		5E96D052EF1D3D89528AB3E9 /* RedactingLogger.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6A371A6E905A0100965DC8D4 /* RedactingLogger.swift */; };
+		5FCF0F98045EE84B9308580E /* MessagePaddingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6BBB580D17CA21EA248C52A9 /* MessagePaddingTests.swift */; };
 		713D3CB276FE5B4AF49A307B /* ServiceIdentifier.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4F782543DE18F03E59EEDEAB /* ServiceIdentifier.swift */; };
 		74173E74956782613B187C63 /* SecretStorage.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5E29AFB504B4A7D90E9B8870 /* SecretStorage.swift */; };
 		75C44881BAA0BC9EFA3B72B0 /* CipherCrypto.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 27EE9F4D2EFA47454597A13F /* CipherCrypto.framework */; };
@@ -154,10 +156,12 @@
 		60F63954BB0E3ADA903AFBEE /* IsolationContract.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = IsolationContract.swift; path = CipherCrypto/Sources/Engine/IsolationContract.swift; sourceTree = SOURCE_ROOT; };
 		69694E5A85DCF8DE4B61667A /* Pods-CipherTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CipherTests.debug.xcconfig"; path = "Target Support Files/Pods-CipherTests/Pods-CipherTests.debug.xcconfig"; sourceTree = "<group>"; };
 		6A371A6E905A0100965DC8D4 /* RedactingLogger.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = RedactingLogger.swift; path = CipherCrypto/Sources/Logging/RedactingLogger.swift; sourceTree = SOURCE_ROOT; };
+		6BBB580D17CA21EA248C52A9 /* MessagePaddingTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherCryptoTests/MessagePaddingTests.swift; sourceTree = SOURCE_ROOT; };
 		6EF09E7309429B1C09D08A24 /* PublishedKeys.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = PublishedKeys.swift; path = CipherCrypto/Sources/Engine/PublishedKeys.swift; sourceTree = SOURCE_ROOT; };
 		770D65600DB8D4BFC2347640 /* ConversationArchiveTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/ConversationArchiveTests.swift; sourceTree = SOURCE_ROOT; };
 		7E63F2B8727ED042BA2CE100 /* DisappearingMessageTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/DisappearingMessageTests.swift; sourceTree = SOURCE_ROOT; };
 		8137513A9D13EAB098201D80 /* SessionRevocationTests.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CipherTests/SessionRevocationTests.swift; sourceTree = SOURCE_ROOT; };
+		85FA69C45C3F89EFC8D72CFA /* MessagePadding.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = MessagePadding.swift; path = CipherCrypto/Sources/Wire/MessagePadding.swift; sourceTree = SOURCE_ROOT; };
 		8CF345C885BFDA0D8BD6942C /* Foundation.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = Foundation.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS26.0.sdk/System/Library/Frameworks/Foundation.framework; sourceTree = DEVELOPER_DIR; };
 		92B1E7C0CE0ECC8CAF4C76F8 /* Pods-CipherTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-CipherTests.release.xcconfig"; path = "Target Support Files/Pods-CipherTests/Pods-CipherTests.release.xcconfig"; sourceTree = "<group>"; };
 		9709CFFEEA416EEFA7150FEF /* Envelope.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = Envelope.swift; path = CipherCrypto/Sources/Wire/Envelope.swift; sourceTree = SOURCE_ROOT; };
@@ -329,6 +333,7 @@
 				A693E112A193A1817CBB5A25 /* SealedRowStore.swift */,
 				E1714A227DD3C4821292B818 /* AttachmentCipher.swift */,
 				AF4AD4CF2D8B1AA0F9399906 /* AttachmentStore.swift */,
+				85FA69C45C3F89EFC8D72CFA /* MessagePadding.swift */,
 			);
 			path = CipherCrypto;
 			sourceTree = "<group>";
@@ -361,6 +366,7 @@
 				E078F81700E3E01A9451E2B0 /* PreKeyRotationTests.swift */,
 				9A686BAA65A5E2EF40249110 /* AttachmentCipherTests.swift */,
 				18C553DE9B0B0F96B2A4ECDA /* SealedSenderTests.swift */,
+				6BBB580D17CA21EA248C52A9 /* MessagePaddingTests.swift */,
 			);
 			path = CipherCryptoTests;
 			sourceTree = "<group>";
@@ -794,6 +800,7 @@
 				54027514177D8944B037188D /* PreKeyRotationTests.swift in Sources */,
 				5932B494E62DCA6BCA384DFC /* AttachmentCipherTests.swift in Sources */,
 				EE445E60634F7B6591D0DC07 /* SealedSenderTests.swift in Sources */,
+				5FCF0F98045EE84B9308580E /* MessagePaddingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -832,6 +839,7 @@
 				338E1C5B2D58C7F1F021FD7E /* SealedRowStore.swift in Sources */,
 				525A40FCDEA07D3590D21865 /* AttachmentCipher.swift in Sources */,
 				8392BD50134ECDB9F3E0ABA4 /* AttachmentStore.swift in Sources */,
+				04D918D1D6925BDA61806CA3 /* MessagePadding.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

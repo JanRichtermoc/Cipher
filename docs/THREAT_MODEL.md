@@ -249,6 +249,24 @@ rationale is one refactor away from "let's just add email login".
 so the bucket set is bounded and cheap. Raises the cost of distinguishing a one-word reply from a
 paragraph. Lands in **P7** with sealed sender, since both are metadata work.
 
+**Amended 2026-08-08 (P7.S02).** Done, with one correction to the wording above and one limit that
+has to be stated rather than left to the reader.
+
+**The padding is applied to the plaintext, not to the ciphertext.** A Signal ciphertext is
+authenticated, so bytes appended to it do not decrypt — they fail. Making them strippable would mean
+carrying the real length beside the padded one, in the envelope, in cleartext: the exact number the
+padding exists to hide. Padding inside the encryption has neither problem, and the ciphertext length
+follows the padded plaintext through a fixed per-message overhead, so bucketing the input buckets
+what the relay stores. Nine buckets, doubling from 256 bytes, in `MessagePadding`.
+
+**What it does not do.** It hides how long a message is *within its bucket*. It does not hide that a
+message was sent, when, how many, or the difference between a first message and a later one — a
+session-establishing payload carries prekeys and is visibly larger no matter how it is padded. It
+also does nothing for attachments, whose blob sizes are unpadded and out of band by design (P6.S04);
+padding those means padding megabytes, which is a separate decision with a real bandwidth cost.
+Against a global passive adversary none of this is worth claiming, and the roadmap's `Do not` column
+says exactly that.
+
 ### 3.6 Server logs
 
 **Decision:** no request bodies, no message metadata beyond what routing needs in the moment, and no

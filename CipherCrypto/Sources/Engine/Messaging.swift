@@ -112,6 +112,11 @@ public enum MessagingError: Error, Equatable, Sendable {
     /// Mapping it keeps the original intent, which was that a caller must not be able to
     /// mistake it for a transport failure and retry.
     case identityNotAccepted
+    /// The decrypted bytes are not a padded plaintext (P7.S02). Genuine — the session
+    /// authenticated them — but malformed, so they are refused rather than returned: the
+    /// buffer would otherwise reach the caller with trailing NUL bytes, which are valid UTF-8
+    /// and would be rendered as a message.
+    case malformedPadding
     /// The record container could not be read or written. **Distinct from every other failure
     /// because it is the only transient one**: the receive path must acknowledge a message it
     /// cannot decrypt (retrying will never succeed, and the relay would retain the ciphertext
@@ -238,16 +243,30 @@ extension CryptoEngine {
     /// peer that cannot yet read a `.sealed` frame refuses it, which is the cost of a new
     /// payload type rather than a `wireVersion` bump and is why this is a private-circle
     /// build decision rather than a compatibility scheme.
+    ///
+    /// ## And every message is padded to a bucket (P7.S02)
+    ///
+    /// The plaintext is rounded up to one of nine sizes before encryption, so the length of the
+    /// frame the relay stores no longer tracks the length of what was written. `MessagePadding`
+    /// argues the scheme and states plainly what it does not buy. The two changes travel
+    /// together on purpose: padding is only strippable by the recipient, so a frame is padded
+    /// exactly when it is sealed, and that correspondence is what lets the receive path decide
+    /// without a heuristic.
     public func encrypt(_ plaintext: Data, to peer: PeerAddress) throws -> Data {
         try requireLive()
         let localAddress = try requireLocalAddress()
         let context = NullContext()
 
+        // Padded before encryption, never after: see `MessagePadding` for why the ciphertext is
+        // the one place this cannot go. Every sealed frame carries a padded plaintext, which is
+        // what lets the receive path strip unconditionally on that branch.
+        let padded = try MessagePadding.pad(plaintext)
+
         let message: CiphertextMessage
         let sealed: Data
         do {
             message = try signalEncrypt(
-                message: plaintext,
+                message: padded,
                 for: try peer.makeProtocolAddress(),
                 localAddress: try localAddress.makeProtocolAddress(),
                 sessionStore: store, identityStore: store, context: context)
@@ -274,9 +293,12 @@ extension CryptoEngine {
         }
 
         guard sealed.count <= Envelope.maxCiphertextBytes else {
-            // Reported against the plaintext, which is the number a caller can act on. The
-            // sealed container's overhead comes out of the same 64 KiB budget; a payload is
-            // capped at 32 KiB (`MessagePayload.maxEncodedBytes`), so there is room for it.
+            // Reported against the plaintext, which is the number a caller can act on. Kept as
+            // a backstop rather than as the live bound: `MessagePadding.pad` already refuses
+            // anything over its top bucket, and that bucket plus a session-establishing
+            // payload's prekeys plus the sealed container is still well inside the 64 KiB
+            // ceiling. A check that has become arithmetically unreachable is worth keeping
+            // when what makes it unreachable is three constants in three different files.
             throw MessagingError.messageTooLarge(plaintext.count)
         }
 
@@ -436,6 +458,14 @@ extension CryptoEngine {
         /// The identity key the sealed certificate claimed, if the frame was sealed. Checked
         /// against the session's own key after decryption, never trusted in its place.
         let certificateKey: Data?
+        /// Whether the decrypted bytes carry P7.S02 padding.
+        ///
+        /// Derived from the frame type rather than sniffed, and the two are not independent: a
+        /// build that pads also seals, and a build that does not seal cannot produce a `.sealed`
+        /// frame at all. So `.sealed` means padded and an addressed frame means not, with no
+        /// heuristic in between — which matters, because guessing wrong in either direction
+        /// either truncates a real message or returns padding as content.
+        let isPadded: Bool
     }
 
     /// Removes the sealed-sender wrapper and applies every boundary refusal to what was inside.
@@ -469,7 +499,8 @@ extension CryptoEngine {
             sender: PeerAddress(serviceId: ServiceIdentifier(aci)),
             establishesSession: inner == .preKey,
             ciphertext: content.contents,
-            certificateKey: certificate.publicKey.serialize())
+            certificateKey: certificate.publicKey.serialize(),
+            isPadded: true)
     }
 
     private func decryptMessage(_ envelopeBytes: Data) throws -> DecryptedMessage {
@@ -494,7 +525,8 @@ extension CryptoEngine {
                     sender: PeerAddress(serviceId: claimed),
                     establishesSession: envelope.type == .preKey,
                     ciphertext: envelope.ciphertext,
-                    certificateKey: nil)
+                    certificateKey: nil,
+                    isPadded: false)
             case .sealed:
                 payload = try openSealedContainer(envelope.ciphertext, context: context)
             }
@@ -539,10 +571,15 @@ extension CryptoEngine {
             throw EnvelopeError.sealedSenderKeyMismatch
         }
 
+        // Stripped after the session has authenticated the bytes, never before: padding is
+        // framing inside the ciphertext, so anything that failed to decrypt never reaches here
+        // and a malformed padding is a statement about a peer rather than about an attacker.
+        let content = payload.isPadded ? try MessagePadding.strip(plaintext) : plaintext
+
         return DecryptedMessage(
             sender: payload.sender,
             senderIdentityKey: identityKey.serialize(),
-            plaintext: plaintext,
+            plaintext: content,
             claimedSender: envelope.sender,
             envelopeTimestampMs: envelope.timestamp,
             establishedSession: payload.establishesSession)

@@ -39,7 +39,8 @@ final class ProtocolStoreTests: XCTestCase {
             let outbound = try Local.encrypt(local, "hello from disk", to: peer.address)
             XCTAssertEqual(outbound.type, .preKey)
             XCTAssertEqual(
-                try peer.decrypt(outbound.bytes, type: outbound.type, from: local.address),
+                try peer.decrypt(outbound.bytes, type: outbound.type, from: local.address,
+                                 padded: false),
                 "hello from disk")
 
             let reply = try peer.encrypt("and back again", to: local.address)
@@ -74,7 +75,8 @@ final class ProtocolStoreTests: XCTestCase {
         try await Task { @CryptoActor in
             XCTAssertEqual(
                 try handoff.peer.decrypt(
-                    handoff.first, type: handoff.firstType, from: handoff.localAddress),
+                    handoff.first, type: handoff.firstType, from: handoff.localAddress,
+                    padded: false),
                 "before restart")
 
             // A brand new store object over the same directory and the same Keychain: this
@@ -108,7 +110,8 @@ final class ProtocolStoreTests: XCTestCase {
 
             try Local.establishSession(local, with: peer.address, bundle: try peer.makeBundle())
             let outbound = try Local.encrypt(local, "isolation", to: peer.address)
-            _ = try peer.decrypt(outbound.bytes, type: outbound.type, from: local.address)
+            _ = try peer.decrypt(outbound.bytes, type: outbound.type, from: local.address,
+                                 padded: false)
             let reply = try peer.encrypt("reply", to: local.address)
             _ = try Local.decrypt(local, reply.bytes, type: reply.type, from: peer.address)
 
@@ -138,7 +141,8 @@ final class ProtocolStoreTests: XCTestCase {
             try Local.establishSession(local, with: address, bundle: try original.makeBundle())
             let first = try Local.encrypt(local, "trusted", to: address)
             XCTAssertEqual(
-                try original.decrypt(first.bytes, type: first.type, from: local.address),
+                try original.decrypt(first.bytes, type: first.type, from: local.address,
+                                     padded: false),
                 "trusted")
 
             // A different installation claiming the same address: a new identity key.
