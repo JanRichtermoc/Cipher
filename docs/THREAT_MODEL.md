@@ -94,7 +94,7 @@ Three distinct cases that are routinely conflated:
 | State | What is exposed |
 |---|---|
 | Powered off / before first unlock | Nothing. Data Protection and the Keychain class both hold. |
-| **After first unlock, locked** | **Identity key and record key are reachable** by code executing on the device. This is the accepted cost of `AfterFirstUnlockThisDeviceOnly` (AUDIT 2.1) — required so a notification extension can decrypt while locked. |
+| **After first unlock, locked** | **Identity key and record key are reachable** by code executing on the device. This is the accepted cost of `AfterFirstUnlockThisDeviceOnly` (AUDIT 2.1) — required so that **wake-only push** can decrypt while locked. *Corrected 2026-08-08 (P8.S04): this said "a notification extension", and there will not be one (AUDIT 4.4). The decryption happens in the app's own process after a silent push wakes it, which needs the same accessibility and no second process.* |
 | Unlocked | Everything the app can see. The app lock (`LAContext`) is the only remaining barrier and is not a defence against an attacker with code execution. |
 
 Backups are covered: the Keychain items are `ThisDeviceOnly` and the record container is excluded
