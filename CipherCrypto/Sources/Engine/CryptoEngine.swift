@@ -74,7 +74,7 @@ public final class CryptoEngine {
 
     internal init(
         root: URL, secrets: SecretStorage,
-        now: @escaping () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) }
+        now: @escaping () -> UInt64 = { CipherCrypto.epochMilliseconds(from: Date()) }
     ) throws {
         CryptoActor.assertIsolated()
         self.now = now

@@ -27,11 +27,15 @@ internal protocol SecretStorage: AnyObject {
     /// Stores `value` under `key` **only if the key is currently empty**, and returns
     /// whatever is stored afterwards.
     ///
-    /// This is the module's load-or-create primitive and it must be atomic. The app and a
-    /// future notification-service extension are separate processes sharing one Keychain,
-    /// and both may reach identity creation on first launch. A `load`-then-`store` pair
-    /// would let each generate its own identity key and let the second overwrite the first,
-    /// silently destroying every session established in between.
+    /// This is the module's load-or-create primitive and it must be atomic: a `load`-then-`store`
+    /// pair lets two creators each generate an identity key and lets the second overwrite the
+    /// first, silently destroying every session established in between.
+    ///
+    /// *Premise corrected 2026-08-09.* This named the app and "a future notification-service
+    /// extension" as the two creators, and P8.S04 decided there will not be one (AUDIT 4.4).
+    /// The primitive stays because create-or-adopt is what this operation means and the
+    /// Keychain is the only place it can be made atomic — see `DeviceIdentity` for why that is
+    /// stated rather than left to be rediscovered.
     ///
     /// - Returns: `value` if this call created the entry, or the pre-existing bytes if
     ///   another writer got there first. Callers must use the returned value, never the one
@@ -73,12 +77,19 @@ internal enum SecretStorageError: Error, Equatable {
 ///   and the safety number would not change to warn anyone.
 ///
 ///   `AfterFirstUnlock` rather than `WhenUnlocked` is a deliberate, documented weakening.
-///   A notification-service extension has to decrypt an incoming message while the device
-///   is locked; under `WhenUnlocked` it could not, and the product would have to fall back
-///   to server-visible notification content, which is a far larger leak than the one this
-///   trades away. The residual risk is that after the first unlock following a boot, the
-///   key is reachable by any code that achieves execution on the device — the same class
-///   of attacker that could read the plaintext database anyway.
+///   **Wake-only push** has to decrypt an incoming message while the device is locked: a
+///   silent push wakes the app, which fetches, decrypts and posts a local notification, in
+///   its own process. Under `WhenUnlocked` it could not, and the product would have to fall
+///   back to server-visible notification content, which is a far larger leak than the one
+///   this trades away. The residual risk is that after the first unlock following a boot,
+///   the key is reachable by any code that achieves execution on the device — the same
+///   class of attacker that could read the plaintext database anyway.
+///
+///   *Corrected 2026-08-09.* This said "a notification-service extension has to decrypt",
+///   and P8.S04 decided there will not be one (AUDIT 4.4). Left as it was, the weakening
+///   would read as justified by something that does not exist, which invites exactly the
+///   tightening to `WhenUnlocked` that AUDIT 2.1 forbids — and which silently breaks
+///   notifications. Same requirement, no second process.
 ///
 /// - **`kSecAttrSynchronizable = false`.** Never iCloud Keychain. Syncing a Signal identity
 ///   key would place it in Apple's custody and on every paired device.

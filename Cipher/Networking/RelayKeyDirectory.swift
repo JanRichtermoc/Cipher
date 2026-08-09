@@ -143,7 +143,9 @@ nonisolated struct RelayKeyDirectory: Sendable {
     /// The returned bundle is **unverified**: `PeerKeyBundle` validates structure only, and the
     /// signatures are checked by libsignal inside `processPreKeyBundle` on every use. Whether
     /// the identity key is *the peer's* is not answerable here at all — that is trust on first
-    /// use until safety numbers land (P5.S12, AUDIT 3.3).
+    /// use, and it is answered out of band by comparing safety numbers (P5.S12, AUDIT 3.3).
+    /// This read "until safety numbers land"; they landed, and nothing here changed with them,
+    /// which is exactly how a future-tense premise outlives the thing it was waiting for.
     func bundle(for aci: UUID, token: String) async throws -> PeerKeyBundle {
         let response = try await perform(
             RelayRequest(

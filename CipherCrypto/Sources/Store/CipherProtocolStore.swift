@@ -24,12 +24,19 @@ import LibSignalClient
 ///
 /// ## No caching, on purpose
 ///
-/// Every method reads through to the record store. A future notification-service extension
-/// is a **separate process** over the same container: it decrypts a message, steps the
-/// ratchet, and writes a new session record while the app is suspended. Any in-memory cache
-/// here would be stale on resume and would overwrite the extension's work with an older
-/// ratchet state, silently breaking the session. The cost is a small database read per
-/// callback, which is not the bottleneck in an operation that also runs PQXDH.
+/// Every method reads through to the record store, and the reason is `withDecryptedMessageTransaction`.
+/// A received message runs libsignal's ratchet, prekey and trust writes inside one SQLite
+/// transaction with the archive write, so that a failure to store the message rolls the
+/// ratchet back with it. An in-memory cache here would not roll back: it would hold the
+/// stepped ratchet after the transaction that produced it had been abandoned, and the next
+/// message would be decrypted against state the database does not have. The cost is a small
+/// database read per callback, which is not the bottleneck in an operation that also runs
+/// PQXDH.
+///
+/// *Reason corrected 2026-08-09.* This argued from "a future notification-service extension
+/// is a separate process over the same container", and P8.S04 decided there will not be one
+/// (AUDIT 4.4). The conclusion is unchanged and now rests on something this build actually
+/// does.
 ///
 /// ## `SenderKeyStore` is deliberately not implemented
 ///
@@ -63,7 +70,7 @@ internal final class CipherProtocolStore {
         records: RecordStore,
         database: SealedRecordDatabase,
         secrets: SecretStorage,
-        now: @escaping () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) }
+        now: @escaping () -> UInt64 = { CipherCrypto.epochMilliseconds(from: Date()) }
     ) {
         CryptoActor.assertIsolated()
         self.deviceIdentity = deviceIdentity
@@ -191,6 +198,15 @@ internal final class CipherProtocolStore {
         internal let kyberLastResortId: UInt32
         internal let rotatedAtMs: UInt64
         internal let retired: [RetiredPreKey]
+    }
+
+    /// Removes the rotation record, reaching the state 2.4(a) describes: an installation that
+    /// published before this record existed. There is no production path to it — the record is
+    /// only ever written — and it is the only way to test that a legacy last-resort key survives
+    /// the first rotation after the upgrade.
+    internal func removePreKeyRotationRecordForTesting() throws {
+        CryptoActor.assertIsolated()
+        try records.remove(.metadata, Self.preKeyRotationKey)
     }
 
     internal func preKeyRotation() throws -> PreKeyRotationRecord? {
@@ -716,7 +732,38 @@ extension CipherProtocolStore: KyberPreKeyStore {
         try records.store(.kyberPreKey, idKey(id), serialized)
     }
 
-    /// Replay protection for session establishment.
+    /// Replay protection for session establishment, and the point at which a **used one-time
+    /// Kyber prekey stops existing**.
+    ///
+    /// ## The deletion, and why it is here
+    ///
+    /// libsignal's `KyberPreKeyStore` has no `removeKyberPreKey`: this callback is the only
+    /// notification a store gets that a Kyber prekey was consumed, so deleting is the store's
+    /// job. It was not being done. A one-time Kyber prekey whose private half survives its use
+    /// offers no more forward secrecy than the last-resort key the pool exists to avoid falling
+    /// back to (`BACKEND.md` §2.6): against an adversary who records a session-establishing
+    /// message and later reads this device (`THREAT_MODEL.md` §1.1/§1.3 with §1.4), every
+    /// X25519 contribution in PQXDH is recoverable from public values by a quantum-capable
+    /// attacker, leaving the KEM secret as the only barrier — and a retained private key is not
+    /// a barrier. The curve half was already correct: libsignal calls `removePreKey` itself.
+    /// AUDIT 2.6.
+    ///
+    /// **The last-resort key is never deleted**, live or retired. It is reusable by design, and
+    /// a retired one is still inside the retention window that keeps a peer's in-flight first
+    /// message decryptable (`recordPreKeyRotation` above). Every uncertainty — no rotation
+    /// record, an unreadable one, an id this publication did not mint — resolves to *keep*,
+    /// because deleting a key that is still being handed out costs a peer their first message
+    /// permanently, while keeping one costs the forward secrecy this deletion buys and nothing
+    /// else. `isOneTimeKyberPreKey` is where each of those is refused, and the third of them
+    /// was found by review after the first version of this deletion shipped without it.
+    ///
+    /// A legitimate retransmission is unaffected: libsignal returns early from `process_prekey`
+    /// when a session state for the same base key already exists, so the store is not consulted
+    /// a second time. That is the same property the witness below already depends on — without
+    /// it, a resent first message would fail here as a "reused base key" long before this
+    /// deletion existed.
+    ///
+    /// ## Replay protection
     ///
     /// Anyone holding this device's published prekey bundle can start a session with it —
     /// that is what makes asynchronous messaging work — and the initiator chooses the base
@@ -766,6 +813,62 @@ extension CipherProtocolStore: KyberPreKeyStore {
                 "base-key witness at capacity; evicting oldest entries for one prekey pair")
         }
         try storeBaseKeyWitness(seen, witnessKey)
+
+        // After the witness, not before: a replayed base key throws above and must leave the
+        // key exactly as it was. In production this whole callback runs inside the receive
+        // transaction (`CryptoEngine.withDecryptedMessageTransaction`), so a later failure
+        // rolls the deletion back together with the ratchet it belongs to.
+        if isOneTimeKyberPreKey(id) {
+            try records.remove(.kyberPreKey, idKey(id))
+        }
+    }
+
+    /// Whether `id` names a one-time Kyber prekey, which is consumed, rather than a last-resort
+    /// one, which is not.
+    ///
+    /// Deliberately non-throwing, and deliberately answers "no" to every question it cannot
+    /// settle. The two error directions are not symmetric. Refusing the message would turn an
+    /// unreadable *local* record into a permanently undeliverable inbound message — the receive
+    /// path treats an unmapped failure as permanent and acknowledges the envelope away — while
+    /// keeping the key merely forgoes this deletion. AUDIT 4.9's "a corrupt record is fatal"
+    /// applies where the record is load-bearing for the operation; here it is load-bearing only
+    /// for hygiene, so it is logged and stepped over rather than raised.
+    private func isOneTimeKyberPreKey(_ id: UInt32) -> Bool {
+        let rotation: PreKeyRotationRecord?
+        do {
+            rotation = try preKeyRotation()
+        } catch {
+            CipherLog.keys.warning(
+                "prekey rotation record unreadable; keeping a used Kyber prekey (AUDIT 2.6)")
+            return false
+        }
+
+        // No record at all is the installation that published before rotation existed
+        // (`recordPreKeyRotation`, "The one thing this cannot clean up"). Its last-resort id is
+        // unknown, so nothing here may be deleted.
+        guard let rotation else { return false }
+
+        guard id != rotation.kyberLastResortId else { return false }
+        guard !rotation.retired.contains(where: {
+            $0.kind == .kyberLastResort && $0.keyId == id
+        }) else { return false }
+
+        // And nothing minted before this record existed. `recordPreKeyRotation` appends the
+        // outgoing pair to `retired` only when there *was* a previous record, so the first
+        // rotation of an installation that published before P6.S01 writes a record naming
+        // neither that installation's legacy signed prekey nor its legacy last-resort key —
+        // the two records 2.4(a) already says survive until the account is erased. Without
+        // this bound the legacy **last-resort** key looks like a one-time key and is deleted
+        // on first use, which is the permanent `invalidKeyIdentifier` that
+        // `recordPreKeyRotation`'s own "why the old pair is not deleted here" exists to stop.
+        //
+        // Ids are monotonic and `generatePublishedKeys` reserves the signed prekey first, so
+        // an id below the live `signedPreKeyId` is one this publication did not mint. The
+        // cost is stated on AUDIT 2.6 rather than hidden: a one-time Kyber key from a
+        // *superseded* publication is kept rather than deleted, because nothing here can tell
+        // it apart from a legacy last-resort key. Closing that needs the kind recorded at mint
+        // time, which is a record-format change and its own step.
+        return id >= rotation.signedPreKeyId
     }
 
     // MARK: Base-key witness coding

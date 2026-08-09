@@ -194,6 +194,13 @@ services:
       # /32 — the subnet would also trust postgres and redis. Read it off the
       # running network, do not guess it.
       RELAY_TRUSTED_PROXY: ${RELAY_TRUSTED_PROXY:-}
+      # Empty by default, and empty means the relay REFUSES to store a push token
+      # rather than storing one in the clear (docs/BACKEND.md §2.9). Wired here
+      # because config.Load reads it and main passes it to the store: without this
+      # line, setting it in .env has no effect on the container at all, and the
+      # symptom is a refusal that reads like a code bug. Set it with P8.S02, which
+      # brings the endpoint that first writes a token.
+      RELAY_PUSH_TOKEN_KEY: ${RELAY_PUSH_TOKEN_KEY:-}
     depends_on:
       postgres:
         condition: service_healthy

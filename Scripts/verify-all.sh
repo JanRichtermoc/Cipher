@@ -289,11 +289,23 @@ fi
 step "TLS pin gate logic (the live probe needs the staging host)"
 ./Scripts/verify-pins.sh --self-test || fail "the TLS pin gate cannot be trusted"
 
-# --- 4. App target manifest -------------------------------------------------
+# --- 4. Target membership -----------------------------------------------------
+# Two halves of one question — does the project build what is on disk — with opposite failure
+# modes, so they run together. Cheap, so both run before anything is compiled.
+#
 # The app target uses synchronized folders, so a file can join the shipping bundle with no
-# project-file edit. Cheap, so it runs before anything is compiled.
-step "app target manifest"
+# project-file edit. The three explicit-membership targets fail the other way: a file dropped
+# into `CipherCrypto/`, `CipherCryptoTests/` or `CipherTests/` joins nothing until
+# `bootstrap-targets.rb` is run by hand. For a source file that is loud, because the first
+# reference to it will not compile. For a **test** file it is silent: an uncompiled
+# `XCTestCase` produces no name, changes no total, and leaves this whole script green over a
+# security test that never ran (AUDIT 6.19).
+step "target membership (app manifest, and every explicit target)"
 ./Scripts/verify-app-target-manifest.sh || fail "app target manifest"
+./Scripts/verify-target-membership.py --self-test ||
+  fail "the target-membership gate cannot be trusted"
+./Scripts/verify-target-membership.py ||
+  fail "a Swift file is not compiled by the target that owns its directory (AUDIT 6.19)"
 
 # --- 5. iPhone-only ----------------------------------------------------------
 # Early, and before anything is compiled, because the answer is a property of the
@@ -408,7 +420,9 @@ run_tests() {
     -workspace "$WORKSPACE" \
     -scheme Cipher \
     -destination "$DESTINATION" \
-    2>&1 | tee "$LOG" | grep -E "^Test Case.*failed|error:|Executed [0-9]+ tests|TEST (SUCCEEDED|FAILED)" || true
+    2>&1 | tee "$LOG" |
+    grep -E "^Test Case.*failed|^✘|error:|Executed [0-9]+ tests|Test run with|TEST (SUCCEEDED|FAILED)" ||
+    true
 }
 
 # A simulator still winding down from a previous build refuses the launch with
@@ -519,6 +533,21 @@ grep -q "SessionCredentialTests" "$LOG" ||
   fail "CipherTests did not run — the auth gate is unguarded (P3.S01)"
 grep -q "AppLockTests" "$LOG" ||
   fail "AppLockTests did not run — the app lock is unguarded (P3.S02)"
+
+# And the Swift Testing suites, which the three assertions above cannot cover: they run under
+# a different runner and report through different lines, so `Executed N tests` never counts
+# them and `** TEST SUCCEEDED **` prints whether or not any of them ran. Certificate pinning
+# lives *only* here — the control that stands between this client and a substituted relay has
+# no XCTest anywhere — so a scheme or membership edit that dropped these files would have left
+# this gate green over it. AUDIT 6.19.
+#
+# By display name, as literals. Renaming a suite is meant to fail this and be updated
+# deliberately; deriving the list from the sources would make the check follow whatever the
+# sources happen to contain, which is the defect AUDIT R5 records.
+for suite in "Certificate pinning" "Invite redemption" "Relay transport bounds"; do
+  grep -qF "Suite \"$suite\" passed" "$LOG" ||
+    fail "the Swift Testing suite \"$suite\" did not run (AUDIT 6.19; full log: $LOG)"
+done
 
 # --- 15. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the

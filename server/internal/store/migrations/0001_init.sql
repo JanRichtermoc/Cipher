@@ -175,11 +175,23 @@ CREATE UNIQUE INDEX kyber_prekeys_one_last_resort_idx
 -- no delivery decision needs), delivered (delivered means deleted), read,
 -- retry_count, and any archive table.
 --
--- Envelope wire format v1 carries `sender` in CLEARTEXT at offset 2. The relay does
--- not read, index, or store it separately, but it is inside `envelope` — so a seized
--- database does reveal sender->recipient pairs for messages in flight. Ciphertext-
--- only means no plaintext CONTENT, ever; it does not yet mean no sender. Delete-on-
--- delivery bounds the exposed set and sealed sender (P7) removes the field.
+-- Envelope wire format v1 has seventeen bytes at offset 2 where the sender used to
+-- be. The relay does not read, index, or store them, and since P7.S01 (AUDIT 3.4)
+-- every frame the shipped client produces is `.sealed`: those bytes are zero and the
+-- address is inside the ciphertext, so a seized database no longer reveals who sent
+-- what. Ciphertext-only has always meant no plaintext CONTENT, ever; it now also
+-- means no sender at rest.
+--
+-- Amended 2026-08-09. This said the field was CLEARTEXT and that sealed sender would
+-- remove it — written before P7.S01 and left behind by it, so the file a reviewer
+-- reads to learn what this table can hold overstated the exposure.
+--
+-- The residual is a statement about clients, not about this schema: the relay
+-- accepts type 1, 2 and 4 and parses none of them, so a peer running a pre-P7.S01
+-- build, or a modified client, can still enqueue an addressed envelope with those
+-- bytes populated. Nothing here can tell the difference. A live relay is separately
+-- told who is sending by the bearer token on POST /v1/messages, which is AUDIT 3.9
+-- and is not closed by anything in this file.
 -- ---------------------------------------------------------------------------
 CREATE TABLE messages (
     -- The acknowledgement handle. Random UUIDv4, NOT a sequence: a monotonic id

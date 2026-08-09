@@ -937,9 +937,14 @@ from outside is never the gateway, and Nginx overwrites `X-Real-IP` on the way t
 Does this design leak anything new to the server, to Apple, or to disk?
 
 **To the server:** yes, unavoidably, and it is enumerated rather than minimised in prose — account
-existence (`aci`, public keys, day-resolution activity), who has mail waiting while it waits, and
-sender→recipient pairs for in-flight messages via the cleartext `sender` field inside `envelope`
-(§2.7). No message content, at any time, in any column. No social graph at rest: the invite graph is
+existence (`aci`, public keys, day-resolution activity), and who has mail waiting while it waits.
+**Amended 2026-08-09:** this also listed "sender→recipient pairs for in-flight messages via the
+cleartext `sender` field inside `envelope`", which P7.S01 closed (§2.7, AUDIT 3.4) — every frame
+the shipped client produces is `.sealed` and names nobody. Two things replace it rather than
+nothing: the relay parses no envelope, so a modified or pre-P7.S01 client can still enqueue an
+addressed one, and a **live** relay is told who is sending by the bearer token on
+`POST /v1/messages` (AUDIT 3.9, unscheduled). Neither is a column. No message content, at any
+time, in any column. No social graph at rest: the invite graph is
 never written, and the attachment ownership edge is never written.
 
 **To Apple:** nothing new in P4 — push lands in P8. The `push_tokens` table is designed here so that

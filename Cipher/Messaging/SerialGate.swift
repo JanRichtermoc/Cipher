@@ -33,10 +33,12 @@ import Synchronization
 ///
 /// ## In-process only
 ///
-/// This is a lock between tasks in one process, not between processes. A notification-service
-/// extension writing the same container is a different problem and a documented blocker
-/// (`AUDIT.md` 4.4, item 2): the lock it needs must survive the holder being killed, which this
-/// one cannot. Nothing here makes an NSE safe, and nothing here is meant to.
+/// This is a lock between tasks in one process, not between processes — and one process is now
+/// the whole story. P8.S04 decided there will be no notification-service extension (`AUDIT.md`
+/// 4.4, ACCEPTED by withdrawing its requirement rather than by meeting it): what has to decrypt
+/// while the device is locked is wake-only push, in the app's own process. A cross-process lock
+/// would have had to survive the holder being killed, which this one cannot; nothing here was
+/// ever going to make an extension safe, and nothing here is meant to.
 nonisolated final class SerialGate: Sendable {
 
     private struct State {

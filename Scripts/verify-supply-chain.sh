@@ -156,10 +156,22 @@ check_lock_records_the_audited_commit() {
     return
   fi
 
+  # Every occurrence, not any occurrence. `Podfile.lock` records `:commit:` twice — once under
+  # EXTERNAL SOURCES and once under CHECKOUT OPTIONS — and `grep -q` is satisfied by either.
+  # A lockfile whose EXTERNAL SOURCES matched the pin while CHECKOUT OPTIONS named something
+  # else would have been reported as pinned, and CHECKOUT OPTIONS is the one that decides which
+  # bytes are fetched. Counting is what makes "the lockfile pins X" a statement about the whole
+  # file: at least one, and none that is anything else.
+  local commits divergent
+  commits="$(grep -c ':commit:' "$lock" || true)"
+  divergent="$(grep ':commit:' "$lock" | grep -cv ":commit: ${LIBSIGNAL_COMMIT}$" || true)"
+
   if grep -q ':tag:' "$lock"; then
     fail "Podfile.lock still records a :tag: — re-run 'bundle exec pod install'"
-  elif ! grep -q ":commit: ${LIBSIGNAL_COMMIT}" "$lock"; then
-    fail "Podfile.lock does not pin ${LIBSIGNAL_COMMIT}"
+  elif [ "$commits" -eq 0 ]; then
+    fail "Podfile.lock records no :commit: at all"
+  elif [ "$divergent" -ne 0 ]; then
+    fail "Podfile.lock has $divergent :commit: line(s) that are not ${LIBSIGNAL_COMMIT}"
   elif ! grep -q "LibSignalClient (${LIBSIGNAL_VERSION})" "$lock"; then
     fail "Podfile.lock does not record LibSignalClient ${LIBSIGNAL_VERSION}"
   else
@@ -258,6 +270,20 @@ EOF
   printf 'PODS:\n  - LibSignalClient (%s)\nCHECKOUT OPTIONS:\n    :commit: %s\n' \
     "$LIBSIGNAL_VERSION" "0000000000000000000000000000000000000000" >"$tmp/Podfile.lock"
   expect fail "a lockfile pinning an unaudited commit"
+
+  # The real lockfile records `:commit:` twice, under EXTERNAL SOURCES and under CHECKOUT
+  # OPTIONS, and the second is the one that decides which bytes are fetched. A check satisfied
+  # by *any* matching occurrence would have accepted this.
+  printf 'PODS:\n  - LibSignalClient (%s)\nEXTERNAL SOURCES:\n    :commit: %s\nCHECKOUT OPTIONS:\n    :commit: %s\n' \
+    "$LIBSIGNAL_VERSION" "$LIBSIGNAL_COMMIT" "0000000000000000000000000000000000000000" \
+    >"$tmp/Podfile.lock"
+  expect fail "a lockfile whose two :commit: lines disagree"
+
+  # And the shape the repository actually has must still pass, or the rule above would be
+  # "refuse two commit lines" rather than "refuse two that differ".
+  printf 'PODS:\n  - LibSignalClient (%s)\nEXTERNAL SOURCES:\n    :commit: %s\nCHECKOUT OPTIONS:\n    :commit: %s\n' \
+    "$LIBSIGNAL_VERSION" "$LIBSIGNAL_COMMIT" "$LIBSIGNAL_COMMIT" >"$tmp/Podfile.lock"
+  expect pass "a lockfile whose two :commit: lines agree with PINS.env"
 
   # THREAT_MODEL.md §4.1 / §4.4, both directions. A second pod is refused, and so
   # is a Podfile with none at all — otherwise "found nothing forbidden" and "read

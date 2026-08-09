@@ -17,6 +17,9 @@
 
 import CipherCrypto
 import Foundation
+import ImageIO
+import UIKit
+import UniformTypeIdentifiers
 import XCTest
 
 @testable import Cipher
@@ -463,5 +466,103 @@ final class AttachmentTests: XCTestCase {
         } catch {
             XCTAssertEqual(error as? CryptoEngineError, .destroyed)
         }
+    }
+
+    // MARK: - Re-encoding is the privacy control (AUDIT 6.21)
+
+    /// A JPEG carrying a GPS dictionary and an EXIF block, built here rather than checked in:
+    /// a fixture file is a thing that can rot, and the positive control below has to be able
+    /// to prove the input really did carry what the assertion says it lost.
+    private func photoCarryingLocation() throws -> Data {
+        let size = 8
+        let context = try XCTUnwrap(
+            CGContext(
+                data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        let image = try XCTUnwrap(context.makeImage())
+
+        let out = NSMutableData()
+        let destination = try XCTUnwrap(
+            CGImageDestinationCreateWithData(out, UTType.jpeg.identifier as CFString, 1, nil))
+        let properties: [CFString: Any] = [
+            kCGImagePropertyGPSDictionary: [
+                kCGImagePropertyGPSLatitude: 50.0755,
+                kCGImagePropertyGPSLatitudeRef: "N",
+                kCGImagePropertyGPSLongitude: 14.4378,
+                kCGImagePropertyGPSLongitudeRef: "E",
+            ] as [CFString: Any],
+            kCGImagePropertyExifDictionary: [
+                kCGImagePropertyExifDateTimeOriginal: "2026:08:09 01:02:03"
+            ] as [CFString: Any],
+        ]
+        CGImageDestinationAddImage(destination, image, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        return out as Data
+    }
+
+    private func imageProperties(_ data: Data) throws -> [CFString: Any] {
+        let source = try XCTUnwrap(CGImageSourceCreateWithData(data as CFData, nil))
+        return try XCTUnwrap(
+            CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any])
+    }
+
+    /// The claim P6.S04 records — "picked photos are re-encoded through a bitmap, which drops
+    /// EXIF including where the photo was taken" — asserted rather than described.
+    ///
+    /// It is the only thing standing between a photo's coordinates and the recipient, and
+    /// everyone the recipient later forwards the file to. The encryption does not help: the
+    /// metadata would travel *inside* the ciphertext, delivered intact.
+    ///
+    /// `AttachmentTests`' other twelve cases enter one layer below this, at
+    /// `sendAttachment(bytes:)` with synthetic bytes, so `prepare` was reached by nothing.
+    @MainActor
+    func testPreparingAPhotoDropsItsLocationAndEXIF() throws {
+        let original = try photoCarryingLocation()
+
+        // Positive control: the input really does carry what the assertion below says is gone.
+        // Without it, an encoder that silently produced an empty file would pass.
+        let before = try imageProperties(original)
+        XCTAssertNotNil(
+            before[kCGImagePropertyGPSDictionary],
+            "the fixture must carry GPS, or this test proves nothing")
+        XCTAssertNotNil(before[kCGImagePropertyExifDictionary])
+
+        let prepared = try XCTUnwrap(
+            PhotoAttachment.prepare(original), "a valid JPEG must be preparable")
+
+        let after = try imageProperties(prepared)
+        XCTAssertNil(
+            after[kCGImagePropertyGPSDictionary],
+            "a re-encoded photo must carry no location (P6.S04)")
+        XCTAssertNil(
+            after[kCGImagePropertyExifDateTimeOriginal],
+            "nor the moment it was taken")
+        if let exif = after[kCGImagePropertyExifDictionary] as? [CFString: Any] {
+            XCTAssertNil(
+                exif[kCGImagePropertyExifDateTimeOriginal],
+                "nor the moment it was taken, inside the EXIF block")
+        }
+
+        // And it is still a decodable image, so "drops the metadata" is not being satisfied by
+        // producing something unusable.
+        XCTAssertNotNil(UIImage(data: prepared))
+    }
+
+    /// The redraw happens even for an image that is already small enough. Skipping it as an
+    /// optimisation would make the privacy property hold only for large photos — which is the
+    /// shape of defect that ships, because the pictures used in testing are small.
+    @MainActor
+    func testASmallPhotoIsStillReEncoded() throws {
+        let original = try photoCarryingLocation()
+        XCTAssertLessThan(
+            original.count, AttachmentCipher.maxPlaintextBytes,
+            "the fixture must already fit, or this is the same test as the one above")
+
+        let prepared = try XCTUnwrap(PhotoAttachment.prepare(original))
+
+        XCTAssertNil(try imageProperties(prepared)[kCGImagePropertyGPSDictionary])
     }
 }

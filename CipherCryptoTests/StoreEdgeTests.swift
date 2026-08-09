@@ -244,4 +244,43 @@ final class StoreEdgeTests: XCTestCase {
         return root.appendingPathComponent(kind.rawValue, isDirectory: true)
             .appendingPathComponent(name, isDirectory: false)
     }
+
+    // MARK: - The wall clock is user-settable (AUDIT 6.23)
+
+    /// `UInt64(someNegativeDouble)` traps, and the clock these defaults read reaches 1970 and
+    /// below through the iOS date picker. `encrypt` and every inbound `saveIdentity` call it, so
+    /// the trap would be a crash on the send *and* receive paths, reached with no attacker and
+    /// no malformed input.
+    func testAClockSetBeforeTheEpochClampsRatherThanTrapping() {
+        XCTAssertEqual(CipherCrypto.epochMilliseconds(from: Date(timeIntervalSince1970: -0.001)), 0)
+        XCTAssertEqual(CipherCrypto.epochMilliseconds(from: Date(timeIntervalSince1970: -1)), 0)
+        XCTAssertEqual(
+            CipherCrypto.epochMilliseconds(from: Date(timeIntervalSince1970: -86_400 * 365)), 0)
+    }
+
+    /// Positive control for the three above: an ordinary date must still convert, or a function
+    /// that returned zero unconditionally would satisfy them.
+    func testAnOrdinaryClockStillConvertsToMilliseconds() {
+        XCTAssertEqual(CipherCrypto.epochMilliseconds(from: Date(timeIntervalSince1970: 0)), 0)
+        XCTAssertEqual(CipherCrypto.epochMilliseconds(from: Date(timeIntervalSince1970: 1.5)), 1500)
+        XCTAssertEqual(
+            CipherCrypto.epochMilliseconds(from: Date(timeIntervalSince1970: 1_700_000_000)),
+            1_700_000_000_000)
+    }
+
+    /// The pool size the module will mint stays inside what the relay will accept. The
+    /// `precondition` that enforces the upper bound is a trap and therefore not expressible as
+    /// an XCTest case; what is testable, and what would actually drift, is the default moving
+    /// past the ceiling.
+    func testTheDefaultPreKeyPoolFitsInsideTheRelaysUploadCap() async {
+        // On the crypto queue like every other engine access: `CryptoEngine`'s members are
+        // `@CryptoActor`-isolated, and a bare annotation on a synchronous XCTest method does
+        // not put the call on that queue — `CryptoActor.assertIsolated` says so, loudly.
+        await Task { @CryptoActor in
+            XCTAssertEqual(CryptoEngine.maxOneTimePreKeyCount, 200, "matches BACKEND.md §2.4")
+            XCTAssertLessThanOrEqual(
+                CryptoEngine.defaultOneTimePreKeyCount, CryptoEngine.maxOneTimePreKeyCount)
+            XCTAssertGreaterThan(CryptoEngine.defaultOneTimePreKeyCount, 0)
+        }.value
+    }
 }

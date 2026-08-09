@@ -157,6 +157,16 @@
         }
       }
     },
+    "Applies to messages you send. Both copies are deleted when the timer ends. It cannot stop someone saving a message another way." : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Platí pro zprávy, které odešlete. Po vypršení časovače se smažou obě kopie. Nezabrání to tomu, aby si někdo zprávu uložil jinak."
+          }
+        }
+      }
+    },
     "Available" : {
       "extractionState" : "stale",
       "localizations" : {
@@ -1231,12 +1241,12 @@
         }
       }
     },
-    "This contact's identity key changed. Sending is blocked, and safety-number comparison is not implemented yet — do not treat this conversation as secure." : {
+    "This contact's identity key changed, so sending is blocked. Compare safety numbers with them in Info, then accept the new key." : {
       "localizations" : {
         "cs" : {
           "stringUnit" : {
             "state" : "translated",
-            "value" : "Identitní klíč tohoto kontaktu se změnil. Odesílání je zablokováno a porovnání bezpečnostních čísel zatím není implementováno — tuto konverzaci nepovažujte za bezpečnou."
+            "value" : "Identitní klíč tohoto kontaktu se změnil, odesílání je proto zablokováno. Porovnejte s ním bezpečnostní čísla v Informacích a poté nový klíč přijměte."
           }
         }
       }
