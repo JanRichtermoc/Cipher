@@ -41,12 +41,24 @@ enum SecurePasteboard {
     /// Copies `text`, local to this device, expiring after `lifetime`.
     static func copy(_ text: String) {
         UIPasteboard.general.setItems(
-            [[UTType.utf8PlainText.identifier: text]],
-            options: [
-                // Never Universal Clipboard. This is the option that keeps a decrypted
-                // message on the device it was decrypted on.
-                .localOnly: true,
-                .expirationDate: Date().addingTimeInterval(lifetime),
-            ])
+            [[UTType.utf8PlainText.identifier: text]], options: options())
+    }
+
+    /// The two options that are the whole control, separated from the call that applies them
+    /// so they can be asserted.
+    ///
+    /// `UIPasteboard` exposes no way to read back the options an item was written with, so
+    /// without this seam the difference between `SecurePasteboard.copy` and the plain
+    /// `UIPasteboard.general.string = text` it exists to replace is invisible to a test — and
+    /// AUDIT 4.6 is CLOSED, which in this ledger means a *tested* control exists. It did not.
+    /// Dropping `.localOnly` in a tidy-up would have reinstated Universal Clipboard forwarding
+    /// with every gate green.
+    static func options(now: Date = Date()) -> [UIPasteboard.OptionsKey: Any] {
+        [
+            // Never Universal Clipboard. This is the option that keeps a decrypted
+            // message on the device it was decrypted on.
+            .localOnly: true,
+            .expirationDate: now.addingTimeInterval(lifetime),
+        ]
     }
 }
