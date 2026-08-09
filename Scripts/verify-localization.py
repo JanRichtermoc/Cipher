@@ -233,6 +233,11 @@ WARNING_MARKERS = [
     "do not treat",
     "nothing reads this setting",
     "none of these settings",
+    # The disappearing-messages footer. THREAT_MODEL.md §1.8 names this exact sentence as what
+    # keeps the feature honest — a courtesy against a hostile recipient, never a control — so a
+    # reader who gets it only in the source language gets the disclaimer and not the promise
+    # (AUDIT 6.22).
+    "cannot stop someone",
 ]
 
 # A catalog key holds format specifiers where the source has interpolation; the two are

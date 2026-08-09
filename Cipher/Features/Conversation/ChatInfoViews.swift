@@ -119,11 +119,14 @@ struct ChatInfoView: View {
                 // are load-bearing. The timer travels with each message this device sends, so
                 // the recipient's copy goes too — but nothing here changes what *they* send,
                 // and nothing anywhere can stop someone screenshotting what they were given.
-                // `THREAT_MODEL.md` §1.5 calls this a courtesy rather than a control, and this
+                // `THREAT_MODEL.md` §1.8 calls this a courtesy rather than a control, and this
                 // is where the app has to say so.
-                Text(
-                    "Applies to messages you send. Both copies are deleted when the timer ends. "
-                        + "It cannot stop someone saving a message another way.")
+                //
+                // One literal, not two joined with `+` (AUDIT 6.22). A concatenation is a
+                // `String` expression, so `Text` resolves to the non-localizing initializer:
+                // Xcode extracted no key, the catalog held none, and the one sentence the
+                // threat model relies on shipped in English to a Czech reader.
+                Text("Applies to messages you send. Both copies are deleted when the timer ends. It cannot stop someone saving a message another way.")
             }
 
             Section {

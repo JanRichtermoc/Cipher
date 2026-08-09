@@ -157,6 +157,16 @@
         }
       }
     },
+    "Applies to messages you send. Both copies are deleted when the timer ends. It cannot stop someone saving a message another way." : {
+      "localizations" : {
+        "cs" : {
+          "stringUnit" : {
+            "state" : "translated",
+            "value" : "Platí pro zprávy, které odešlete. Po vypršení časovače se smažou obě kopie. Nezabrání to tomu, aby si někdo zprávu uložil jinak."
+          }
+        }
+      }
+    },
     "Available" : {
       "extractionState" : "stale",
       "localizations" : {
