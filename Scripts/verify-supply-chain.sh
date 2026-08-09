@@ -172,6 +172,15 @@ check_lock_records_the_audited_commit() {
     fail "Podfile.lock records no :commit: at all"
   elif [ "$divergent" -ne 0 ]; then
     fail "Podfile.lock has $divergent :commit: line(s) that are not ${LIBSIGNAL_COMMIT}"
+  elif ! awk '/^CHECKOUT OPTIONS:/ { inside = 1; next }
+              /^[A-Z]/ { inside = 0 }
+              inside && /:commit:/ { found = 1 }
+              END { exit found ? 0 : 1 }' "$lock"; then
+    # The counting rule above is satisfied by a lockfile carrying only the EXTERNAL
+    # SOURCES line, and CHECKOUT OPTIONS is the section that decides which bytes are
+    # fetched -- so "every occurrence matches" has to be paired with "the one that
+    # matters is present at all".
+    fail "Podfile.lock has no :commit: under CHECKOUT OPTIONS"
   elif ! grep -q "LibSignalClient (${LIBSIGNAL_VERSION})" "$lock"; then
     fail "Podfile.lock does not record LibSignalClient ${LIBSIGNAL_VERSION}"
   else
@@ -278,6 +287,10 @@ EOF
     "$LIBSIGNAL_VERSION" "$LIBSIGNAL_COMMIT" "0000000000000000000000000000000000000000" \
     >"$tmp/Podfile.lock"
   expect fail "a lockfile whose two :commit: lines disagree"
+
+  printf 'PODS:\n  - LibSignalClient (%s)\nEXTERNAL SOURCES:\n    :commit: %s\n' \
+    "$LIBSIGNAL_VERSION" "$LIBSIGNAL_COMMIT" >"$tmp/Podfile.lock"
+  expect fail "a lockfile with no CHECKOUT OPTIONS section at all"
 
   # And the shape the repository actually has must still pass, or the rule above would be
   # "refuse two commit lines" rather than "refuse two that differ".
