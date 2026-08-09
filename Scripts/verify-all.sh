@@ -439,7 +439,14 @@ run_tests() {
 # class of fault — the simulator, not the code — but it fell through to the retry's `else`,
 # so an infrastructure failure was reported as a test failure and, worse, was not retried.
 # A missing pattern here is silent by construction: it looks exactly like a real failure.
-simulator_infrastructure_patterns='Application failed preflight checks|Simulator device failed to launch|RequestDenied|cannot be located on disk|Unable to boot device|Failed to install the requested application|The request was denied by service delegate'
+#
+# Three more were added on 2026-08-09, from a run of this very script that reported a red
+# build for a DerivedData directory that disappeared mid-run. CoreSimulator says "Simulator
+# device failed to install the application" — the list had "Failed to install the requested
+# application", which is a different sentence from a different layer. Second time this list
+# has been wrong in the same direction, which is why every entry is a string somebody read
+# in a log rather than one somebody expected.
+simulator_infrastructure_patterns='Application failed preflight checks|Simulator device failed to launch|RequestDenied|cannot be located on disk|Unable to boot device|Failed to install the requested application|The request was denied by service delegate|Simulator device failed to install the application|Cannot launch simulated executable|Failed to install or launch the test runner'
 
 simulator_was_busy() {
   local log="${1:-$LOG}"
@@ -467,7 +474,10 @@ selftest_simulator_classifier() {
     "RequestDenied: The request was denied by service delegate" \
     "The application ... cannot be located on disk" \
     "Unable to boot device in current state: Booted" \
-    "Failed to install the requested application"; do
+    "Failed to install the requested application" \
+    "Simulator device failed to install the application." \
+    "Cannot launch simulated executable: no file found at /path/Cipher.app" \
+    "Cipher encountered an error (Failed to install or launch the test runner."; do
     printf '%s\n' "$fault" >"$probe"
     simulator_was_busy "$probe" ||
       fail "the simulator-fault classifier no longer recognises an observed fault: $fault"
