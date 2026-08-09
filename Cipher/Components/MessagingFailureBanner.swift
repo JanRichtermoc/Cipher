@@ -56,10 +56,14 @@ struct MessagingFailureBanner: View {
         case .peerUnavailable:
             return "That Cipher ID has no keys available, so no conversation can be started."
         case .identityNotAccepted:
-            // Deliberately does not offer a way out. Accepting a changed identity key without
-            // showing the user the key would be the "Mark as Verified" that verifies nothing
-            // (AUDIT 5.4) — so sending stays blocked until safety numbers exist (P5.S12).
-            return "This contact's identity key changed. Sending is blocked, and safety-number comparison is not implemented yet — do not treat this conversation as secure."
+            // Still offers no in-banner way out: accepting a changed key without showing the
+            // user the key would be the Mark-as-Verified that verifies nothing (AUDIT 5.4).
+            // What it does now is name the screen that does show it. The copy this replaces
+            // told the user that safety-number comparison did not exist and that the
+            // conversation should not be treated as secure, which stopped being true when
+            // P5.S12 closed AUDIT 2.5 — it denied the one control that answers this warning,
+            // at the one moment it matters, in English and in Czech (AUDIT 5.37, R4).
+            return "This contact's identity key changed, so sending is blocked. Compare safety numbers with them in Info, then accept the new key."
         case .blocked:
             return "You blocked this contact. Unblock them to send."
         case .messageTooLarge:

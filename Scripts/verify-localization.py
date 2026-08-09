@@ -144,6 +144,20 @@ DENY = [
     # denylist can only stop a retired claim coming back, never stop a new invention (5.4's
     # recorded residual), so the guard that matters here is SafetyNumberTests rather than a
     # string search.
+    # AUDIT 5.37. The inverse of everything above it: not a claim of a control that does not
+    # exist, but a *denial* of one that does. The identity-change banner told the user that
+    # safety-number comparison was unimplemented and that the conversation was not secure --
+    # at the exact moment a key substitution would produce it, and one tap away from the screen
+    # that renders the real digits (P5.S12, 2.5). Banned in both languages, because the Czech
+    # rendering was the half that would have survived an English-only fix (R4).
+    (
+        "safety-number comparison is not implemented",
+        "P5.S12 built it; denying it during an identity change is 5.4 inverted (AUDIT 5.37, 2.5)",
+    ),
+    (
+        "porovnání bezpečnostních čísel zatím není implementováno",
+        "Czech rendering of the retired safety-number denial",
+    ),
     ("Registration Lock", "Cipher has no registration-lock protocol or stored PIN (AUDIT 5.30)"),
     ("Zámek registrace", "Czech rendering of the unavailable registration-lock surface"),
     ("zámku registrace", "Czech inflection used by the unavailable registration-lock PIN"),
@@ -546,6 +560,36 @@ SELF_TESTS = [
             }
         },
         "'spojení je bezpečn'",
+    ),
+    (
+        # AUDIT 5.37. Check E could never have caught this one: the string *was* translated
+        # into every language, so the marker it matched -- "not implemented yet" -- read as a
+        # correctly-handled safety warning. What was wrong was the sentence, not its coverage.
+        "C: retired denial of the safety-number screen",
+        {
+            "Sending is blocked, and safety-number comparison is not implemented yet.":
+                (False, "X.swift:1")
+        },
+        {"Sending is blocked, and safety-number comparison is not implemented yet.": {}},
+        "'safety-number comparison is not implemented'",
+    ),
+    (
+        # And the half an English-only fix leaves behind, which is 5.4's whole shape (R4).
+        "C: retired safety-number denial surviving in a translation only",
+        {"Sending is blocked.": (False, "X.swift:1")},
+        {
+            "Sending is blocked.": {
+                "localizations": {
+                    "cs": {
+                        "stringUnit": {
+                            "value": "Odesílání je zablokováno a porovnání bezpečnostních "
+                                     "čísel zatím není implementováno."
+                        }
+                    }
+                }
+            }
+        },
+        "'porovnání bezpečnostních čísel zatím není implementováno'",
     ),
     (
         "C: retired invite implementation claim",
