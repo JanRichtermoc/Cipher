@@ -200,6 +200,15 @@ internal final class CipherProtocolStore {
         internal let retired: [RetiredPreKey]
     }
 
+    /// Removes the rotation record, reaching the state 2.4(a) describes: an installation that
+    /// published before this record existed. There is no production path to it — the record is
+    /// only ever written — and it is the only way to test that a legacy last-resort key survives
+    /// the first rotation after the upgrade.
+    internal func removePreKeyRotationRecordForTesting() throws {
+        CryptoActor.assertIsolated()
+        try records.remove(.metadata, Self.preKeyRotationKey)
+    }
+
     internal func preKeyRotation() throws -> PreKeyRotationRecord? {
         CryptoActor.assertIsolated()
         guard let bytes = try records.load(.metadata, Self.preKeyRotationKey) else { return nil }
@@ -742,9 +751,11 @@ extension CipherProtocolStore: KyberPreKeyStore {
     /// **The last-resort key is never deleted**, live or retired. It is reusable by design, and
     /// a retired one is still inside the retention window that keeps a peer's in-flight first
     /// message decryptable (`recordPreKeyRotation` above). Every uncertainty — no rotation
-    /// record, an unreadable one — resolves to *keep*, because deleting a key that is still
-    /// being handed out costs a peer their first message permanently, while keeping one costs
-    /// the forward secrecy this deletion buys and nothing else.
+    /// record, an unreadable one, an id this publication did not mint — resolves to *keep*,
+    /// because deleting a key that is still being handed out costs a peer their first message
+    /// permanently, while keeping one costs the forward secrecy this deletion buys and nothing
+    /// else. `isOneTimeKyberPreKey` is where each of those is refused, and the third of them
+    /// was found by review after the first version of this deletion shipped without it.
     ///
     /// A legitimate retransmission is unaffected: libsignal returns early from `process_prekey`
     /// when a session state for the same base key already exists, so the store is not consulted
@@ -838,9 +849,26 @@ extension CipherProtocolStore: KyberPreKeyStore {
         guard let rotation else { return false }
 
         guard id != rotation.kyberLastResortId else { return false }
-        return !rotation.retired.contains {
+        guard !rotation.retired.contains(where: {
             $0.kind == .kyberLastResort && $0.keyId == id
-        }
+        }) else { return false }
+
+        // And nothing minted before this record existed. `recordPreKeyRotation` appends the
+        // outgoing pair to `retired` only when there *was* a previous record, so the first
+        // rotation of an installation that published before P6.S01 writes a record naming
+        // neither that installation's legacy signed prekey nor its legacy last-resort key —
+        // the two records 2.4(a) already says survive until the account is erased. Without
+        // this bound the legacy **last-resort** key looks like a one-time key and is deleted
+        // on first use, which is the permanent `invalidKeyIdentifier` that
+        // `recordPreKeyRotation`'s own "why the old pair is not deleted here" exists to stop.
+        //
+        // Ids are monotonic and `generatePublishedKeys` reserves the signed prekey first, so
+        // an id below the live `signedPreKeyId` is one this publication did not mint. The
+        // cost is stated on AUDIT 2.6 rather than hidden: a one-time Kyber key from a
+        // *superseded* publication is kept rather than deleted, because nothing here can tell
+        // it apart from a legacy last-resort key. Closing that needs the kind recorded at mint
+        // time, which is a record-format change and its own step.
+        return id >= rotation.signedPreKeyId
     }
 
     // MARK: Base-key witness coding

@@ -302,6 +302,45 @@ final class PreKeyRotationTests: XCTestCase {
         }.value
     }
 
+    /// The case adversarial review found in the first version of this deletion: an installation
+    /// that published **before** the rotation record existed. `recordPreKeyRotation` appends the
+    /// outgoing pair to `retired` only when there was a previous record, so the first rotation
+    /// writes a record naming neither the legacy signed prekey nor the legacy last-resort key —
+    /// and the legacy last-resort key then looked exactly like a one-time key and was deleted on
+    /// first use, which is a permanent `invalidKeyIdentifier` for a peer holding the old bundle.
+    func testALastResortKeyMintedBeforeTheRotationRecordSurvivesTheFirstRotation() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let clock = TestClock(1_000_000)
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root, secrets: InMemorySecretStorage(), clock: clock)
+            let localAci = UUID()
+            try engine.adoptLocalAddress(PeerAddress(aci: localAci))
+
+            // A publication, then the rotation record it wrote removed — which is exactly the
+            // state 2.4(a) describes and the only way to reach it from here.
+            let legacy = try engine.generatePublishedKeys(oneTimeCount: 2)
+            try engine.store.removePreKeyRotationRecordForTesting()
+            XCTAssertNil(try engine.store.preKeyRotation(), "the fixture must reach the 2.4(a) state")
+
+            // The first rotation after the upgrade. Its record names neither legacy id.
+            clock.advance(by: 48 * 60 * 60 * 1000)
+            _ = try engine.generatePublishedKeys(oneTimeCount: 2)
+
+            XCTAssertTrue(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensedWithLastResort(legacy, from: engine, oneTimeIndex: 0),
+                    text: "held a bundle from before the upgrade"))
+
+            XCTAssertNoThrow(
+                try engine.store.loadKyberPreKey(
+                    id: legacy.kyberLastResort.keyId, context: NullContext()),
+                "a last-resort key minted before the rotation record must not be deleted")
+        }.value
+    }
+
     // MARK: - The pair a rotation replaces
 
     func testARotationMintsANewSignedPreKeyAndLastResortKey() async throws {
