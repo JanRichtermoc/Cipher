@@ -72,6 +72,12 @@ final class PreKeyRotationTests: XCTestCase {
     /// last-resort key is reusable by design and the base-key witness is what stands in for that
     /// deletion. Every one-time *curve* prekey here is still distinct, so a failure can never be
     /// blamed on that pool.
+    ///
+    /// **The first sentence was false when it was written (AUDIT 2.6).** Nothing deleted a used
+    /// one-time Kyber prekey — libsignal has no `removeKyberPreKey` and this store's
+    /// `markKyberPreKeyUsed` only recorded the witness — so both kinds were retained and the
+    /// distinction this fixture rests on existed only in the comment. It is true now, and
+    /// `testAUsedOneTimeKyberPreKeyIsDeleted` below is what keeps it true.
     @CryptoActor
     private static func dispensedWithLastResort(
         _ published: PublishedKeys, from engine: CryptoEngine, oneTimeIndex: Int
@@ -112,6 +118,188 @@ final class PreKeyRotationTests: XCTestCase {
 
         guard let decrypted = try? engine.decrypt(envelope) else { return false }
         return decrypted.plaintext == Data(text.utf8)
+    }
+
+    // MARK: - A used one-time Kyber prekey stops existing (AUDIT 2.6)
+
+    /// The property the one-time Kyber pool exists for: after a session has been established
+    /// against a one-time Kyber prekey, its private half is gone from this device.
+    ///
+    /// Without it the pool buys nothing over the reused last-resort key it exists to avoid
+    /// (`BACKEND.md` §2.6) — a recorded first message stays decryptable by anyone who later
+    /// reads the container, because the KEM secret is the only PQXDH contribution a
+    /// quantum-capable attacker cannot derive from public values.
+    ///
+    /// The one-time *curve* prekey is the positive control. libsignal deletes that one itself
+    /// (`LibsignalContractTests.testLibraryConsumesOneTimePreKeyItself`), so asserting both in
+    /// one test means a failure here cannot be a broken fixture: if the curve half is still
+    /// present, the session never happened.
+    func testAUsedOneTimeKyberPreKeyIsDeleted() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let clock = TestClock(1_000_000)
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root, secrets: InMemorySecretStorage(), clock: clock)
+            let localAci = UUID()
+            try engine.adoptLocalAddress(PeerAddress(aci: localAci))
+
+            let published = try engine.generatePublishedKeys(oneTimeCount: 1)
+            let kyberId = published.kyberPreKeys[0].keyId
+            let curveId = published.oneTimePreKeys[0].keyId
+            let lastResortId = published.kyberLastResort.keyId
+            let context = NullContext()
+
+            // Both private halves exist before anyone uses them, or the assertions below would
+            // pass against a store that never held them.
+            XCTAssertNoThrow(try engine.store.loadKyberPreKey(id: kyberId, context: context))
+            XCTAssertNoThrow(try engine.store.loadPreKey(id: curveId, context: context))
+
+            XCTAssertTrue(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensed(published, from: engine), text: "first contact"))
+
+            XCTAssertThrowsError(
+                try engine.store.loadPreKey(id: curveId, context: context),
+                "the curve half is deleted by libsignal itself; if it survived, no session ran")
+
+            XCTAssertThrowsError(
+                try engine.store.loadKyberPreKey(id: kyberId, context: context),
+                "a used one-time Kyber prekey must not survive its use (AUDIT 2.6)"
+            ) { error in
+                guard case SignalError.invalidKeyIdentifier = error else {
+                    return XCTFail("expected invalidKeyIdentifier, got \(error)")
+                }
+            }
+
+            // And the deletion is narrow: the key that is reused by design is untouched.
+            XCTAssertNoThrow(try engine.store.loadKyberPreKey(id: lastResortId, context: context))
+        }.value
+    }
+
+    /// The last-resort key is reusable by design, so using it must not delete it. Deleting it
+    /// would break every later session that falls back — the pool being empty is exactly when
+    /// it is reached.
+    func testTheLastResortKyberPreKeySurvivesBeingUsed() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let clock = TestClock(1_000_000)
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root, secrets: InMemorySecretStorage(), clock: clock)
+            let localAci = UUID()
+            try engine.adoptLocalAddress(PeerAddress(aci: localAci))
+
+            let published = try engine.generatePublishedKeys(oneTimeCount: 2)
+            let lastResortId = published.kyberLastResort.keyId
+
+            XCTAssertTrue(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensedWithLastResort(
+                        published, from: engine, oneTimeIndex: 0),
+                    text: "fell back once"))
+            XCTAssertNoThrow(
+                try engine.store.loadKyberPreKey(id: lastResortId, context: NullContext()))
+
+            // A second fallback, which is the case that fails if the first one deleted it.
+            XCTAssertTrue(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensedWithLastResort(
+                        published, from: engine, oneTimeIndex: 1),
+                    text: "fell back twice"))
+            XCTAssertNoThrow(
+                try engine.store.loadKyberPreKey(id: lastResortId, context: NullContext()))
+        }.value
+    }
+
+    /// A *retired* last-resort key is still inside its retention window, and a peer holding the
+    /// bundle from before the rotation still names it. Deleting it on use would turn that peer's
+    /// first message into a permanent failure — the exact cost `recordPreKeyRotation` retains it
+    /// to avoid.
+    func testARetiredLastResortKyberPreKeySurvivesBeingUsed() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let clock = TestClock(1_000_000)
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root, secrets: InMemorySecretStorage(), clock: clock)
+            let localAci = UUID()
+            try engine.adoptLocalAddress(PeerAddress(aci: localAci))
+
+            let first = try engine.generatePublishedKeys(oneTimeCount: 2)
+            clock.advance(by: 48 * 60 * 60 * 1000)
+            _ = try engine.generatePublishedKeys(oneTimeCount: 2)
+
+            // The bundle a peer fetched before the rotation: retired signed prekey, retired
+            // last-resort Kyber key, both still within retention.
+            XCTAssertTrue(
+                try Self.peerCanReach(
+                    engine, localAci: localAci,
+                    bundle: try Self.dispensedWithLastResort(first, from: engine, oneTimeIndex: 0),
+                    text: "held a stale bundle"))
+            XCTAssertNoThrow(
+                try engine.store.loadKyberPreKey(
+                    id: first.kyberLastResort.keyId, context: NullContext()))
+        }.value
+    }
+
+    /// A sender repeats its first message until it gets a reply, and every repeat is another
+    /// `PreKeySignalMessage` naming the prekeys it fetched — including the one this device has
+    /// now deleted. It still decrypts, because libsignal returns early from `process_prekey`
+    /// when a session state for the same base key already exists and never consults the store
+    /// a second time.
+    ///
+    /// That property is what the base-key witness already depended on; this pins it directly,
+    /// because the deletion is the change that would make losing it visible as data loss rather
+    /// than as a refused replay.
+    func testARepeatedFirstMessageStillDecryptsAfterTheKyberPreKeyIsDeleted() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+        let clock = TestClock(1_000_000)
+
+        try await Task { @CryptoActor in
+            let engine = try Self.makeEngine(root, secrets: InMemorySecretStorage(), clock: clock)
+            let localAci = UUID()
+            try engine.adoptLocalAddress(PeerAddress(aci: localAci))
+
+            let published = try engine.generatePublishedKeys(oneTimeCount: 1)
+            let localAddress = try PeerAddress(aci: localAci).makeProtocolAddress()
+
+            let peerAci = UUID()
+            let peer = try PeerFixture(
+                address: try PeerAddress(aci: peerAci).makeProtocolAddress())
+            try processPreKeyBundle(
+                try Self.dispensed(published, from: engine).makePreKeyBundle(),
+                for: localAddress, ourAddress: peer.address,
+                sessionStore: peer.store, identityStore: peer.store, context: NullContext())
+
+            @CryptoActor
+            func deliver(_ text: String) throws -> Data {
+                let sent = try peer.encrypt(text, to: localAddress)
+                XCTAssertEqual(
+                    sent.type, .preKey,
+                    "the peer must still be sending prekey messages, or this proves nothing")
+                return try Envelope(
+                    type: try Envelope.payloadType(for: sent.type),
+                    sender: ServiceIdentifier(kind: .aci, uuid: peerAci),
+                    timestamp: 1, ciphertext: sent.bytes).encode()
+            }
+
+            let first = try deliver("first")
+            let second = try deliver("repeated before any reply")
+
+            XCTAssertEqual(try engine.decrypt(first).plaintext, Data("first".utf8))
+            XCTAssertThrowsError(
+                try engine.store.loadKyberPreKey(
+                    id: published.kyberPreKeys[0].keyId, context: NullContext()),
+                "the deletion under test must actually have happened")
+            XCTAssertEqual(
+                try engine.decrypt(second).plaintext,
+                Data("repeated before any reply".utf8))
+        }.value
     }
 
     // MARK: - The pair a rotation replaces

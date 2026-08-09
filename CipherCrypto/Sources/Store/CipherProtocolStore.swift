@@ -716,7 +716,36 @@ extension CipherProtocolStore: KyberPreKeyStore {
         try records.store(.kyberPreKey, idKey(id), serialized)
     }
 
-    /// Replay protection for session establishment.
+    /// Replay protection for session establishment, and the point at which a **used one-time
+    /// Kyber prekey stops existing**.
+    ///
+    /// ## The deletion, and why it is here
+    ///
+    /// libsignal's `KyberPreKeyStore` has no `removeKyberPreKey`: this callback is the only
+    /// notification a store gets that a Kyber prekey was consumed, so deleting is the store's
+    /// job. It was not being done. A one-time Kyber prekey whose private half survives its use
+    /// offers no more forward secrecy than the last-resort key the pool exists to avoid falling
+    /// back to (`BACKEND.md` §2.6): against an adversary who records a session-establishing
+    /// message and later reads this device (`THREAT_MODEL.md` §1.1/§1.3 with §1.4), every
+    /// X25519 contribution in PQXDH is recoverable from public values by a quantum-capable
+    /// attacker, leaving the KEM secret as the only barrier — and a retained private key is not
+    /// a barrier. The curve half was already correct: libsignal calls `removePreKey` itself.
+    /// AUDIT 2.6.
+    ///
+    /// **The last-resort key is never deleted**, live or retired. It is reusable by design, and
+    /// a retired one is still inside the retention window that keeps a peer's in-flight first
+    /// message decryptable (`recordPreKeyRotation` above). Every uncertainty — no rotation
+    /// record, an unreadable one — resolves to *keep*, because deleting a key that is still
+    /// being handed out costs a peer their first message permanently, while keeping one costs
+    /// the forward secrecy this deletion buys and nothing else.
+    ///
+    /// A legitimate retransmission is unaffected: libsignal returns early from `process_prekey`
+    /// when a session state for the same base key already exists, so the store is not consulted
+    /// a second time. That is the same property the witness below already depends on — without
+    /// it, a resent first message would fail here as a "reused base key" long before this
+    /// deletion existed.
+    ///
+    /// ## Replay protection
     ///
     /// Anyone holding this device's published prekey bundle can start a session with it —
     /// that is what makes asynchronous messaging work — and the initiator chooses the base
@@ -766,6 +795,45 @@ extension CipherProtocolStore: KyberPreKeyStore {
                 "base-key witness at capacity; evicting oldest entries for one prekey pair")
         }
         try storeBaseKeyWitness(seen, witnessKey)
+
+        // After the witness, not before: a replayed base key throws above and must leave the
+        // key exactly as it was. In production this whole callback runs inside the receive
+        // transaction (`CryptoEngine.withDecryptedMessageTransaction`), so a later failure
+        // rolls the deletion back together with the ratchet it belongs to.
+        if isOneTimeKyberPreKey(id) {
+            try records.remove(.kyberPreKey, idKey(id))
+        }
+    }
+
+    /// Whether `id` names a one-time Kyber prekey, which is consumed, rather than a last-resort
+    /// one, which is not.
+    ///
+    /// Deliberately non-throwing, and deliberately answers "no" to every question it cannot
+    /// settle. The two error directions are not symmetric. Refusing the message would turn an
+    /// unreadable *local* record into a permanently undeliverable inbound message — the receive
+    /// path treats an unmapped failure as permanent and acknowledges the envelope away — while
+    /// keeping the key merely forgoes this deletion. AUDIT 4.9's "a corrupt record is fatal"
+    /// applies where the record is load-bearing for the operation; here it is load-bearing only
+    /// for hygiene, so it is logged and stepped over rather than raised.
+    private func isOneTimeKyberPreKey(_ id: UInt32) -> Bool {
+        let rotation: PreKeyRotationRecord?
+        do {
+            rotation = try preKeyRotation()
+        } catch {
+            CipherLog.keys.warning(
+                "prekey rotation record unreadable; keeping a used Kyber prekey (AUDIT 2.6)")
+            return false
+        }
+
+        // No record at all is the installation that published before rotation existed
+        // (`recordPreKeyRotation`, "The one thing this cannot clean up"). Its last-resort id is
+        // unknown, so nothing here may be deleted.
+        guard let rotation else { return false }
+
+        guard id != rotation.kyberLastResortId else { return false }
+        return !rotation.retired.contains {
+            $0.kind == .kyberLastResort && $0.keyId == id
+        }
     }
 
     // MARK: Base-key witness coding
