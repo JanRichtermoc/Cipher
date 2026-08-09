@@ -108,6 +108,10 @@ bundle exec ruby Scripts/bootstrap-targets.rb
 The symptom of forgetting is `cannot find type 'X' in scope` for a type that plainly exists. The
 app target uses a synchronized folder instead, which is why the app-target manifest gate exists.
 
+For a **test** file there is no symptom at all: it compiles nowhere, runs nowhere, and changes no
+total. `Scripts/verify-target-membership.py` is what turns that into a failure (AUDIT 6.19); it runs
+inside the same gate as the app-target manifest and tells you to run the command above.
+
 **Simulator "Busy".** `verify-all.sh` owns the default simulator, uses `OS=latest`, settles it, and
 retries transient preflight failures. Override the simulator only when the default is unavailable:
 
