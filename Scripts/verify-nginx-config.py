@@ -146,6 +146,64 @@ def check(site_text: str, hardening_text: str) -> list[str]:
             "servers that do not set it themselves disclose the nginx version"
         )
 
+    # --- The TLS floor (AUDIT 5.16) -------------------------------------------------------
+    #
+    # nginx negotiates the TLS version from the DEFAULT server's context for the listening
+    # socket, before SNI selects a virtual server, so `ssl_protocols` in the relay block alone
+    # is applied too late to refuse anything: Ubuntu's nginx.conf governs the socket and the
+    # server accepts 1.2 while the file reads as 1.3-only. `nginx -t` passes either way, which
+    # is precisely why this needs a check rather than a review.
+    protocols = re.findall(r"\bssl_protocols\s+([^;]+);", site)
+    if not protocols:
+        problems.append(
+            "cipher.conf sets no ssl_protocols at all, so the socket inherits the "
+            "distribution default, which includes TLS 1.2 (AUDIT 5.16)"
+        )
+    for value in protocols:
+        if value.split() != ["TLSv1.3"]:
+            problems.append(
+                f"cipher.conf: ssl_protocols is {value.strip()!r} rather than 'TLSv1.3' "
+                f"(AUDIT 5.16)"
+            )
+
+    default_blocks = [
+        body for body in blocks if re.search(r"\blisten\b[^;]*\bdefault_server\b", body)
+    ]
+    if not default_blocks:
+        problems.append(
+            "cipher.conf declares no default_server, so an unmatched Host is answered by "
+            "whichever server happens to be first — and no block owns the socket's TLS floor"
+        )
+    for body in default_blocks:
+        if not re.search(r"\bssl_protocols\s+TLSv1\.3\s*;", body):
+            problems.append(
+                "the default server does not set 'ssl_protocols TLSv1.3', so the TLS floor "
+                "for the whole socket comes from nginx.conf (AUDIT 5.16)"
+            )
+
+    # --- The client address the relay is allowed to believe (AUDIT 5.15) -------------------
+    #
+    # `httpx.RealIP` trusts `X-Real-IP` only from `RELAY_TRUSTED_PROXY`, and that is sound only
+    # while the proxy *sets* the header from the connection rather than passing along whatever
+    # the client sent. Change `$remote_addr` to a `$http_` variable and one caller can mint a
+    # fresh rate-limit bucket per request — the naive fix that is worse than the bug.
+    for number, body in enumerate(blocks, start=1):
+        if "proxy_pass" not in body:
+            continue
+        values = re.findall(r"\bproxy_set_header\s+X-Real-IP\s+([^;]+);", body)
+        if not values:
+            problems.append(
+                f"server #{number} proxies to the relay without setting X-Real-IP, so every "
+                f"request reaches it as the proxy's own address (AUDIT 5.15)"
+            )
+        for value in values:
+            if value.strip() != "$remote_addr":
+                problems.append(
+                    f"server #{number}: X-Real-IP is set from {value.strip()!r} rather than "
+                    f"$remote_addr; a client-supplied value would become the rate-limit "
+                    f"subject (AUDIT 5.15)"
+                )
+
     return problems
 
 
@@ -157,7 +215,9 @@ def self_test() -> int:
     """
     good_site = """
         server {
+            listen 443 ssl default_server;
             server_name _;
+            ssl_protocols TLSv1.3;
             access_log off;
             return 444;
         }
@@ -167,8 +227,11 @@ def self_test() -> int:
             location / { return 301 https://$host$request_uri; }
         }
         server {
+            listen 443 ssl;
             server_name relay.example;
+            ssl_protocols TLSv1.3;
             access_log /var/log/cipher/cipher-access.log minimal;
+            proxy_set_header X-Real-IP $remote_addr;
             location / { proxy_pass http://127.0.0.1:8080; }
         }
     """
@@ -208,6 +271,27 @@ def self_test() -> int:
          good_hardening.replace("server_tokens off;", "")),
         (False, "no log_format at all", good_site, "server_tokens off;"),
         (False, "a site file with no server blocks", "", good_hardening),
+        # AUDIT 5.16, in the shape it actually occurred: the relay block keeps its floor and
+        # the default server — the one that owns the socket — loses it. `nginx -t` is happy.
+        (False, "the default server without a TLS floor",
+         good_site.replace("            ssl_protocols TLSv1.3;\n            access_log off;\n"
+                           "            return 444;",
+                           "            access_log off;\n            return 444;"),
+         good_hardening),
+        (False, "a server re-admitting TLS 1.2",
+         good_site.replace("ssl_protocols TLSv1.3;", "ssl_protocols TLSv1.2 TLSv1.3;"),
+         good_hardening),
+        (False, "no default_server at all",
+         good_site.replace("listen 443 ssl default_server;", "listen 443 ssl;"),
+         good_hardening),
+        # AUDIT 5.15. The first is the relay seeing only the proxy; the second is the naive
+        # fix that is worse than the bug, because the header becomes client-controlled.
+        (False, "the proxied server not setting X-Real-IP",
+         good_site.replace("            proxy_set_header X-Real-IP $remote_addr;\n", ""),
+         good_hardening),
+        (False, "X-Real-IP taken from a client-supplied header",
+         good_site.replace("X-Real-IP $remote_addr;", "X-Real-IP $http_x_forwarded_for;"),
+         good_hardening),
     ]
 
     failures = 0
@@ -237,7 +321,8 @@ def self_test() -> int:
     if failures:
         print(f"SELF-TEST FAILED ({failures} of {total})", file=sys.stderr)
         return 1
-    print(f"  ok    self-test: {total} cases — every nginx logging rule still fails on its defect")
+    print(f"  ok    self-test: {total} cases — every nginx logging, TLS-floor and "
+          f"client-address rule still fails on its defect")
     return 0
 
 
@@ -264,7 +349,8 @@ def main() -> int:
 
     blocks = len(server_blocks(strip_comments(SITE.read_text())))
     print(f"  ok    {blocks} nginx server blocks each set their own access_log; "
-          f"no combined format, no /var/log/nginx, server_tokens off")
+          f"no combined format, no /var/log/nginx, server_tokens off; the default server "
+          f"holds the TLS 1.3 floor and X-Real-IP comes from the connection")
     return 0
 
 

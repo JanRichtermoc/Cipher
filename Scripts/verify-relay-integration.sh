@@ -26,7 +26,15 @@ SERVER="$REPO_ROOT/server"
 
 # Floor, not an exact count, so adding a test does not fail the gate. It exists
 # to catch the suite collapsing to zero, which is the failure that looks green.
-MIN_INTEGRATION_TESTS=104
+#
+# Raised from 104 to 132 on 2026-08-09 (AUDIT 6.20). The suite had grown to 140 while the
+# floor stayed where it was set, so it had drifted 36 below the truth — enough that any one
+# test *file* could be deleted and the count would still clear it. A floor that no longer
+# tracks the suite is not a weaker control than it was; it is a control that has quietly
+# stopped being one. It is a backstop for a partial loss inside a file, never the primary
+# check: the named list below is that. Lower it only when tests are removed deliberately,
+# and say so in the same commit.
+MIN_INTEGRATION_TESTS=132
 
 # A floor is not enough on its own, and that gap is AUDIT 6.14: the count says how
 # many tests ran, never which. A rename, a build-tag mistake in one file, or a
@@ -77,6 +85,23 @@ REQUIRED_INTEGRATION_TESTS=(
   TestARelayWithNoKeyRefusesToStoreAToken
   TestDeletingTheAccountTakesItsPushToken
   TestStalePushTokensAreSweptAndFreshOnesAreNot
+  # AUDIT 6.20. Four whole files had no required name, so any one of them could be deleted
+  # with the count still clearing the floor and this list still satisfied. One name each,
+  # chosen as the case whose absence is a security regression rather than a coverage one:
+  #
+  #   adversarial — cross-account isolation. No read path filters by owner other than the
+  #     handlers themselves, so a scoping regression produces no other symptom.
+  #   blobs — the blob directory is the one place a caller-supplied identifier reaches a
+  #     filesystem path. Nothing else in the suite touches path handling at all.
+  #   logging — BACKEND.md §7 calls this file the only real verification of the logging
+  #     rules: it runs the relay and reads what came out, rather than reading the code.
+  #   ratelimit — `internal/ratelimit` has no unit tests, so these five are the token
+  #     bucket's only coverage anywhere. `Charge` saturating is what 5.22's byte quota
+  #     rests on: if an overrun stopped saturating, the next check would admit the caller.
+  TestOneAccountCannotReachAnothersData
+  TestPathTraversalCannotEscapeTheBlobDirectory
+  TestAFullFlowLeaksNothingIntoTheLog
+  TestChargeSaturatesOnOverrunSoTheNextCheckRefuses
 )
 
 # A host port distinct from the development stack's 8080, so running this never
