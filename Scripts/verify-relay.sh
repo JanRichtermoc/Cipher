@@ -182,6 +182,35 @@ check_compose() {
     return 1
   fi
 
+  # Every RELAY_* the service reads is either forwarded to the container or listed
+  # below as deliberately left at its default. RELAY_PUSH_TOKEN_KEY was read by
+  # config.Load and forwarded by nothing, so setting it in .env had no effect at
+  # all and the symptom was a refusal that reads like a code bug (AUDIT 6.24). A
+  # new variable must be classified rather than silently dropped.
+  local declared forwarded unclassified
+  declared="$(grep -oE '"RELAY_[A-Z_]+"' "$REPO_ROOT/server/internal/config/config.go" |
+    tr -d '"' | sort -u)"
+  forwarded="$(service_block "$file" api | grep -oE '^\s+RELAY_[A-Z_]+:' |
+    tr -d ' :' | sort -u)"
+  # Timeouts and size limits, whose defaults are the deployment's policy. Written
+  # out rather than derived from what the file happens to contain: deriving it
+  # would make the rule "whatever is missing is fine" (AUDIT R5).
+  local unforwarded_by_design="RELAY_IDLE_TIMEOUT
+RELAY_MAX_REQUEST_BYTES
+RELAY_READ_HEADER_TIMEOUT
+RELAY_READ_TIMEOUT
+RELAY_SHUTDOWN_GRACE
+RELAY_WRITE_TIMEOUT"
+  unclassified="$(comm -23 \
+    <(comm -23 <(printf '%s\n' "$declared") <(printf '%s\n' "$forwarded")) \
+    <(printf '%s\n' "$unforwarded_by_design" | sort -u))"
+  if [ -n "$unclassified" ]; then
+    echo "these RELAY_* variables are read by internal/config and reach no container:" >&2
+    printf '  %s\n' $unclassified >&2
+    echo "Forward them in the api service, or add them to unforwarded_by_design with a reason." >&2
+    return 1
+  fi
+
   # Redis persistence off. cache.AssertNoPersistence refuses to start against a
   # persistent Redis, but that check only fires when someone runs the stack;
   # this one fires on every verification.
@@ -279,6 +308,16 @@ selftest_compose() {
     fi
     cases=$((cases + 1))
   done
+
+  # AUDIT 6.24: a variable the service reads that reaches no container. Deleting the
+  # line is exactly how RELAY_PUSH_TOKEN_KEY came to be missing — it was never added.
+  sed 's/^      RELAY_TRUSTED_PROXY: .*$//' "$compose" >"$probe"
+  if check_compose "$probe" 2>/dev/null; then
+    rm -f "$probe"
+    echo "FAILED: the compose gate accepts a RELAY_* variable that reaches no container" >&2
+    exit 1
+  fi
+  cases=$((cases + 1))
 
   # The positive control. Every case above asserts a failure, and a check_compose
   # that failed unconditionally would satisfy all of them — so the unmodified

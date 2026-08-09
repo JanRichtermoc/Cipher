@@ -166,12 +166,18 @@ def check(site_text: str, hardening_text: str) -> list[str]:
                 f"(AUDIT 5.16)"
             )
 
+    # Only a TLS listener owns a TLS floor. Matching every `default_server` would demand
+    # `ssl_protocols` inside a plain-HTTP block the moment someone splits `listen 80
+    # default_server` and `listen 443 ssl default_server` into two servers, which is an
+    # ordinary refactor and not a defect.
     default_blocks = [
-        body for body in blocks if re.search(r"\blisten\b[^;]*\bdefault_server\b", body)
+        body for body in blocks
+        if re.search(r"\blisten\b[^;]*\bssl\b[^;]*\bdefault_server\b", body)
+        or re.search(r"\blisten\b[^;]*\bdefault_server\b[^;]*\bssl\b", body)
     ]
     if not default_blocks:
         problems.append(
-            "cipher.conf declares no default_server, so an unmatched Host is answered by "
+            "cipher.conf declares no TLS default_server, so an unmatched Host is answered by "
             "whichever server happens to be first — and no block owns the socket's TLS floor"
         )
     for body in default_blocks:
@@ -281,8 +287,15 @@ def self_test() -> int:
         (False, "a server re-admitting TLS 1.2",
          good_site.replace("ssl_protocols TLSv1.3;", "ssl_protocols TLSv1.2 TLSv1.3;"),
          good_hardening),
-        (False, "no default_server at all",
+        (False, "no TLS default_server at all",
          good_site.replace("listen 443 ssl default_server;", "listen 443 ssl;"),
+         good_hardening),
+        # The refactor the narrowing exists for: the plain-HTTP default listener moves into
+        # its own server, which owns no TLS floor and must not be asked for one.
+        (True, "a plain-HTTP default_server split into its own block",
+         good_site + "\n        server {\n            listen 80 default_server;\n"
+         "            server_name _;\n            access_log off;\n"
+         "            return 444;\n        }\n",
          good_hardening),
         # AUDIT 5.15. The first is the relay seeing only the proxy; the second is the naive
         # fix that is worse than the bug, because the header becomes client-controlled.

@@ -341,6 +341,131 @@ final class PreKeyRotationTests: XCTestCase {
         }.value
     }
 
+    /// The two branches that exist only to fail safe, and had no test until review asked for
+    /// one. Both are the same decision — when this store cannot tell a one-time key from a
+    /// last-resort key, it keeps it — and both are reached with no rotation record to read.
+    ///
+    /// Driven through the store directly rather than through a session: the property is what
+    /// `markKyberPreKeyUsed` does with an id, and a session would only add ways for the test to
+    /// pass for the wrong reason.
+    func testAKyberPreKeyIsKeptWhenThereIsNoRotationRecord() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let fixture = try LocalFixture(root: root)
+            let identity = try fixture.store.identityKeyPair(context: NullContext())
+            let pair = KEMKeyPair.generate()
+            let id: UInt32 = 4242
+            try fixture.store.storeKyberPreKey(
+                try KyberPreKeyRecord(
+                    id: id, timestamp: 1_000, keyPair: pair,
+                    signature: identity.privateKey.generateSignature(
+                        message: pair.publicKey.serialize())),
+                id: id, context: NullContext())
+
+            XCTAssertNil(
+                try fixture.store.preKeyRotation(), "the fixture must have no rotation record")
+
+            try fixture.store.markKyberPreKeyUsed(
+                id: id, signedPreKeyId: 7, baseKey: PrivateKey.generate().publicKey,
+                context: NullContext())
+
+            XCTAssertNoThrow(
+                try fixture.store.loadKyberPreKey(id: id, context: NullContext()),
+                "with no record, the kind is unknown and the key must be kept (AUDIT 2.6)")
+        }.value
+    }
+
+    /// A key that is about to be deleted gets no witness row.
+    ///
+    /// libsignal loads the Kyber prekey before it calls `markKyberPreKeyUsed`, so once the key
+    /// is gone the pair is unreachable and a witness for it could never fire — it would be a
+    /// permanent sealed record plus a tombstone per session ever established, which is the
+    /// growth AUDIT 2.4's fourth residual is about. The last-resort key still gets one, and
+    /// that assertion is here rather than in a second test because the contrast is the point.
+    func testADeletedOneTimeKeyLeavesNoWitnessAndTheLastResortKeyStillDoes() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let fixture = try LocalFixture(root: root)
+            let identity = try fixture.store.identityKeyPair(context: NullContext())
+
+            @CryptoActor
+            func store(_ id: UInt32) throws {
+                let pair = KEMKeyPair.generate()
+                try fixture.store.storeKyberPreKey(
+                    try KyberPreKeyRecord(
+                        id: id, timestamp: 1_000, keyPair: pair,
+                        signature: identity.privateKey.generateSignature(
+                            message: pair.publicKey.serialize())),
+                    id: id, context: NullContext())
+            }
+
+            let signedPreKeyId: UInt32 = 100
+            let lastResortId: UInt32 = 101
+            let oneTimeId: UInt32 = 102
+            try store(lastResortId)
+            try store(oneTimeId)
+            try fixture.store.recordPreKeyRotation(
+                signedPreKeyId: signedPreKeyId, kyberLastResortId: lastResortId,
+                at: 1_000, retention: 5_000)
+
+            try fixture.store.markKyberPreKeyUsed(
+                id: oneTimeId, signedPreKeyId: signedPreKeyId,
+                baseKey: PrivateKey.generate().publicKey, context: NullContext())
+            XCTAssertNil(
+                try fixture.spy.load(.baseKeyWitness, "\(oneTimeId).\(signedPreKeyId)"),
+                "a deleted key's witness could never fire, so it must not be written")
+            XCTAssertThrowsError(
+                try fixture.store.loadKyberPreKey(id: oneTimeId, context: NullContext()),
+                "the deletion under test must actually have happened")
+
+            try fixture.store.markKyberPreKeyUsed(
+                id: lastResortId, signedPreKeyId: signedPreKeyId,
+                baseKey: PrivateKey.generate().publicKey, context: NullContext())
+            XCTAssertNotNil(
+                try fixture.spy.load(.baseKeyWitness, "\(lastResortId).\(signedPreKeyId)"),
+                "the last-resort key is reusable, so its witness is the replay control")
+        }.value
+    }
+
+    func testAKyberPreKeyIsKeptWhenTheRotationRecordIsUnreadable() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let fixture = try LocalFixture(root: root)
+            let identity = try fixture.store.identityKeyPair(context: NullContext())
+            let pair = KEMKeyPair.generate()
+            // Above the recorded `signedPreKeyId`, so the id bound cannot be what saves it —
+            // only the unreadable record can.
+            let id: UInt32 = 5_000
+            try fixture.store.storeKyberPreKey(
+                try KyberPreKeyRecord(
+                    id: id, timestamp: 1_000, keyPair: pair,
+                    signature: identity.privateKey.generateSignature(
+                        message: pair.publicKey.serialize())),
+                id: id, context: NullContext())
+
+            try fixture.store.recordPreKeyRotation(
+                signedPreKeyId: 11, kyberLastResortId: 12, at: 1_000, retention: 5_000)
+            var corrupted = try XCTUnwrap(try fixture.spy.load(.metadata, "prekey-rotation"))
+            corrupted[corrupted.startIndex] = 99
+            try fixture.spy.store(.metadata, "prekey-rotation", corrupted)
+            XCTAssertThrowsError(try fixture.store.preKeyRotation())
+
+            try fixture.store.markKyberPreKeyUsed(
+                id: id, signedPreKeyId: 11, baseKey: PrivateKey.generate().publicKey,
+                context: NullContext())
+
+            XCTAssertNoThrow(
+                try fixture.store.loadKyberPreKey(id: id, context: NullContext()),
+                "an unreadable record must not become a deletion (AUDIT 2.6)")
+        }.value
+    }
+
     // MARK: - The pair a rotation replaces
 
     func testARotationMintsANewSignedPreKeyAndLastResortKey() async throws {

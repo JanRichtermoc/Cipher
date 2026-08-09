@@ -49,8 +49,14 @@ final class SecurePasteboardTests: XCTestCase {
     }
 
     /// The seam is only worth anything if the live call uses it, so this drives the real
-    /// `copy` and reads the item back. It is the positive control for the two assertions
-    /// above: if `copy` stopped writing anything at all, they would still pass.
+    /// `copy` and reads the item back. It controls for one failure only — if `copy` stopped
+    /// writing anything at all, the two assertions above would still pass.
+    ///
+    /// **It does not control for the failure the seam exists to catch.** Replacing `copy`'s
+    /// body with `UIPasteboard.general.string = text` passes all three tests, because
+    /// `UIPasteboard` exposes no way to read back the options an item was written with. That
+    /// `copy` passes these options is established by inspection, not by assertion, and it is
+    /// two lines apart in one file for that reason.
     func testCopyPutsTheTextOnThePasteboardThroughThoseOptions() {
         let unique = "cipher-pasteboard-\(UUID().uuidString)"
 

@@ -256,7 +256,8 @@ sync_sources(project, app_tests, 'CipherTests')
 # a build setting that only exists because someone once clicked it is a setting
 # the next regeneration silently drops.
 #
-# SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor is already set at project level and
+# SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor is already set on the app *target* --
+# not at project level, which is what this said until 2026-08-09 -- and
 # is what makes this affordable — SwiftUI view code stays implicitly
 # main-actor-isolated, so raising the language mode does not require annotating
 # every view.

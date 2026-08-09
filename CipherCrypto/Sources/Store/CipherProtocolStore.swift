@@ -798,27 +798,34 @@ extension CipherProtocolStore: KyberPreKeyStore {
 
         let witnessKey = "\(id).\(signedPreKeyId)"
         let digest = Data(SHA256.hash(data: baseKey.serialize()))
+        let deleteAfterUse = isOneTimeKyberPreKey(id)
 
-        var seen = try loadBaseKeyWitness(witnessKey)
-        guard !seen.contains(digest) else {
-            // The same error the library's own store raises, so callers pattern-match one
-            // case rather than two.
-            throw SignalError.invalidMessage("reused base key")
-        }
+        // A key that is about to stop existing needs no witness, and writing one is not free.
+        // libsignal loads the Kyber prekey *before* it calls this, so once the key is gone the
+        // pair can never be reached again and the row could never fire — it would be a
+        // permanent sealed record, plus a `RecordStore.remove` tombstone, per session ever
+        // established, which is the growth 2.4's fourth residual is about. Deletion is the
+        // stronger replay control anyway: the witness exists because the **last-resort** key is
+        // not consumed on use, and that is exactly the case that still takes this branch.
+        if !deleteAfterUse {
+            var seen = try loadBaseKeyWitness(witnessKey)
+            guard !seen.contains(digest) else {
+                // The same error the library's own store raises, so callers pattern-match one
+                // case rather than two.
+                throw SignalError.invalidMessage("reused base key")
+            }
 
-        seen.append(digest)
-        if seen.count > Self.baseKeyWitnessCapacity {
-            seen.removeFirst(seen.count - Self.baseKeyWitnessCapacity)
-            CipherLog.keys.warning(
-                "base-key witness at capacity; evicting oldest entries for one prekey pair")
-        }
-        try storeBaseKeyWitness(seen, witnessKey)
-
-        // After the witness, not before: a replayed base key throws above and must leave the
-        // key exactly as it was. In production this whole callback runs inside the receive
-        // transaction (`CryptoEngine.withDecryptedMessageTransaction`), so a later failure
-        // rolls the deletion back together with the ratchet it belongs to.
-        if isOneTimeKyberPreKey(id) {
+            seen.append(digest)
+            if seen.count > Self.baseKeyWitnessCapacity {
+                seen.removeFirst(seen.count - Self.baseKeyWitnessCapacity)
+                CipherLog.keys.warning(
+                    "base-key witness at capacity; evicting oldest entries for one prekey pair")
+            }
+            try storeBaseKeyWitness(seen, witnessKey)
+        } else {
+            // In production this callback runs inside the receive transaction
+            // (`CryptoEngine.withDecryptedMessageTransaction`), so a later failure rolls the
+            // deletion back together with the ratchet it belongs to.
             try records.remove(.kyberPreKey, idKey(id))
         }
     }

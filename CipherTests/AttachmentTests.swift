@@ -473,15 +473,14 @@ final class AttachmentTests: XCTestCase {
     /// A JPEG carrying a GPS dictionary and an EXIF block, built here rather than checked in:
     /// a fixture file is a thing that can rot, and the positive control below has to be able
     /// to prove the input really did carry what the assertion says it lost.
-    private func photoCarryingLocation() throws -> Data {
-        let size = 8
+    private func photoCarryingLocation(width: Int = 8, height: Int = 8) throws -> Data {
         let context = try XCTUnwrap(
             CGContext(
-                data: nil, width: size, height: size, bitsPerComponent: 8, bytesPerRow: 0,
+                data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
                 space: CGColorSpaceCreateDeviceRGB(),
                 bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
         context.setFillColor(CGColor(red: 0.2, green: 0.4, blue: 0.8, alpha: 1))
-        context.fill(CGRect(x: 0, y: 0, width: size, height: size))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         let image = try XCTUnwrap(context.makeImage())
 
         let out = NSMutableData()
@@ -520,7 +519,10 @@ final class AttachmentTests: XCTestCase {
     /// `sendAttachment(bytes:)` with synthetic bytes, so `prepare` was reached by nothing.
     @MainActor
     func testPreparingAPhotoDropsItsLocationAndEXIF() throws {
-        let original = try photoCarryingLocation()
+        // Wider than `maxPixelEdge`, so this goes through the scaling branch of `resized` —
+        // which is the path a real phone photo takes and which nothing exercised while both
+        // photo tests shared one 8x8 fixture.
+        let original = try photoCarryingLocation(width: 2400, height: 1200)
 
         // Positive control: the input really does carry what the assertion below says is gone.
         // Without it, an encoder that silently produced an empty file would pass.
@@ -551,15 +553,19 @@ final class AttachmentTests: XCTestCase {
         XCTAssertNotNil(UIImage(data: prepared))
     }
 
-    /// The redraw happens even for an image that is already small enough. Skipping it as an
-    /// optimisation would make the privacy property hold only for large photos — which is the
-    /// shape of defect that ships, because the pictures used in testing are small.
+    /// The redraw happens even for an image that needs no scaling at all. `resized` takes the
+    /// `scale == 1` branch here, and skipping the draw for it as an optimisation would make the
+    /// privacy property hold only for large photos — the shape of defect that ships, because
+    /// the pictures used in testing are small. The test above is the same assertion on the
+    /// other branch; between them both paths through `resized` are covered.
     @MainActor
-    func testASmallPhotoIsStillReEncoded() throws {
-        let original = try photoCarryingLocation()
-        XCTAssertLessThan(
-            original.count, AttachmentCipher.maxPlaintextBytes,
-            "the fixture must already fit, or this is the same test as the one above")
+    func testAPhotoTooSmallToNeedScalingIsStillReEncoded() throws {
+        let original = try photoCarryingLocation(width: 8, height: 8)
+        let decoded = try XCTUnwrap(UIImage(data: original))
+        XCTAssertLessThanOrEqual(
+            max(decoded.size.width, decoded.size.height), PhotoAttachment.maxPixelEdge,
+            "the fixture must need no scaling, or this is the same path as the test above")
+        XCTAssertLessThan(original.count, AttachmentCipher.maxPlaintextBytes)
 
         let prepared = try XCTUnwrap(PhotoAttachment.prepare(original))
 
