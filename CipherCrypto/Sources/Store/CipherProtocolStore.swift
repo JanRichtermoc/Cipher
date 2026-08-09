@@ -24,12 +24,19 @@ import LibSignalClient
 ///
 /// ## No caching, on purpose
 ///
-/// Every method reads through to the record store. A future notification-service extension
-/// is a **separate process** over the same container: it decrypts a message, steps the
-/// ratchet, and writes a new session record while the app is suspended. Any in-memory cache
-/// here would be stale on resume and would overwrite the extension's work with an older
-/// ratchet state, silently breaking the session. The cost is a small database read per
-/// callback, which is not the bottleneck in an operation that also runs PQXDH.
+/// Every method reads through to the record store, and the reason is `withDecryptedMessageTransaction`.
+/// A received message runs libsignal's ratchet, prekey and trust writes inside one SQLite
+/// transaction with the archive write, so that a failure to store the message rolls the
+/// ratchet back with it. An in-memory cache here would not roll back: it would hold the
+/// stepped ratchet after the transaction that produced it had been abandoned, and the next
+/// message would be decrypted against state the database does not have. The cost is a small
+/// database read per callback, which is not the bottleneck in an operation that also runs
+/// PQXDH.
+///
+/// *Reason corrected 2026-08-09.* This argued from "a future notification-service extension
+/// is a separate process over the same container", and P8.S04 decided there will not be one
+/// (AUDIT 4.4). The conclusion is unchanged and now rests on something this build actually
+/// does.
 ///
 /// ## `SenderKeyStore` is deliberately not implemented
 ///

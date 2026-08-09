@@ -132,9 +132,11 @@ nonisolated struct SessionCredential: Equatable, Sendable {
 /// reason is that the two items want **different accessibility**, and a shared code path
 /// would have to encode one of them:
 ///
-/// - The crypto module's identity key is `AfterFirstUnlock` because a notification-service
-///   extension has to decrypt while the device is locked (AUDIT 2.1). That is a documented,
-///   argued weakening.
+/// - The crypto module's identity key is `AfterFirstUnlock` because **wake-only push** has to
+///   decrypt while the device is locked — a silent push wakes the app, which fetches,
+///   decrypts and posts a local notification, in its own process (AUDIT 2.1). That is a
+///   documented, argued weakening. *Corrected 2026-08-09: this named a notification-service
+///   extension, and P8.S04 decided there will not be one (AUDIT 4.4).*
 /// - This credential is `WhenUnlockedThisDeviceOnly`, the strictest option, because nothing
 ///   needs it while the device is locked. Inheriting the weaker class here would have
 ///   widened the window for no benefit at all.

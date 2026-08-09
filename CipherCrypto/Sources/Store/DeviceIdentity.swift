@@ -23,12 +23,18 @@ import LibSignalClient
 ///
 /// ## Creation is atomic, on purpose
 ///
-/// The app and a future notification-service extension are separate processes over one
-/// Keychain, and both can reach first launch. `SecretStorage.addOrLoad` resolves that race
-/// in the Keychain rather than in this file; whichever process loses simply adopts the
-/// winner's identity. A read-then-write here would let the loser overwrite the winner and
-/// silently invalidate every session established in between — a failure that would surface
-/// to users only as peers reporting a changed safety number.
+/// `SecretStorage.addOrLoad` resolves creation in the Keychain rather than in this file:
+/// whoever loses simply adopts the winner's identity. A read-then-write here would let the
+/// loser overwrite the winner and silently invalidate every session established in between —
+/// a failure that would surface to users only as peers reporting a changed safety number.
+///
+/// *Premise corrected 2026-08-09.* This said the race was between the app and "a future
+/// notification-service extension", two processes over one Keychain, and P8.S04 decided there
+/// will not be one (AUDIT 4.4) — so that race is not reachable today. The atomic primitive
+/// stays because create-or-adopt is the correct shape for this operation and the Keychain is
+/// the only place it can be made atomic at all, not because a second process exists. Stated
+/// that way round so nobody later "simplifies" it back to a read and a write on the strength
+/// of a reason that has been withdrawn.
 ///
 /// Not `Sendable`: `IdentityKeyPair` wraps a Rust handle and is not `Sendable` either. Like
 /// everything else in this module it is confined to the crypto domain.
