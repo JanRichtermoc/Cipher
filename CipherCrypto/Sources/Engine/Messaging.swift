@@ -418,6 +418,14 @@ extension CryptoEngine {
     ///
     /// Neither is reported as a distinct error. A caller that could tell "replayed" from
     /// "corrupt" could be used to probe which messages a device has already seen.
+    ///
+    /// ### Not the path to persist from
+    ///
+    /// This commits libsignal's ratchet, prekey and trust writes on its own. Any caller that then
+    /// stores the result must use `withDecryptedMessageTransaction` instead, which puts both in one
+    /// transaction so a failed archive write rolls the ratchet back with it (AUDIT 4.12). The app
+    /// has exactly one receive path and it uses that one; this overload exists for callers that
+    /// only want the plaintext, and for tests.
     public func decrypt(_ envelopeBytes: Data) throws -> DecryptedMessage {
         try decryptMessage(envelopeBytes)
     }

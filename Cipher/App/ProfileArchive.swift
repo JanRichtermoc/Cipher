@@ -67,14 +67,13 @@ actor ProfileArchive {
             value: try ArchiveCoding.encode(profile))
     }
 
-    /// Deletes the profile outright, for sign-out.
-    ///
-    /// A distinct operation rather than saving empty strings: an empty record still records that
-    /// someone was here and chose nothing, and leaves a row for a future read to interpret.
-    func clear() async throws {
-        try await engine.removeSealedRow(
-            namespace: Namespace.profile, group: Self.localGroup, ordinal: Self.singleton)
-    }
+    // `clear()` was here, documented as the sign-out erase, and had no caller in the app or in
+    // the tests — `ProfileStoring` does not even declare it. Sign-out erases this row by taking
+    // the whole container: `AppSession.completeAccountCleanup` calls `detachProfileStorage`,
+    // which only drops the handle, and `CryptoEngine.destroyAllState` is what removes the bytes
+    // (proved by `ProfileStorageTests.testSigningOutClearsTheStoredProfile`). Removed 2026-08-09
+    // rather than wired in: a second erase path that nothing exercises is the AUDIT 5.36 shape —
+    // code that reads as live, is not, and is trusted by the next person to read it.
 }
 
 /// The narrow persistence dependency `AppSession` needs. Keeping the queue above this boundary
