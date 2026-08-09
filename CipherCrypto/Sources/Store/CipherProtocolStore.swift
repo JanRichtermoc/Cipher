@@ -70,7 +70,7 @@ internal final class CipherProtocolStore {
         records: RecordStore,
         database: SealedRecordDatabase,
         secrets: SecretStorage,
-        now: @escaping () -> UInt64 = { UInt64(Date().timeIntervalSince1970 * 1000) }
+        now: @escaping () -> UInt64 = { CipherCrypto.epochMilliseconds(from: Date()) }
     ) {
         CryptoActor.assertIsolated()
         self.deviceIdentity = deviceIdentity

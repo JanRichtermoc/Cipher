@@ -58,6 +58,12 @@ extension CryptoEngine {
     /// mints what it is asked for and has no opinion about the schedule.
     public static let defaultOneTimePreKeyCount = 100
 
+    /// The largest pool a single publication may mint, matching the relay's
+    /// `MaxPreKeysPerUpload` (`BACKEND.md` §2.4). Above it the relay refuses the upload, so a
+    /// larger value can only waste keypairs — and the id reservation below multiplies the
+    /// count, which traps on overflow before any of that is reached.
+    public static let maxOneTimePreKeyCount = 200
+
     /// How long a superseded signed prekey or last-resort Kyber key stays usable.
     ///
     /// Rotation cannot delete the key it replaces on the spot. A peer that fetched this
@@ -110,7 +116,13 @@ extension CryptoEngine {
         oneTimeCount: Int = CryptoEngine.defaultOneTimePreKeyCount
     ) throws -> PublishedKeys {
         try requireLive()
-        precondition(oneTimeCount >= 0, "a negative pool size is a caller bug")
+        // Upper bound as well as lower. `2 + oneTimeCount * 2` below overflows and traps for a
+        // large `Int`, and the store's own bound is applied after that multiplication. 200 is
+        // the relay's `MaxPreKeysPerUpload`, so a larger pool could not be published anyway —
+        // this refuses it here, where the caller can see why, rather than as a trap or a 413.
+        precondition(
+            oneTimeCount >= 0 && oneTimeCount <= CryptoEngine.maxOneTimePreKeyCount,
+            "a pool size outside 0...\(CryptoEngine.maxOneTimePreKeyCount) is a caller bug")
 
         let context = NullContext()
         let identity = try store.identityKeyPair(context: context)
