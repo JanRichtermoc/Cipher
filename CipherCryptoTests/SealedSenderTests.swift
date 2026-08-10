@@ -123,6 +123,61 @@ final class SealedSenderTests: XCTestCase {
         }
     }
 
+    /// A peer fixture that has fetched the engine's published bundle, which is all it takes to
+    /// start a conversation with it: the bundle is public and the relay serves it to anyone.
+    ///
+    /// `address` is the address the fixture encrypts under. That is a field a client fills in
+    /// for itself — nothing ties it to the ACI the relay issued the account — so passing
+    /// another account's address here models a client that lies about who it is.
+    @CryptoActor
+    private static func startSession(towards pair: Pair, as address: ProtocolAddress) throws
+        -> PeerFixture {
+        let fixture = try PeerFixture(address: address)
+        try processPreKeyBundle(
+            try EngineFixture.publishBundle(for: pair.engine, address: pair.local),
+            for: try pair.local.makeProtocolAddress(),
+            ourAddress: fixture.address,
+            sessionStore: fixture.store, identityStore: fixture.store,
+            context: NullContext())
+        return fixture
+    }
+
+    /// Seals a **session-establishing** message from `fixture` under a certificate that names
+    /// `named` — which need not be `fixture`'s own address, and that is the whole of AUDIT 3.8.
+    ///
+    /// Two things are not free, and the difference between them is the finding. The certificate
+    /// carries `fixture`'s own key, because libsignal binds the certificate key to whoever seals
+    /// the container (`testACertificateKeyTheSealerDoesNotHoldIsRefused`). And `named` must be
+    /// the address `fixture` itself encrypts under, because libsignal binds that one into the
+    /// message — pass a different one and the result is refused rather than misattributed,
+    /// which is `testTheCertificateNameAndTheCiphertextMustAgreeOnTheSender`. Neither is a check
+    /// on *whose* address it is: a fixture constructed at another account's address satisfies
+    /// both, which is how the same call builds an honest first message and an impostor's.
+    @CryptoActor
+    private static func sealFirstMessage(
+        _ text: String, from fixture: PeerFixture,
+        naming named: PeerAddress, to recipient: PeerAddress
+    ) throws -> Data {
+        let message = try fixture.encrypt(
+            try MessagePadding.pad(Data(text.utf8)), to: try recipient.makeProtocolAddress())
+        XCTAssertEqual(message.type, .preKey,
+                       "the fixture produced no session-establishing message; what follows is void")
+
+        let content = try UnidentifiedSenderMessageContent(
+            message.bytes, type: message.type,
+            from: try mintCertificate(
+                uuidString: named.serviceId.canonicalString,
+                key: fixture.identity.identityKey.publicKey),
+            contentHint: .default, groupId: Data())
+
+        return try Envelope(
+            type: .sealed, sender: nil, timestamp: 1_700_000_000_003,
+            ciphertext: try sealedSenderEncrypt(
+                content, for: try recipient.makeProtocolAddress(),
+                identityStore: fixture.store, context: NullContext())
+        ).encode()
+    }
+
     /// Mints a certificate with a freshly generated authority, exactly as the app does.
     ///
     /// Anyone can call this with any account's identifier. That is the point: the certificate
@@ -591,6 +646,208 @@ final class SealedSenderTests: XCTestCase {
             XCTAssertEqual(
                 try pair.engine.decrypt(try pair.sealFromPeer("still the peer")).sender,
                 pair.remote)
+        }.value
+    }
+
+    // MARK: - The residual the certificate cannot cover (AUDIT 3.8)
+
+    /// AUDIT 3.8, as amended 2026-08-09, which until now no test pinned.
+    ///
+    /// The test above stops a third party re-sealing **someone else's** ciphertext. This one is
+    /// what remains once that is closed, and it is a different sentence: an account that seals
+    /// its **own** ciphertext chooses the name on it, because the certificate is self-issued
+    /// (`CryptoEngine.selfIssuedSenderCertificate`), the key it must carry is the sealer's, and
+    /// the address bound into the ciphertext is one the sealer's client fills in for itself.
+    /// `signalDecryptPreKey` then saves that key against the name the certificate chose, and the
+    /// receive path's `sealedSenderKeyMismatch` check compares the two — which agree, because
+    /// they are the same key. So the message is delivered, attributed to a peer who did not send
+    /// it, and the named peer's stored identity is overwritten on the way.
+    ///
+    /// **No code change is available or wanted, and that is why this is a test and not a fix.**
+    /// Refusing would contradict locked decision §0.2.1: receiving under a changed identity is
+    /// trusted precisely so a substitution cannot silently drop mail. The protection is the
+    /// identity-change warning and the safety number behind it, so what this pins is that the
+    /// warning actually fires — a verified badge cleared, sending blocked, the key on screen
+    /// being the impostor's.
+    ///
+    /// The impostor lies in **two** places, and it has to: the certificate names the peer, and
+    /// the ciphertext underneath it is encrypted under the peer's address as well, because the
+    /// pinned libsignal binds both addresses into the message.
+    /// `testTheCertificateNameAndTheCiphertextMustAgreeOnTheSender` is that binding on its own.
+    /// Neither lie is checked against anything — an account chooses what its own client puts in
+    /// both fields — so the binding costs the impostor consistency and nothing else.
+    ///
+    /// Note what the finding is *not*. A relay cannot do this: it holds no session with the
+    /// recipient and cannot produce a `PreKeySignalMessage` that decrypts. It takes an account
+    /// inside the circle (`THREAT_MODEL.md` §1.8), which is why this row survived P7.S01.
+    func testAnImpostorCanSealAFirstMessageUnderAVerifiedPeersName() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+
+            // The state the finding is about: an established session with a peer whose safety
+            // number the user has compared out of band. Asserted before the attack rather than
+            // after, so "the badge was cleared" cannot pass on a badge that was never set.
+            XCTAssertTrue(
+                try pair.engine.setPeerVerified(
+                    true, identityKey: pair.peer.identity.identityKey.serialize(),
+                    for: pair.remote))
+            let before = try XCTUnwrap(try pair.engine.peerIdentityState(for: pair.remote))
+            XCTAssertEqual(before.identityKey, pair.peer.identity.identityKey.serialize())
+            XCTAssertTrue(before.isVerified, "the peer was never verified; what follows is void")
+            XCTAssertFalse(before.needsAcknowledgement, "sending is already blocked; likewise")
+
+            // A third account the engine has never heard from, whose client claims to be the
+            // peer. It needs nothing private: the engine's published bundle is what any peer
+            // fetches to start a conversation, and the address a client encrypts under is a
+            // field it fills in for itself — the relay's ACI never enters this ciphertext.
+            let impostor = try Self.startSession(
+                towards: pair, as: try pair.remote.makeProtocolAddress())
+
+            let framed = try Self.sealFirstMessage(
+                "meet me at the usual place", from: impostor,
+                naming: pair.remote, to: pair.local)
+
+            // Delivered, not refused. Recorded as an assertion because a future change that
+            // started refusing it would be a change to §0.2.1 and must not pass quietly.
+            let decrypted = try pair.engine.decrypt(framed)
+            XCTAssertEqual(decrypted.plaintext, Data("meet me at the usual place".utf8))
+            XCTAssertEqual(decrypted.sender, pair.remote,
+                           "the impostor's message is attributed to the peer it named")
+            XCTAssertTrue(decrypted.establishedSession)
+            XCTAssertEqual(decrypted.senderIdentityKey, impostor.identity.identityKey.serialize(),
+                           "the identity key is the honest half of the attribution")
+            XCTAssertNotEqual(decrypted.senderIdentityKey,
+                              pair.peer.identity.identityKey.serialize())
+
+            // The protection, which is the part that has to hold.
+            let after = try XCTUnwrap(try pair.engine.peerIdentityState(for: pair.remote))
+            XCTAssertEqual(after.identityKey, impostor.identity.identityKey.serialize(),
+                           "the peer's stored identity was not replaced, so nothing warns the user")
+            XCTAssertFalse(after.isVerified,
+                           "a verified badge survived a substituted key, asserting the substitution was checked")
+            XCTAssertTrue(after.needsAcknowledgement, "the identity change did not block sending")
+
+            XCTAssertThrowsError(
+                try pair.engine.encrypt(Data("are you there".utf8), to: pair.remote)
+            ) { error in
+                XCTAssertEqual(error as? MessagingError, .identityNotAccepted)
+            }
+
+            // And what accepting costs, stated rather than left implied: a user who dismisses
+            // the warning is now writing to the impostor under their peer's name. This is what
+            // the safety-number comparison exists to prevent, and the only thing that does.
+            XCTAssertTrue(
+                try pair.engine.acceptPeerIdentity(
+                    impostor.identity.identityKey.serialize(), for: pair.remote))
+            XCTAssertEqual(
+                try pair.open(
+                    try pair.engine.encrypt(Data("are you there".utf8), to: pair.remote),
+                    at: impostor).text,
+                "are you there")
+        }.value
+    }
+
+    /// The control for the test above, and the reason it says anything.
+    ///
+    /// Same impostor, same first message, same construction — only the name in the certificate
+    /// is its own. It lands as an ordinary new contact and the verified peer is untouched, so
+    /// what moved that peer's identity was the relabelling and not merely a stranger's first
+    /// message arriving. Without this, the test above would keep passing if every inbound
+    /// session-establishing message clobbered every stored identity.
+    func testAFirstMessageUnderTheSendersOwnNameLeavesAVerifiedPeerAlone() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+
+            XCTAssertTrue(
+                try pair.engine.setPeerVerified(
+                    true, identityKey: pair.peer.identity.identityKey.serialize(),
+                    for: pair.remote))
+
+            let strangerAddress = PeerAddress(aci: UUID())
+            let stranger = try Self.startSession(
+                towards: pair, as: try strangerAddress.makeProtocolAddress())
+
+            let decrypted = try pair.engine.decrypt(
+                try Self.sealFirstMessage(
+                    "hello, we have not met", from: stranger,
+                    naming: strangerAddress, to: pair.local))
+
+            XCTAssertEqual(decrypted.sender, strangerAddress)
+            XCTAssertEqual(decrypted.senderIdentityKey, stranger.identity.identityKey.serialize())
+
+            let peer = try XCTUnwrap(try pair.engine.peerIdentityState(for: pair.remote))
+            XCTAssertEqual(peer.identityKey, pair.peer.identity.identityKey.serialize(),
+                           "an unrelated first message replaced the peer's identity")
+            XCTAssertTrue(peer.isVerified, "an unrelated first message cleared the peer's badge")
+            XCTAssertFalse(peer.needsAcknowledgement,
+                           "an unrelated first message blocked sending to the peer")
+            XCTAssertNoThrow(try pair.engine.encrypt(Data("still fine".utf8), to: pair.remote))
+        }.value
+    }
+
+    /// The upstream binding that makes the two tests above differ, pinned because nothing in
+    /// this module states it and the module's behaviour rests on it.
+    ///
+    /// The pinned libsignal takes the sender's address at `signalEncrypt` and again at
+    /// `signalDecryptPreKey`, and binds both into the message. The receive path reads the
+    /// address out of the **certificate** and hands it to the decrypt as the sender, so a
+    /// certificate that names anyone other than the account the ciphertext was encrypted under
+    /// produces a message that cannot decrypt at all — in either direction of disagreement.
+    ///
+    /// This is worth a test of its own for two reasons. It is why an impostor must claim a name
+    /// in the ciphertext as well as in the certificate, which is the shape AUDIT 3.8 records.
+    /// And it is a guarantee from the dependency rather than from this code, so if a libsignal
+    /// release stopped binding the address, that shows up here rather than as a quietly wider
+    /// residual — the same reason `testACertificateKeyTheSealerDoesNotHoldIsRefused` exists.
+    func testTheCertificateNameAndTheCiphertextMustAgreeOnTheSender() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            try pair.connect()
+
+            // Two accounts rather than one used twice, and the reason is the replay control:
+            // a client keeps sending session-establishing messages until one is answered, so a
+            // second first message from the same sender carries the same base key and
+            // `markKyberPreKeyUsed` refuses it as a replay — a refusal about something else
+            // entirely, which is exactly what a control must not be.
+            let relabellerAddress = PeerAddress(aci: UUID())
+            let relabeller = try Self.startSession(
+                towards: pair, as: try relabellerAddress.makeProtocolAddress())
+
+            // The certificate claims the peer; the ciphertext was encrypted under the sender's
+            // own address. The container opens and the certificate is accepted — every check
+            // this module makes passes — and the message underneath then fails to decrypt.
+            XCTAssertThrowsError(
+                try pair.engine.decrypt(
+                    try Self.sealFirstMessage(
+                        "relabelled", from: relabeller, naming: pair.remote, to: pair.local))
+            ) { error in
+                guard case SignalError.invalidMessage = error else {
+                    return XCTFail("expected libsignal to refuse the message, got \(error)")
+                }
+            }
+
+            // Positive control: the same construction, from an account naming the address its
+            // ciphertext was encrypted under, is accepted. Without it the refusal above could
+            // be any fixture defect at all.
+            let honestAddress = PeerAddress(aci: UUID())
+            let honest = try Self.startSession(
+                towards: pair, as: try honestAddress.makeProtocolAddress())
+            let accepted = try pair.engine.decrypt(
+                try Self.sealFirstMessage(
+                    "not relabelled", from: honest, naming: honestAddress, to: pair.local))
+            XCTAssertEqual(accepted.plaintext, Data("not relabelled".utf8))
+            XCTAssertEqual(accepted.sender, honestAddress)
         }.value
     }
 }
