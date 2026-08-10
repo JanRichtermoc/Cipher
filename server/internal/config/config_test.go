@@ -75,6 +75,43 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.MaxRequestBytes < 65567 {
 		t.Errorf("MaxRequestBytes = %d, too small for a maximum envelope", cfg.MaxRequestBytes)
 	}
+	// Zero is the documented sentinel for "unset", and it is read by
+	// api.WithPendingCeiling as "keep the default" rather than "no ceiling"
+	// (AUDIT 5.39). A default appearing here instead would be a second copy of
+	// the number that api owns, and the two would drift.
+	if cfg.MaxPendingBytes != 0 {
+		t.Errorf("MaxPendingBytes = %d with the variable unset, want 0 (the sentinel)",
+			cfg.MaxPendingBytes)
+	}
+}
+
+func TestLoadRejectsNonPositivePendingCeiling(t *testing.T) {
+	// A quota that can be switched off by configuration is the finding AUDIT 5.39
+	// closes, reintroduced through the environment. Unset means the default;
+	// explicitly zero or negative must stop startup rather than be honoured.
+	for _, bad := range []string{"0", "-1"} {
+		t.Run(bad, func(t *testing.T) {
+			setEnv(t)
+			t.Setenv("RELAY_MAX_PENDING_BYTES", bad)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted RELAY_MAX_PENDING_BYTES=%s", bad)
+			}
+		})
+	}
+}
+
+func TestPendingCeilingIsConfigurable(t *testing.T) {
+	setEnv(t)
+	t.Setenv("RELAY_MAX_PENDING_BYTES", "1048576")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxPendingBytes != 1048576 {
+		t.Errorf("MaxPendingBytes = %d, want 1048576", cfg.MaxPendingBytes)
+	}
 }
 
 func TestLoadRejectsMalformedDurations(t *testing.T) {

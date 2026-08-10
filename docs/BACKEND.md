@@ -259,6 +259,11 @@ The inbox. This is the table a seizure is actually after.
 and which no delivery decision needs), `delivered` (delivered means deleted), `read`, `retry_count`,
 and any `archive` table.
 
+**Also absent on purpose: a quota column.** How much a recipient has waiting is measured from the
+rows themselves at enqueue time, not carried as a counter — a stored total is a second copy of a
+fact the table already holds, it drifts from the rows whenever a delete misses it, and it is one
+more thing a seized database states plainly. The ceiling that measurement enforces is §5.
+
 > **The limit of the ciphertext-only claim, stated plainly. Amended 2026-08-08 (P7.S01).**
 > `Envelope` wire format v1 used to carry `sender` **in cleartext at offset 2**. The relay never
 > read, indexed, or stored it separately, but it was inside `envelope`, so a seized database *did*
@@ -438,7 +443,7 @@ Token-bucket in Redis. Keyed by session token hash where authenticated, by sourc
 | `POST /v1/invite` | 3 / day / account | Bounds circle growth. Replaces the `created_by` column the design refuses to store |
 | **`GET /v1/keys/{aci}`** | **10 / hour / account, 30 / day / account** | **Load-bearing. See below.** |
 | `PUT /v1/keys` | 6 / day / account | Prekey churn has no legitimate reason to be frequent |
-| `POST /v1/messages` | 60 / minute / account | Flood control |
+| `POST /v1/messages` | 60 / minute / account, **and 32 MiB pending per recipient** | Flood control. The rate limit bounds one sender per minute; the ceiling bounds what any number of them can leave sitting on the disk (AUDIT 5.39). See below |
 | `GET /v1/messages` | 120 / minute / account | Polling |
 | `POST /v1/messages/ack` | 120 / minute / account | Each call is a `DELETE … id = ANY($2)` with up to 200 ids. **Added after it was found unthrottled** (AUDIT 5.23) |
 | `POST /v1/blobs` | 100 / day and 500 MB / day / account | Storage. The byte half is enforced, not merely counted — see below |
@@ -500,6 +505,72 @@ Two changes make it real, and both matter:
 A limiter error on either charge **refuses the upload and removes the bytes**. An unmeasurable
 quota is the same as no quota, and the limiter's stated policy is to fail closed (§5's whole
 argument for that is in `ratelimit.Allow`).
+
+### The per-recipient pending ceiling, and why the refusal is silent
+
+A recipient's queue had no depth or byte ceiling for the whole of P4 through P7 — the one
+authenticated growth path on this service with no quota, while blobs were bounded by count and
+bytes, publication by rate, and acknowledgement and delete by rate (AUDIT 5.39). The only bound was
+the send limit: 60 a minute against a 65,567-byte maximum is ≈3.75 MiB/minute, ≈5.3 GiB per day per
+*sending* account, retained for the 30-day TTL, with self-addressed sends included. The recipient
+could not shed it faster than they fetched and could not refuse a sender at the relay, because
+blocking is client-side. **A full disk is also what stops the retention sweep**, which is the
+highest-value control in this design — so the failure mode is not "the relay runs out of space", it
+is "the relay stops deleting".
+
+`RELAY_MAX_PENDING_BYTES` caps the total `octet_length(envelope)` one recipient may have waiting.
+It defaults to **32 MiB** (`api.DefaultMaxPendingBytes`), and the number is argued rather than
+round:
+
+- **What it costs an honest recipient: nothing they can reach.** A short message pads to the
+  256-byte plaintext bucket and travels in a ~350-byte sealed-sender container, so a typical
+  envelope is around 700 bytes — 32 MiB is roughly 48,000 of them, or about 510 at the maximum
+  legal size. Reaching it means staying offline while ~1,600 messages a day are addressed to you,
+  every day, for the entire 30-day TTL. Acknowledgement deletes, so a recipient who opens the app
+  sits near zero.
+- **What it costs a hostile sender: the attack.** One account fills a single recipient's ceiling in
+  under nine minutes and is then refused, instead of writing 5.3 GiB a day for a month. Total
+  undelivered storage becomes 32 MiB × accounts — ≈640 MiB for a twenty-member circle, against the
+  40 GB disk of the staging VPS.
+- **What it does not bound is the recipient's device.** A queue at the ceiling is still ~48,000
+  envelopes to fetch and decrypt, and blocking happens client-side, after decryption. The ceiling
+  bounds the relay's disk and the size of the drain; it does not make a flood free to receive.
+
+**A refused message is dropped exactly as a stranger's is, and is silent to both parties.** That is
+not an oversight to be improved later:
+
+- The **sender** cannot be told, because "that account's queue is full" says the account exists and
+  is not collecting its mail — a better oracle about a recipient than the enumeration oracle §8's
+  identical answers exist to avoid, and reachable by any authenticated member. The send answers
+  `202` either way, byte for byte.
+- The **recipient** cannot be told at all: the only channel to them is the queue that is full.
+- It is **not logged** either. A line per refused message is a per-message record naming a
+  recipient, which is what §7 forbids and what `TestNoLogLineIsEmittedPerDeliveredMessage` fails
+  on, and this service has no metrics endpoint to put a counter on (§8).
+
+So the ceiling has to be high enough that honest traffic never reaches it, because the cost of
+setting it too low is mail that disappears with nothing anywhere saying so. That is the whole reason
+the default carries the headroom above, and the reason to raise rather than lower it if a
+deployment's own numbers ever come close.
+
+Three details that are decisions rather than accidents:
+
+1. **Expired-but-unswept rows count against it.** The ceiling protects disk, and a lapsed row is on
+   the disk until the hourly sweep reaches it; a quota that does not measure what it protects is
+   the shape AUDIT 5.22 records. Every read path already hides expired rows, so the recipient sees
+   no difference, and the cost is bounded by one sweep interval for a queue already at its ceiling.
+2. **Under concurrency it can overshoot, by a bounded amount.** The check and the insert are one
+   statement, but under READ COMMITTED a concurrent statement takes its own snapshot and does not
+   see the other's uncommitted row, so N sends in flight can each pass a check only one should. N
+   is bounded by the connection pool (`MaxConns` 16), so the overshoot is at most 15 maximum
+   envelopes — under 1 MiB, around 3% of a ceiling carrying far more headroom than that. Closing it
+   exactly needs a per-recipient lock on the busiest endpoint, which buys 3% for a new contention
+   target.
+3. **No new index, and a non-positive value is not "off".** `messages_recipient_idx
+   (recipient_aci, expires_at)` already serves the lookup by its leading column, and a covering
+   index would put envelope bytes in a second structure inside the table a seizure is after.
+   An unset variable means the default; an explicitly zero or negative one stops startup, because a
+   configuration that can recreate "no quota at all" is the same finding.
 
 ### The subject pepper survives a restart only if you configure it
 

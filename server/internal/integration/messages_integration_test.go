@@ -36,6 +36,19 @@ import (
 
 func relayStack(t *testing.T) (http.Handler, *store.DB) {
 	t.Helper()
+	return relayStackWithCeiling(t, api.DefaultMaxPendingBytes)
+}
+
+// relayStackWithCeiling is relayStack with an explicit per-recipient
+// pending-byte ceiling (AUDIT 5.39).
+//
+// It exists because the production ceiling is 32 MiB and a test that reached it
+// honestly would write 32 MiB per run and pin the number rather than the
+// mechanism. A configurable ceiling is what makes the quota observable at all —
+// AUDIT 5.22's "an unmeasurable quota is the same as no quota" is the sentence
+// 5.39's row quotes about itself.
+func relayStackWithCeiling(t *testing.T, maxPendingBytes int64) (http.Handler, *store.DB) {
+	t.Helper()
 	db := testDB(t)
 	limiter := testLimiter(t)
 	log := logging.New(io.Discard, slog.LevelError)
@@ -45,7 +58,8 @@ func relayStack(t *testing.T) (http.Handler, *store.DB) {
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
 	api.NewKeysHandler(db, authHandler, log).Routes(mux)
-	api.NewMessagesHandler(db, authHandler, log).Routes(mux)
+	api.NewMessagesHandler(db, authHandler, log,
+		api.WithPendingCeiling(maxPendingBytes)).Routes(mux)
 	return mux, db
 }
 
@@ -238,6 +252,227 @@ func TestSendingToAStrangerIsAcceptedAndDropped(t *testing.T) {
 	}
 	if n != 0 {
 		t.Fatalf("%d messages were stored for a nonexistent account", n)
+	}
+}
+
+// --- AUDIT 5.39: the per-recipient pending-byte ceiling ---------------------
+//
+// A ceiling small enough to reach in a handful of sends, and envelopes that
+// divide into it exactly, so the boundary is asserted rather than approached:
+// four 1024-byte envelopes are the ceiling, to the byte.
+const (
+	quotaCeiling     int64 = 4096
+	quotaEnvelopeLen       = 1024
+)
+
+func TestAPendingQueueStopsGrowingAtItsCeiling(t *testing.T) {
+	// The control itself. Before this, `messages` was the one authenticated
+	// growth path with no quota at all: 60 sends a minute at 65567 bytes is
+	// ≈5.3 GiB a day per sending account, retained for the 30-day TTL, and a full
+	// disk is what stops the retention sweep.
+	//
+	// Both sides of the boundary are asserted. The message that lands exactly on
+	// the ceiling must be *stored* — a `<` where `<=` belongs would silently cost
+	// one message per queue — and the one after it must not be.
+	ctx := context.Background()
+	h, db := relayStackWithCeiling(t, quotaCeiling)
+	_, token := enrol(t, h, db, "198.51.100.190")
+	bob, _ := enrol(t, h, db, "198.51.100.191")
+
+	for i := range 4 {
+		rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.190",
+			sendBody(bob, envelope(quotaEnvelopeLen, 0xA1)))
+		if rec.Code != http.StatusAccepted {
+			t.Fatalf("send %d: status %d: %s", i, rec.Code, rec.Body.String())
+		}
+	}
+
+	pending, err := db.PendingBytes(ctx, bob)
+	if err != nil {
+		t.Fatalf("pending bytes: %v", err)
+	}
+	if pending != quotaCeiling {
+		t.Fatalf("%d bytes pending after filling the queue exactly, want %d — "+
+			"the message that lands on the ceiling was refused", pending, quotaCeiling)
+	}
+
+	// One more, of the smallest legal size, so the refusal cannot be blamed on
+	// the envelope rather than on the queue.
+	rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.190",
+		sendBody(bob, envelope(store.MinEnvelopeBytes, 0xA2)))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("the refused send answered %d; it must answer exactly as an "+
+			"accepted one does (AUDIT 5.39)", rec.Code)
+	}
+
+	pending, err = db.PendingBytes(ctx, bob)
+	if err != nil {
+		t.Fatalf("pending bytes: %v", err)
+	}
+	if pending != quotaCeiling {
+		t.Fatalf("the queue grew to %d bytes past a ceiling of %d — it is unbounded",
+			pending, quotaCeiling)
+	}
+	n, err := db.CountPendingMessages(ctx, bob)
+	if err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if n != 4 {
+		t.Fatalf("%d rows are queued, want 4: a row was stored over the ceiling", n)
+	}
+}
+
+func TestAQueueAtItsCeilingIsIndistinguishableFromAnEmptyOne(t *testing.T) {
+	// The reason the drop is silent. "That account's queue is full" says the
+	// account exists and is not collecting its mail — a better oracle about a
+	// recipient than the one the accepted-and-dropped stranger path exists to
+	// avoid, and reachable by any authenticated member.
+	//
+	// Byte-for-byte on status and body, like TestSendingToAStrangerIsAccepted-
+	// AndDropped, because a difference in either is the whole leak.
+	ctx := context.Background()
+	h, db := relayStackWithCeiling(t, quotaCeiling)
+	_, token := enrol(t, h, db, "198.51.100.192")
+	full, _ := enrol(t, h, db, "198.51.100.193")
+	empty, _ := enrol(t, h, db, "198.51.100.194")
+
+	for range 4 {
+		if rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.192",
+			sendBody(full, envelope(quotaEnvelopeLen, 0xB1))); rec.Code != http.StatusAccepted {
+			t.Fatalf("filling the queue: status %d", rec.Code)
+		}
+	}
+
+	refused := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.192",
+		sendBody(full, envelope(quotaEnvelopeLen, 0xB2)))
+	accepted := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.192",
+		sendBody(empty, envelope(quotaEnvelopeLen, 0xB2)))
+
+	if refused.Code != accepted.Code ||
+		strings.TrimSpace(refused.Body.String()) != strings.TrimSpace(accepted.Body.String()) {
+		t.Fatalf("a full queue is distinguishable from an empty one:\n  empty: %d %q\n  full:  %d %q",
+			accepted.Code, accepted.Body.String(), refused.Code, refused.Body.String())
+	}
+
+	// And the premise the comparison rests on: one was stored and one was not, so
+	// the two responses really did describe different outcomes.
+	stored, err := db.PendingBytes(ctx, empty)
+	if err != nil {
+		t.Fatalf("pending bytes: %v", err)
+	}
+	if stored != quotaEnvelopeLen {
+		t.Fatalf("the accepted send stored %d bytes, want %d", stored, quotaEnvelopeLen)
+	}
+	dropped, err := db.PendingBytes(ctx, full)
+	if err != nil {
+		t.Fatalf("pending bytes: %v", err)
+	}
+	if dropped != quotaCeiling {
+		t.Fatalf("the full queue holds %d bytes, want exactly the ceiling %d — the "+
+			"send that should have been dropped was not", dropped, quotaCeiling)
+	}
+}
+
+func TestAcknowledgingMakesRoomUnderTheCeiling(t *testing.T) {
+	// The ceiling is a live measurement of what is waiting, not a counter that
+	// only goes up. A quota implemented as an ever-increasing tally would pass
+	// the two tests above and permanently brick a queue that had once been busy.
+	ctx := context.Background()
+	h, db := relayStackWithCeiling(t, quotaCeiling)
+	_, token := enrol(t, h, db, "198.51.100.195")
+	bob, bobToken := enrol(t, h, db, "198.51.100.196")
+
+	for range 4 {
+		if rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.195",
+			sendBody(bob, envelope(quotaEnvelopeLen, 0xC1))); rec.Code != http.StatusAccepted {
+			t.Fatalf("filling the queue: status %d", rec.Code)
+		}
+	}
+
+	msgs, _ := fetchMessages(t, h, bobToken, "198.51.100.196")
+	if len(msgs) != 4 {
+		t.Fatalf("setup: %d messages", len(msgs))
+	}
+	if rec := do(h, http.MethodPost, "/v1/messages/ack", bobToken, "198.51.100.196",
+		ackBody(msgs[0].ID)); rec.Code != http.StatusOK {
+		t.Fatalf("ack: %d", rec.Code)
+	}
+
+	if rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.195",
+		sendBody(bob, envelope(quotaEnvelopeLen, 0xC2))); rec.Code != http.StatusAccepted {
+		t.Fatalf("send after ack: status %d", rec.Code)
+	}
+	pending, err := db.PendingBytes(ctx, bob)
+	if err != nil {
+		t.Fatalf("pending bytes: %v", err)
+	}
+	if pending != quotaCeiling {
+		t.Fatalf("%d bytes pending after acknowledging one and sending one, want %d — "+
+			"collecting mail did not free the allowance", pending, quotaCeiling)
+	}
+}
+
+func TestAnExpiredButUnsweptMessageStillCountsAgainstTheCeiling(t *testing.T) {
+	// The decision, pinned so it is a choice rather than an accident of the
+	// query. The ceiling protects disk; a lapsed row is on the disk until the
+	// hourly sweep reaches it, so it is charged for. Excluding it would let a
+	// queue hold up to a sweep interval of storage the quota could not see, which
+	// is the shape AUDIT 5.22 records.
+	//
+	// The recipient sees no difference either way: every read path already
+	// filters on expiry, which is what the second half asserts is *not* what the
+	// ceiling is reading.
+	ctx := context.Background()
+	h, db := relayStackWithCeiling(t, quotaCeiling)
+	_, token := enrol(t, h, db, "198.51.100.197")
+	bob, bobToken := enrol(t, h, db, "198.51.100.198")
+
+	for range 4 {
+		if rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.197",
+			sendBody(bob, envelope(quotaEnvelopeLen, 0xD1))); rec.Code != http.StatusAccepted {
+			t.Fatalf("filling the queue: status %d", rec.Code)
+		}
+	}
+	msgs, _ := fetchMessages(t, h, bobToken, "198.51.100.198")
+	if len(msgs) != 4 {
+		t.Fatalf("setup: %d messages", len(msgs))
+	}
+	if err := db.ExpireMessageNow(ctx, uuid.MustParse(msgs[0].ID)); err != nil {
+		t.Fatalf("expire: %v", err)
+	}
+
+	// Invisible to the recipient, and still charged for.
+	if after, _ := fetchMessages(t, h, bobToken, "198.51.100.198"); len(after) != 3 {
+		t.Fatalf("the expired message is still served: %d visible", len(after))
+	}
+	if rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.197",
+		sendBody(bob, envelope(quotaEnvelopeLen, 0xD2))); rec.Code != http.StatusAccepted {
+		t.Fatalf("the send over the ceiling answered %d, not the 202 an accepted "+
+			"one answers", rec.Code)
+	}
+	pending, err := db.PendingBytes(ctx, bob)
+	if err != nil {
+		t.Fatalf("pending bytes: %v", err)
+	}
+	if pending != quotaCeiling {
+		t.Fatalf("%d bytes pending: an expired row stopped counting before the sweep "+
+			"removed it, so the quota is under-measuring the disk", pending)
+	}
+
+	// And the sweep is what actually returns the allowance.
+	if _, err := db.DeleteExpiredMessages(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if rec := do(h, http.MethodPost, "/v1/messages", token, "198.51.100.197",
+		sendBody(bob, envelope(quotaEnvelopeLen, 0xD3))); rec.Code != http.StatusAccepted {
+		t.Fatalf("send after sweep: status %d", rec.Code)
+	}
+	pending, err = db.PendingBytes(ctx, bob)
+	if err != nil {
+		t.Fatalf("pending bytes: %v", err)
+	}
+	if pending != quotaCeiling {
+		t.Fatalf("%d bytes pending after the sweep freed a slot, want %d", pending, quotaCeiling)
 	}
 }
 
@@ -564,7 +799,8 @@ func TestFetchIsBatchedAndReportsMore(t *testing.T) {
 	// being right about something the fixture had not accounted for.
 	const sent = 105
 	for range sent {
-		stored, err := db.EnqueueMessage(ctx, bob, envelope(64, 0xEF), api.MessageTTL)
+		stored, err := db.EnqueueMessage(ctx, bob, envelope(64, 0xEF),
+			api.MessageTTL, api.DefaultMaxPendingBytes)
 		if err != nil || !stored {
 			t.Fatalf("enqueue: stored=%v err=%v", stored, err)
 		}

@@ -34,7 +34,12 @@ SERVER="$REPO_ROOT/server"
 # stopped being one. It is a backstop for a partial loss inside a file, never the primary
 # check: the named list below is that. Lower it only when tests are removed deliberately,
 # and say so in the same commit.
-MIN_INTEGRATION_TESTS=132
+#
+# Raised from 132 to 136 on 2026-08-10 with AUDIT 5.39's four pending-ceiling tests, which
+# take the suite to 144. Same eight-test margin as the line above it, kept deliberately:
+# the margin is what stops an unrelated test being deleted from failing this gate for the
+# wrong reason, and letting it grow is how the previous drift started.
+MIN_INTEGRATION_TESTS=136
 
 # A floor is not enough on its own, and that gap is AUDIT 6.14: the count says how
 # many tests ran, never which. A rename, a build-tag mistake in one file, or a
@@ -102,6 +107,16 @@ REQUIRED_INTEGRATION_TESTS=(
   TestPathTraversalCannotEscapeTheBlobDirectory
   TestAFullFlowLeaksNothingIntoTheLog
   TestChargeSaturatesOnOverrunSoTheNextCheckRefuses
+  # The per-recipient pending-byte ceiling (AUDIT 5.39). Two names, for the two
+  # properties whose loss is a security regression rather than a coverage one:
+  # the ceiling existing at all — `messages` was the one authenticated growth
+  # path with no quota, and nothing else in the suite would notice it returning
+  # to unbounded — and the refusal being indistinguishable from an accepted send,
+  # which is what stops the quota becoming an oracle about the recipient. The two
+  # tests that pin the expired-row decision and the freeing of the allowance are
+  # deliberately not here: losing either is a coverage loss, not a control.
+  TestAPendingQueueStopsGrowingAtItsCeiling
+  TestAQueueAtItsCeilingIsIndistinguishableFromAnEmptyOne
 )
 
 # A host port distinct from the development stack's 8080, so running this never

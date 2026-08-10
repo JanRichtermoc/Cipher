@@ -201,6 +201,12 @@ services:
       # symptom is a refusal that reads like a code bug. Set it with P8.S02, which
       # brings the endpoint that first writes a token.
       RELAY_PUSH_TOKEN_KEY: ${RELAY_PUSH_TOKEN_KEY:-}
+      # The per-recipient ceiling on undelivered envelope bytes (AUDIT 5.39).
+      # Empty by default, and empty means api.DefaultMaxPendingBytes — 32 MiB —
+      # never "no ceiling"; a non-positive value is refused at startup. Raise it
+      # only against a disk that can hold it: the bound on undelivered storage is
+      # this number times the account count. docs/BACKEND.md §5.
+      RELAY_MAX_PENDING_BYTES: ${RELAY_MAX_PENDING_BYTES:-}
     depends_on:
       postgres:
         condition: service_healthy
