@@ -460,6 +460,16 @@ extension CryptoEngine {
         /// Where to look for a session. Read out of the sealed certificate when there was
         /// one, and out of the envelope's routing field when there was not. Neither is
         /// evidence; both are hints that the ciphertext then has to justify.
+        ///
+        /// On the sealed branch the hint is not quite free, and it is worth knowing which part
+        /// of that is ours. Nothing here validates the name — anyone may mint a certificate
+        /// naming anyone (AUDIT 3.8) — but libsignal binds the sender's address into the
+        /// message itself, so a certificate naming an account other than the one the ciphertext
+        /// was encrypted under yields a message that fails to decrypt rather than a
+        /// misattributed one. An impostor must therefore lie in both places, which costs it
+        /// consistency and nothing more. That binding is upstream's, not this module's, and
+        /// `SealedSenderTests.testTheCertificateNameAndTheCiphertextMustAgreeOnTheSender` is
+        /// where a release that dropped it would show up.
         let sender: PeerAddress
         let establishesSession: Bool
         let ciphertext: Data
