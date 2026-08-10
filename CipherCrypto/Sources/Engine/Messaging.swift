@@ -46,12 +46,17 @@ import LibSignalClient
 /// frame the address lives inside the ciphertext, so a *relay* cannot relabel a first message
 /// at all: it can neither read the certificate nor replace it, and re-wrapping the payload
 /// under a name of its own is refused because the certificate's key would not be the key the
-/// session authenticated (`EnvelopeError.sealedSenderKeyMismatch`). What stays open is the
-/// *sender's* own claim — the certificate is self-issued
-/// (`CryptoEngine.selfIssuedSenderCertificate`), so an account can still name itself anything,
-/// which is what comparing safety numbers is for — and the addressed receive path, which is
-/// still accepted for compatibility and carries the old weakness unchanged. AUDIT 3.8
-/// therefore stays open, with a smaller surface than before.
+/// session authenticated (`EnvelopeError.sealedSenderKeyMismatch`). The addressed path that
+/// carried the old weakness unchanged is now **retired for first messages**
+/// (`EnvelopeError.addressedFirstMessageRefused`); addressed `.whisper` stays, because on an
+/// established session the ratchet already makes the label unforgeable.
+///
+/// What stays open is the *sender's* own claim. The certificate is self-issued
+/// (`CryptoEngine.selfIssuedSenderCertificate`), so an account can still name itself anything —
+/// it must do so in the ciphertext as well as the certificate, since libsignal binds the
+/// sender's address into the message, but nothing checks either against the account the relay
+/// authenticated. That is what comparing safety numbers is for, and it is why AUDIT 3.8 stays
+/// open with a smaller surface than before.
 public struct DecryptedMessage: Sendable, Equatable {
 
     /// The address whose session authenticated this ciphertext.
@@ -238,11 +243,12 @@ extension CryptoEngine {
     /// There is no unsealed send path and no negotiation. A per-peer choice would be worse
     /// than useless: the choice itself would be visible to the relay as the difference
     /// between a `.sealed` frame and an addressed one, so the accounts still sending in the
-    /// open would be exactly the ones the metadata is about. **Receiving** still accepts
-    /// addressed frames, so a message already in flight across the upgrade is not lost; a
-    /// peer that cannot yet read a `.sealed` frame refuses it, which is the cost of a new
-    /// payload type rather than a `wireVersion` bump and is why this is a private-circle
-    /// build decision rather than a compatibility scheme.
+    /// open would be exactly the ones the metadata is about. **Receiving** still accepts an
+    /// addressed `.whisper`, so a message in flight on a conversation that already exists is
+    /// not lost; an addressed **first** message is refused (AUDIT 3.8), because that is the
+    /// one whose label nothing could check. A peer that cannot yet read a `.sealed` frame
+    /// refuses it, which is the cost of a new payload type rather than a `wireVersion` bump
+    /// and is why this is a private-circle build decision rather than a compatibility scheme.
     ///
     /// ## And every message is padded to a bucket (P7.S02)
     ///
@@ -532,16 +538,30 @@ extension CryptoEngine {
         let plaintext: Data
         do {
             switch envelope.type {
-            case .preKey, .whisper:
-                // Addressed frames are still accepted so nothing in flight across the sealed
-                // sender upgrade is lost. `Envelope.decode` has already refused a frame of
-                // this type with no sender, so the unwrap below cannot be the thing that
-                // fails; it is written as a refusal rather than a `!` because the invariant
-                // lives in another file.
+            case .preKey:
+                // Retired (AUDIT 3.8). An addressed **first** message is the only frame whose
+                // label is chosen by whoever delivered it and checked by nothing: the identity
+                // key arrives inside the message, so there is no prior key to disagree with.
+                // Sealing removed the need for it — no build has produced one since P7.S01 —
+                // and inside a container the same message is bound to the address its sender
+                // encrypted under, so the name costs an attacker a session it must actually
+                // hold. Refusing here is what makes that binding load-bearing rather than
+                // optional. See the error case for what this costs.
+                throw EnvelopeError.addressedFirstMessageRefused
+            case .whisper:
+                // Still accepted, and deliberately: on an established session the ratchet MAC
+                // verifies only under that session's keys, so a rewritten sender yields a
+                // dropped message rather than a misattributed one
+                // (`testRewrittenEnvelopeSenderCannotMisattribute`). Keeping this branch is
+                // what stops the refusal above from costing a conversation that already exists.
+                //
+                // `Envelope.decode` has already refused a frame of this type with no sender, so
+                // the unwrap below cannot be the thing that fails; it is written as a refusal
+                // rather than a `!` because the invariant lives in another file.
                 guard let claimed = envelope.sender else { throw EnvelopeError.senderMissing }
                 payload = InboundPayload(
                     sender: PeerAddress(serviceId: claimed),
-                    establishesSession: envelope.type == .preKey,
+                    establishesSession: false,
                     ciphertext: envelope.ciphertext,
                     certificateKey: nil,
                     isPadded: false)

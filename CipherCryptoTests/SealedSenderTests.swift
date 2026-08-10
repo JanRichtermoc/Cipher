@@ -109,8 +109,8 @@ final class SealedSenderTests: XCTestCase {
             let content = try UnidentifiedSenderMessageContent(
                 contents ?? message.bytes,
                 type: type ?? message.type,
-                from: try certificate ?? SealedSenderTests.mintCertificate(
-                    uuidString: remote.serviceId.canonicalString,
+                from: try certificate ?? SealedFrame.certificate(
+                    naming: remote.serviceId.canonicalString,
                     key: peer.identity.identityKey.publicKey),
                 contentHint: .default,
                 groupId: groupId)
@@ -140,64 +140,6 @@ final class SealedSenderTests: XCTestCase {
             sessionStore: fixture.store, identityStore: fixture.store,
             context: NullContext())
         return fixture
-    }
-
-    /// Seals a **session-establishing** message from `fixture` under a certificate that names
-    /// `named` — which need not be `fixture`'s own address, and that is the whole of AUDIT 3.8.
-    ///
-    /// Two things are not free, and the difference between them is the finding. The certificate
-    /// carries `fixture`'s own key, because libsignal binds the certificate key to whoever seals
-    /// the container (`testACertificateKeyTheSealerDoesNotHoldIsRefused`). And `named` must be
-    /// the address `fixture` itself encrypts under, because libsignal binds that one into the
-    /// message — pass a different one and the result is refused rather than misattributed,
-    /// which is `testTheCertificateNameAndTheCiphertextMustAgreeOnTheSender`. Neither is a check
-    /// on *whose* address it is: a fixture constructed at another account's address satisfies
-    /// both, which is how the same call builds an honest first message and an impostor's.
-    @CryptoActor
-    private static func sealFirstMessage(
-        _ text: String, from fixture: PeerFixture,
-        naming named: PeerAddress, to recipient: PeerAddress
-    ) throws -> Data {
-        let message = try fixture.encrypt(
-            try MessagePadding.pad(Data(text.utf8)), to: try recipient.makeProtocolAddress())
-        XCTAssertEqual(message.type, .preKey,
-                       "the fixture produced no session-establishing message; what follows is void")
-
-        let content = try UnidentifiedSenderMessageContent(
-            message.bytes, type: message.type,
-            from: try mintCertificate(
-                uuidString: named.serviceId.canonicalString,
-                key: fixture.identity.identityKey.publicKey),
-            contentHint: .default, groupId: Data())
-
-        return try Envelope(
-            type: .sealed, sender: nil, timestamp: 1_700_000_000_003,
-            ciphertext: try sealedSenderEncrypt(
-                content, for: try recipient.makeProtocolAddress(),
-                identityStore: fixture.store, context: NullContext())
-        ).encode()
-    }
-
-    /// Mints a certificate with a freshly generated authority, exactly as the app does.
-    ///
-    /// Anyone can call this with any account's identifier. That is the point: the certificate
-    /// is a container field, not a credential, and a test that had to obtain one from
-    /// somewhere trusted would be describing a scheme Cipher does not have.
-    @CryptoActor
-    private static func mintCertificate(
-        uuidString: String, deviceId: UInt32 = PeerAddress.primaryDevice,
-        e164: String? = nil, key: PublicKey
-    ) throws -> SenderCertificate {
-        let trustRoot = PrivateKey.generate()
-        let serverKey = PrivateKey.generate()
-        return try SenderCertificate(
-            sender: try SealedSenderAddress(
-                e164: e164, uuidString: uuidString, deviceId: deviceId),
-            publicKey: key,
-            expiration: UInt64.max,
-            signerCertificate: try ServerCertificate(
-                keyId: 1, publicKey: serverKey.publicKey, trustRoot: trustRoot),
-            signerKey: serverKey)
     }
 
     // MARK: - The relayed frame names nobody
@@ -383,9 +325,15 @@ final class SealedSenderTests: XCTestCase {
         }.value
     }
 
-    /// Addressed frames keep working, so nothing already on the relay is lost when a build
-    /// that seals arrives. Removing this branch is a separate decision with its own cost.
-    func testAddressedFramesAreStillAccepted() async throws {
+    /// An addressed frame on an **established** session keeps working, so a message already on
+    /// the relay when a sealing build arrives is not lost.
+    ///
+    /// This half survives the AUDIT 3.8 retirement below, and the reason is the ratchet: a
+    /// `SignalMessage` verifies only under the keys of the session it belongs to, so a rewritten
+    /// sender costs the attacker a dropped message rather than a misattributed one
+    /// (`MessagingTests.testRewrittenEnvelopeSenderCannotMisattribute`). Nothing about the
+    /// weakness that closed the other branch applies here.
+    func testAddressedFramesOnAnEstablishedSessionAreStillAccepted() async throws {
         let root = TestContainer.make()
         defer { TestContainer.remove(root) }
 
@@ -395,6 +343,9 @@ final class SealedSenderTests: XCTestCase {
 
             let message = try pair.peer.encrypt(
                 "from an older build", to: try pair.local.makeProtocolAddress())
+            XCTAssertEqual(message.type, .whisper,
+                           "this test must exercise the branch that survived, not the retired one")
+
             let addressed = try Envelope(
                 type: try Envelope.payloadType(for: message.type),
                 sender: pair.remote.serviceId, timestamp: 1, ciphertext: message.bytes).encode()
@@ -403,6 +354,56 @@ final class SealedSenderTests: XCTestCase {
             XCTAssertEqual(decrypted.plaintext, Data("from an older build".utf8))
             XCTAssertEqual(decrypted.claimedSender, pair.remote.serviceId,
                            "an addressed frame still reports what it claimed")
+            XCTAssertFalse(decrypted.establishedSession)
+        }.value
+    }
+
+    /// AUDIT 3.8: the addressed **first** message is refused.
+    ///
+    /// The frame this builds is exactly what a pre-P7.S01 client sent to open a conversation,
+    /// and it is the one frame whose label nothing could check — the identity key arrives
+    /// inside the message, so there is no stored key for a wrong name to disagree with. The
+    /// test above is the control that keeps this from being a blanket ban on addressed frames.
+    ///
+    /// The cost is real and is asserted rather than described: this message is genuine, it
+    /// decrypts, and it is refused anyway. What makes that affordable is that no build has
+    /// produced one since P7.S01 — `CryptoEngine.encrypt` seals unconditionally — and that the
+    /// sealed replacement binds the sender's address into the ciphertext, so the same lie now
+    /// costs an attacker a session it must actually hold.
+    func testAnAddressedFirstMessageIsRefused() async throws {
+        let root = TestContainer.make()
+        defer { TestContainer.remove(root) }
+
+        try await Task { @CryptoActor in
+            let pair = try Pair(root: root)
+            let peer = try Self.startSession(
+                towards: pair, as: try pair.remote.makeProtocolAddress())
+
+            let message = try peer.encrypt(
+                "first contact from an older build", to: try pair.local.makeProtocolAddress())
+            XCTAssertEqual(message.type, .preKey, "this must be the frame under test")
+
+            let addressed = try Envelope(
+                type: try Envelope.payloadType(for: message.type),
+                sender: pair.remote.serviceId, timestamp: 1, ciphertext: message.bytes).encode()
+
+            XCTAssertThrowsError(try pair.engine.decrypt(addressed)) { error in
+                XCTAssertEqual(error as? EnvelopeError, .addressedFirstMessageRefused)
+            }
+
+            // Refused before any session, prekey or ratchet state was touched: the peer is
+            // still unknown, so the refusal cost a message rather than leaving half a session
+            // behind for the next one to trip over.
+            XCTAssertNil(try pair.engine.peerIdentityState(for: pair.remote))
+            XCTAssertFalse(try pair.engine.hasSession(with: pair.remote))
+
+            // And the sealed frame the same peer would send today is accepted, which is what
+            // makes this a retirement rather than a lockout.
+            let sealed = try pair.engine.decrypt(
+                try SealedFrame.firstMessage(
+                    "first contact", from: peer, naming: pair.remote, to: pair.local))
+            XCTAssertEqual(sealed.plaintext, Data("first contact".utf8))
+            XCTAssertTrue(sealed.establishedSession)
         }.value
     }
 
@@ -497,8 +498,8 @@ final class SealedSenderTests: XCTestCase {
 
             let framed = try pair.sealFromPeer(
                 "from device two",
-                certificate: try Self.mintCertificate(
-                    uuidString: pair.remote.serviceId.canonicalString, deviceId: 2,
+                certificate: try SealedFrame.certificate(
+                    naming: pair.remote.serviceId.canonicalString, deviceId: 2,
                     key: pair.peer.identity.identityKey.publicKey))
 
             XCTAssertThrowsError(try pair.engine.decrypt(framed)) { error in
@@ -519,8 +520,8 @@ final class SealedSenderTests: XCTestCase {
 
             let framed = try pair.sealFromPeer(
                 "with a phone number",
-                certificate: try Self.mintCertificate(
-                    uuidString: pair.remote.serviceId.canonicalString,
+                certificate: try SealedFrame.certificate(
+                    naming: pair.remote.serviceId.canonicalString,
                     e164: "+15551234567",
                     key: pair.peer.identity.identityKey.publicKey))
 
@@ -543,8 +544,8 @@ final class SealedSenderTests: XCTestCase {
 
             let framed = try pair.sealFromPeer(
                 "from a PNI",
-                certificate: try Self.mintCertificate(
-                    uuidString: Pni(fromUUID: pair.remote.serviceId.uuid).serviceIdString,
+                certificate: try SealedFrame.certificate(
+                    naming: Pni(fromUUID: pair.remote.serviceId.uuid).serviceIdString,
                     key: pair.peer.identity.identityKey.publicKey))
 
             XCTAssertThrowsError(try pair.engine.decrypt(framed)) { error in
@@ -570,8 +571,8 @@ final class SealedSenderTests: XCTestCase {
 
             let framed = try pair.sealFromPeer(
                 "a key the sealer does not hold",
-                certificate: try Self.mintCertificate(
-                    uuidString: pair.remote.serviceId.canonicalString,
+                certificate: try SealedFrame.certificate(
+                    naming: pair.remote.serviceId.canonicalString,
                     key: PrivateKey.generate().publicKey))
 
             XCTAssertThrowsError(try pair.engine.decrypt(framed)) { error in
@@ -626,8 +627,8 @@ final class SealedSenderTests: XCTestCase {
                 to: try pair.local.makeProtocolAddress())
             let content = try UnidentifiedSenderMessageContent(
                 captured.bytes, type: captured.type,
-                from: try Self.mintCertificate(
-                    uuidString: pair.remote.serviceId.canonicalString,
+                from: try SealedFrame.certificate(
+                    naming: pair.remote.serviceId.canonicalString,
                     key: otherPeer.identity.identityKey.publicKey),
                 contentHint: .default, groupId: Data())
             let resealed = try Envelope(
@@ -707,7 +708,7 @@ final class SealedSenderTests: XCTestCase {
             let impostor = try Self.startSession(
                 towards: pair, as: try pair.remote.makeProtocolAddress())
 
-            let framed = try Self.sealFirstMessage(
+            let framed = try SealedFrame.firstMessage(
                 "meet me at the usual place", from: impostor,
                 naming: pair.remote, to: pair.local)
 
@@ -776,7 +777,7 @@ final class SealedSenderTests: XCTestCase {
                 towards: pair, as: try strangerAddress.makeProtocolAddress())
 
             let decrypted = try pair.engine.decrypt(
-                try Self.sealFirstMessage(
+                try SealedFrame.firstMessage(
                     "hello, we have not met", from: stranger,
                     naming: strangerAddress, to: pair.local))
 
@@ -829,7 +830,7 @@ final class SealedSenderTests: XCTestCase {
             // this module makes passes — and the message underneath then fails to decrypt.
             XCTAssertThrowsError(
                 try pair.engine.decrypt(
-                    try Self.sealFirstMessage(
+                    try SealedFrame.firstMessage(
                         "relabelled", from: relabeller, naming: pair.remote, to: pair.local))
             ) { error in
                 guard case SignalError.invalidMessage = error else {
@@ -844,7 +845,7 @@ final class SealedSenderTests: XCTestCase {
             let honest = try Self.startSession(
                 towards: pair, as: try honestAddress.makeProtocolAddress())
             let accepted = try pair.engine.decrypt(
-                try Self.sealFirstMessage(
+                try SealedFrame.firstMessage(
                     "not relabelled", from: honest, naming: honestAddress, to: pair.local))
             XCTAssertEqual(accepted.plaintext, Data("not relabelled".utf8))
             XCTAssertEqual(accepted.sender, honestAddress)

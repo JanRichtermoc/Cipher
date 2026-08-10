@@ -386,6 +386,75 @@ internal enum EngineFixture {
     }
 }
 
+// MARK: - Sealed frames
+
+/// Builds the frame a shipped client actually sends, for suites whose subject is something else.
+///
+/// Before P7.S01 a test could hand the engine an addressed frame and still be modelling a real
+/// client. It cannot now, in two steps: `CryptoEngine.encrypt` seals every frame, and the
+/// addressed session-establishing path is refused outright (AUDIT 3.8). A prekey, rotation or
+/// replay test that still built one would be asserting against a shape nothing produces, and
+/// would fail for a reason that has nothing to do with what it is testing.
+@CryptoActor
+internal enum SealedFrame {
+
+    /// Mints a sender certificate with a freshly generated authority, exactly as the app does.
+    ///
+    /// Anyone may call this with any account's identifier. That is the point: the certificate
+    /// is a container field and not a credential (`CryptoEngine.selfIssuedSenderCertificate`),
+    /// and a fixture that had to obtain one from somewhere trusted would be describing a scheme
+    /// Cipher does not have.
+    internal static func certificate(
+        naming uuidString: String, deviceId: UInt32 = PeerAddress.primaryDevice,
+        e164: String? = nil, key: PublicKey
+    ) throws -> SenderCertificate {
+        let trustRoot = PrivateKey.generate()
+        let serverKey = PrivateKey.generate()
+        return try SenderCertificate(
+            sender: try SealedSenderAddress(
+                e164: e164, uuidString: uuidString, deviceId: deviceId),
+            publicKey: key,
+            expiration: UInt64.max,
+            signerCertificate: try ServerCertificate(
+                keyId: 1, publicKey: serverKey.publicKey, trustRoot: trustRoot),
+            signerKey: serverKey)
+    }
+
+    /// Seals a **session-establishing** message from `fixture` under a certificate naming
+    /// `named`, padded as a shipped client pads it (P7.S02).
+    ///
+    /// Two fields are not free, and the difference between them is AUDIT 3.8. The certificate
+    /// carries `fixture`'s own key, because libsignal binds the certificate key to whoever
+    /// sealed the container. And `named` must be the address `fixture` encrypts under, because
+    /// libsignal binds that one into the message — pass a different one and the result is
+    /// refused rather than misattributed. Neither is a check on *whose* address it is: a
+    /// fixture constructed at another account's address satisfies both, which is how the same
+    /// call builds an honest first message and an impostor's.
+    internal static func firstMessage(
+        _ text: String, from fixture: PeerFixture,
+        naming named: PeerAddress, to recipient: PeerAddress, timestamp: UInt64 = 1
+    ) throws -> Data {
+        let message = try fixture.encrypt(
+            try MessagePadding.pad(Data(text.utf8)), to: try recipient.makeProtocolAddress())
+        XCTAssertEqual(message.type, .preKey,
+                       "the fixture produced no session-establishing message; what follows is void")
+
+        let content = try UnidentifiedSenderMessageContent(
+            message.bytes, type: message.type,
+            from: try certificate(
+                naming: named.serviceId.canonicalString,
+                key: fixture.identity.identityKey.publicKey),
+            contentHint: .default, groupId: Data())
+
+        return try Envelope(
+            type: .sealed, sender: nil, timestamp: timestamp,
+            ciphertext: try sealedSenderEncrypt(
+                content, for: try recipient.makeProtocolAddress(),
+                identityStore: fixture.store, context: NullContext())
+        ).encode()
+    }
+}
+
 // MARK: - Local side helpers
 
 @CryptoActor

@@ -401,11 +401,12 @@ final class MessagingTests: XCTestCase {
                 sessionStore: impostor.store, identityStore: impostor.store,
                 context: NullContext())
 
-            let intrusion = try impostor.encrypt(
-                "from a new key", to: try pair.local.makeProtocolAddress())
-            let envelope = try Envelope(
-                type: try Envelope.payloadType(for: intrusion.type),
-                sender: pair.remote.serviceId, timestamp: 1, ciphertext: intrusion.bytes).encode()
+            // Sealed, because the addressed first message this used to build is refused
+            // (AUDIT 3.8). The decision under test is unchanged and so is the attack: the
+            // impostor names the address it encrypts under, which is the same lie in a frame
+            // a shipped client would actually produce.
+            let envelope = try SealedFrame.firstMessage(
+                "from a new key", from: impostor, naming: pair.remote, to: pair.local)
 
             // Receiving is allowed, and the change is recorded.
             let received = try pair.engine.decrypt(envelope)

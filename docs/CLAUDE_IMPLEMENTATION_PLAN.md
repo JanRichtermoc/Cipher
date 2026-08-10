@@ -151,7 +151,7 @@ fails instead of reporting a clean tree it never read (AUDIT **R2**).
 
 | AUDIT | Item | Closes in |
 |-------|------|-----------|
-| 3.8 | First-contact address is relabellable by the relay — narrowed by P7.S01 to the addressed receive path, which is still accepted for compatibility | P5.S12 / P7 |
+| 3.8 | First-contact address is relabellable — narrowed by P7.S01, and again on 2026-08-10 when the addressed **first** message was refused outright. What remains is the self-issued certificate: a circle member can still name another account, in the ciphertext as well as the certificate | P5.S12 / P7 |
 | 3.9 | The live relay still learns the sender from the bearer token on send (split from 3.4 when P7.S01 closed it) | unscheduled |
 | 4.4 | NSE/App Group sharing is not approved or cross-process tested; Keychain sharing still needs a migration and rollback design | P6 |
 | ~~2.4~~ | ~~No key rotation / replenishment~~ | CLOSED P6.S01 |
