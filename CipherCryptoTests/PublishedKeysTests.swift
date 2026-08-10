@@ -77,15 +77,13 @@ final class PublishedKeysTests: XCTestCase {
                 ourAddress: peer.address,
                 sessionStore: peer.store, identityStore: peer.store, context: NullContext())
 
-            let sent = try peer.encrypt(
-                "first contact", to: try PeerAddress(aci: localAci).makeProtocolAddress())
-            let envelope = try Envelope(
-                type: try Envelope.payloadType(for: sent.type),
-                sender: ServiceIdentifier(kind: .aci, uuid: peerAci),
-                timestamp: 1,
-                ciphertext: sent.bytes).encode()
-
-            let decrypted = try engine.decrypt(envelope)
+            // Sealed, because the addressed first message this used to build is refused
+            // (AUDIT 3.8) and no client has produced one since P7.S01. The subject here is the
+            // published bundle, so the frame around it should be the one a client sends.
+            let decrypted = try engine.decrypt(
+                try SealedFrame.firstMessage(
+                    "first contact", from: peer,
+                    naming: PeerAddress(aci: peerAci), to: PeerAddress(aci: localAci)))
             XCTAssertEqual(decrypted.plaintext, Data("first contact".utf8))
             XCTAssertTrue(decrypted.establishedSession)
         }.value
@@ -246,13 +244,13 @@ final class PublishedKeysTests: XCTestCase {
                 sessionStore: impostor.store, identityStore: impostor.store,
                 context: NullContext())
 
-            let intrusion = try impostor.encrypt(
-                "new key", to: try PeerAddress(aci: localAci).makeProtocolAddress())
-            let envelope = try Envelope(
-                type: try Envelope.payloadType(for: intrusion.type),
-                sender: ServiceIdentifier(kind: .aci, uuid: peerAci),
-                timestamp: 1, ciphertext: intrusion.bytes).encode()
-            _ = try engine.decrypt(envelope)
+            // Sealed for the same reason as above, and the certificate names the address the
+            // impostor encrypts under — which it must, since libsignal binds both (AUDIT 3.8,
+            // `SealedSenderTests.testTheCertificateNameAndTheCiphertextMustAgreeOnTheSender`).
+            _ = try engine.decrypt(
+                try SealedFrame.firstMessage(
+                    "new key", from: impostor,
+                    naming: peerAddress, to: PeerAddress(aci: localAci)))
 
             XCTAssertThrowsError(try engine.encrypt(Data("reply".utf8), to: peerAddress)) { error in
                 XCTAssertEqual(error as? MessagingError, .identityNotAccepted)

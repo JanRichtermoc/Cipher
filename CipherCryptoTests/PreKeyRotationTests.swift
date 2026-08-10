@@ -109,12 +109,10 @@ final class PreKeyRotationTests: XCTestCase {
             ourAddress: peer.address,
             sessionStore: peer.store, identityStore: peer.store, context: NullContext())
 
-        let sent = try peer.encrypt(text, to: try PeerAddress(aci: localAci).makeProtocolAddress())
-        let envelope = try Envelope(
-            type: try Envelope.payloadType(for: sent.type),
-            sender: ServiceIdentifier(kind: .aci, uuid: peerAci),
-            timestamp: 1,
-            ciphertext: sent.bytes).encode()
+        // Sealed: the addressed first message is refused (AUDIT 3.8), and this helper's whole
+        // job is to ask whether a *real* peer can still reach the engine through this bundle.
+        let envelope = try SealedFrame.firstMessage(
+            text, from: peer, naming: PeerAddress(aci: peerAci), to: PeerAddress(aci: localAci))
 
         guard let decrypted = try? engine.decrypt(envelope) else { return false }
         return decrypted.plaintext == Data(text.utf8)
@@ -276,16 +274,14 @@ final class PreKeyRotationTests: XCTestCase {
                 for: localAddress, ourAddress: peer.address,
                 sessionStore: peer.store, identityStore: peer.store, context: NullContext())
 
+            // Sealed (AUDIT 3.8). `SealedFrame.firstMessage` asserts the peer is still sending
+            // prekey messages, which is the condition this test rests on — a peer that had
+            // switched to `.whisper` would prove nothing about a repeated *first* message.
             @CryptoActor
             func deliver(_ text: String) throws -> Data {
-                let sent = try peer.encrypt(text, to: localAddress)
-                XCTAssertEqual(
-                    sent.type, .preKey,
-                    "the peer must still be sending prekey messages, or this proves nothing")
-                return try Envelope(
-                    type: try Envelope.payloadType(for: sent.type),
-                    sender: ServiceIdentifier(kind: .aci, uuid: peerAci),
-                    timestamp: 1, ciphertext: sent.bytes).encode()
+                try SealedFrame.firstMessage(
+                    text, from: peer,
+                    naming: PeerAddress(aci: peerAci), to: PeerAddress(aci: localAci))
             }
 
             let first = try deliver("first")

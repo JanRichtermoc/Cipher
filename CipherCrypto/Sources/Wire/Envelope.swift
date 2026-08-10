@@ -101,8 +101,17 @@ public struct Envelope: Sendable, Equatable {
     /// ratchet. Reserving the value keeps that door open without a wire break.
     public enum PayloadType: UInt8, Sendable, CaseIterable {
         /// A `PreKeySignalMessage` — establishes a session.
+        ///
+        /// **Live only as the inner type of a `.sealed` container.** As an envelope type it is
+        /// still parsed, and then refused by the receive path
+        /// (`EnvelopeError.addressedFirstMessageRefused`, AUDIT 3.8): an addressed first
+        /// message is the one frame whose sender nothing can check. The case stays because the
+        /// value is on the wire and because `payloadType(for:)` returns it for the inner type
+        /// of a sealed frame, which is how `establishesSession` is decided.
         case preKey = 1
-        /// A `SignalMessage` — an established-session message.
+        /// A `SignalMessage` — an established-session message. Accepted addressed as well as
+        /// sealed: the ratchet MAC verifies only under the session's own keys, so a rewritten
+        /// sender costs a dropped message rather than a misattributed one.
         case whisper = 2
         /// A sealed-sender container: one of the two above, wrapped so that only the
         /// recipient can see which it is and who sent it (P7.S01, AUDIT 3.4).
@@ -313,6 +322,22 @@ public enum EnvelopeError: Error, Equatable, Sendable {
     /// account (see `CryptoEngine.selfIssuedSenderCertificate`); what they cannot do is make
     /// it carry a key they do not hold, or a key that opens somebody else's session.
     case sealedSenderKeyMismatch
+    /// An **addressed** session-establishing frame. Retired (AUDIT 3.8).
+    ///
+    /// This is the one frame whose label nothing can check. On an established session a
+    /// rewritten sender costs the attacker a dropped message, because the ratchet MAC only
+    /// verifies under that session's keys — so addressed `.whisper` is still accepted, and
+    /// nothing in flight on an existing conversation is lost. A **first** message carries its
+    /// own identity key, so any party who can write to the recipient's queue could choose the
+    /// name it arrives under, and the recipient had no way to tell.
+    ///
+    /// No Cipher build has produced one since P7.S01: `CryptoEngine.encrypt` seals every
+    /// frame, and inside a sealed container the same message is bound to the address the
+    /// sender encrypted under, which is what made this refusal affordable. The cost is stated
+    /// rather than hidden: a session-establishing message sent by a build older than P7.S01
+    /// and still pending on the relay is refused, and the receive path treats that as
+    /// permanent and acknowledges it away.
+    case addressedFirstMessageRefused
 }
 
 // MARK: - Fixed-width helpers
