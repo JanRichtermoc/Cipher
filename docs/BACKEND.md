@@ -420,6 +420,19 @@ Rules that make this real rather than aspirational:
 - **Backups inherit this.** A nightly `pg_dump` retained for a month reintroduces every deleted
   message with a delay. Backups cover schema and account rows only — losing undelivered messages in
   a restore is the correct outcome, not a gap to fix.
+  **Made executable by P9.S05, and one word of the sentence above corrected.** The backup set is
+  `accounts` **and `session_tokens`**, not accounts alone: the session token is the only credential
+  path, so an account whose token hash is gone cannot authenticate by any route and its owner would
+  have to redeem a fresh invite and receive a different `aci`. That inclusion has a cost and it is
+  recorded as **AUDIT 4.16** rather than absorbed. Everything else is excluded, each for its own
+  reason — `invites` and `push_tokens` are live or replayable credentials, the one-time prekey pools
+  would be dispensable twice (the forward secrecy of AUDIT 2.6), `signed_prekeys` are republished by
+  the client, and `messages`/`attachments` are the rule above. Excluding the prekey tables costs at
+  most one client rotation interval (48h, `MessageRepository.preKeyRotationInterval`) during which a
+  *new* session cannot start with a restored account; established sessions are unaffected, because
+  the ratchet is on the device. `server/deploy/backup.sh` is an **allow-list** so a table added by a
+  future migration fails closed rather than shipping, and `Scripts/verify-backup-scope.sh` (gate 11)
+  fails if any schema table is classified as neither backed up nor excluded.
 - **Except the provider's, which we do not control.** OVH includes a daily whole-disk snapshot on
   VPS and it **cannot be disabled on this product** — confirmed on the staging box, 2026-07-29. It
   images the Postgres volume and the blob directory, so for up to 24 hours a snapshot holds rows
