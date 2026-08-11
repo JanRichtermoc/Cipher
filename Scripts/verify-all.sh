@@ -406,7 +406,18 @@ step "third-party licences ship with the app (AUDIT 6.2)"
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
 step "module boundary (no libsignal type in the public API)"
-./Scripts/verify-api-boundary.sh || fail "a LibSignalClient type is exposed in CipherCrypto's public API"
+# Two different verdicts, because this message asserts a finding about the code and one of
+# them is not one (AUDIT 6.25). Exit 78 means the gate could not run — it has already said
+# why on stderr — and reporting that as "a type is exposed" sends a reviewer hunting a leak
+# that does not exist. That is what happened on 2026-08-11, when two simulators sharing a
+# name made `-destination name=…` ambiguous.
+boundary_rc=0
+./Scripts/verify-api-boundary.sh || boundary_rc=$?
+case "$boundary_rc" in
+0) ;;
+78) fail "the module-boundary gate could not run — see its message above (AUDIT 6.25)" ;;
+*) fail "a LibSignalClient type is exposed in CipherCrypto's public API" ;;
+esac
 
 # --- 14. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which

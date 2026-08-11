@@ -32,6 +32,34 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
+# CANNOT_RUN separates "the boundary is violated" from "this check never ran" (AUDIT 6.25).
+#
+# Every exit below that means the second one uses it, and verify-all.sh prints a different
+# message for it. The distinction is not cosmetic: the caller's message asserts a finding
+# about the *code*, so an aborted gate accusing CipherCrypto of exposing a libsignal type
+# sends a reviewer looking for a leak that does not exist — which is the failure this
+# script's own header already forbids, arriving through the one path that skipped it.
+readonly CANNOT_RUN=78
+
+cannot_run() {
+  printf '  !     %s\n' "$1" >&2
+  printf '        This gate could not run. That is a failure, not a pass, and it is NOT a\n' >&2
+  printf '        finding about the API boundary (AUDIT 6.25).\n' >&2
+  exit "$CANNOT_RUN"
+}
+
+# show_tail prints the last lines of a captured stderr file, if it has any.
+#
+# The tool's own message is the only thing that says *why*, and this gate used to discard
+# it: `2>/dev/null` on a command substitution, which under `set -e` also aborted the script
+# before the guard written to catch that very case could run. Two duplicate simulators
+# named alike is enough to trigger it, and the operator saw exit 64 and no output at all.
+show_tail() {
+  [ -s "$1" ] || return 0
+  printf '        %s\n' "--- last lines of the tool's own output ---" >&2
+  tail -15 "$1" >&2
+}
+
 SIMULATOR="${CIPHER_TEST_SIMULATOR:-iPhone 17 Pro}"
 OUT="${TMPDIR:-/tmp}/cipher-api-surface.json"
 
@@ -71,6 +99,40 @@ find_built_module() {
   return 1
 }
 
+# --- Self-test: the gate must be able to say "I could not run" ---------------
+#
+# Reintroducing the defect in the *real* script rather than a fixture (AUDIT R5), by naming a
+# simulator that does not exist — which is the same failure a duplicated device name produced
+# on the development machine, and which reaches the identical code path.
+#
+# Two assertions, because either alone passes for the wrong reason: the exit status must be
+# CANNOT_RUN so verify-all can tell this apart from a real leak, **and** stderr must be
+# non-empty, since the whole finding is that this exited 64 saying nothing at all.
+#
+# Guarded against recursion by CIPHER_API_BOUNDARY_SELFTEST, and run before the real check so
+# a gate that has stopped being able to fail is caught even when the boundary itself is fine.
+if [ -z "${CIPHER_API_BOUNDARY_SELFTEST:-}" ]; then
+  probe_rc=0
+  probe_out="$(CIPHER_API_BOUNDARY_SELFTEST=1 \
+    CIPHER_TEST_SIMULATOR="Cipher No Such Simulator" "$0" 2>&1)" || probe_rc=$?
+
+  if [ "$probe_rc" -ne "$CANNOT_RUN" ]; then
+    echo "  !     self-test: an unresolvable simulator exited $probe_rc, want $CANNOT_RUN" >&2
+    echo "        The gate can no longer distinguish 'could not run' from a boundary" >&2
+    echo "        violation, which is AUDIT 6.25 returning." >&2
+    exit 1
+  fi
+  case "$probe_out" in
+  *"could not run"*) ;;
+  *)
+    echo "  !     self-test: the gate exited $CANNOT_RUN without saying why." >&2
+    echo "        Silence is the defect 6.25 records; the message is the fix." >&2
+    exit 1
+    ;;
+  esac
+  echo "  ok    self-test: a gate that cannot run says so, and is distinguishable from a leak"
+fi
+
 BUILT="$(find_built_module || true)"
 
 if [ -z "$BUILT" ]; then
@@ -79,17 +141,13 @@ if [ -z "$BUILT" ]; then
     -destination "platform=iOS Simulator,name=$SIMULATOR,OS=latest" \
     -configuration Debug ${DERIVED_DATA_ARG[@]+"${DERIVED_DATA_ARG[@]}"} \
     >"$BUILD_LOG" 2>&1; then
-    echo "  !     could not build CipherCrypto; last lines of $BUILD_LOG:" >&2
     tail -25 "$BUILD_LOG" >&2
-    exit 1
+    cannot_run "could not build CipherCrypto (full log: $BUILD_LOG)"
   fi
 
   BUILT="$(find_built_module || true)"
-  [ -n "$BUILT" ] || {
-    echo "  !     CipherCrypto built, but no CipherCrypto.framework under $DERIVED_DATA" >&2
-    echo "        This gate cannot run. That is a failure, not a pass." >&2
-    exit 1
-  }
+  [ -n "$BUILT" ] ||
+    cannot_run "CipherCrypto built, but no CipherCrypto.framework under $DERIVED_DATA"
 fi
 
 # The deployment target has to match what the module was built against, or the digester
@@ -100,25 +158,49 @@ fi
 # rather than tolerating it (NSFileHandleOperationException, not a quiet SIGPIPE death), so
 # under `pipefail` a successful read becomes a failed pipeline. The `|| true` this replaced
 # hid that — and would equally have hidden a real failure to read the settings at all.
-SETTINGS="$(xcodebuild -workspace Cipher.xcworkspace -scheme CipherCrypto \
-  -destination "platform=iOS Simulator,name=$SIMULATOR,OS=latest" -showBuildSettings 2>/dev/null)"
+#
+# **Assigned inside `if !`, not bare** (AUDIT 6.25, and R5's "`set -e` turns a bare call into
+# a silent exit"). `SETTINGS="$(xcodebuild …)"` on its own line aborts the whole script the
+# moment xcodebuild exits non-zero, so the TARGET_VERSION guard below — written for exactly
+# this — was unreachable for the likeliest failure. A command that fails inside an `if`
+# condition does not trip `set -e`, so the handler runs. Its stderr is captured rather than
+# discarded, because the tool's own message is the only thing that says which of the many
+# ways this can fail actually happened: two simulators sharing a name makes `-destination
+# name=…` ambiguous and xcodebuild exits 64 saying so.
+TOOL_ERR="$(mktemp)"
+trap 'rm -f "$TOOL_ERR"' EXIT
+
+if ! SETTINGS="$(xcodebuild -workspace Cipher.xcworkspace -scheme CipherCrypto \
+  -destination "platform=iOS Simulator,name=$SIMULATOR,OS=latest" \
+  -showBuildSettings 2>"$TOOL_ERR")"; then
+  show_tail "$TOOL_ERR"
+  cannot_run "xcodebuild -showBuildSettings failed for simulator \"$SIMULATOR\""
+fi
+
 TARGET_VERSION="$(printf '%s\n' "$SETTINGS" |
   awk -F' = ' '/ IPHONEOS_DEPLOYMENT_TARGET /{print $2; exit}')"
-[ -n "$TARGET_VERSION" ] || {
-  echo "  !     could not read IPHONEOS_DEPLOYMENT_TARGET from the build settings" >&2
-  exit 1
-}
+[ -n "$TARGET_VERSION" ] ||
+  cannot_run "could not read IPHONEOS_DEPLOYMENT_TARGET from the build settings"
 
-xcrun swift-api-digester -dump-sdk -module CipherCrypto \
+if ! SDK_PATH="$(xcrun --sdk iphonesimulator --show-sdk-path 2>"$TOOL_ERR")" ||
+  [ -z "$SDK_PATH" ]; then
+  show_tail "$TOOL_ERR"
+  cannot_run "could not resolve the iphonesimulator SDK path"
+fi
+
+# Same treatment: a digester that fails must say so rather than abort into silence, and the
+# emptiness check below only ever caught "ran, produced nothing".
+if ! xcrun swift-api-digester -dump-sdk -module CipherCrypto \
   -target "arm64-apple-ios${TARGET_VERSION}-simulator" \
   -I "$BUILT" -F "$BUILT" \
-  -sdk "$(xcrun --sdk iphonesimulator --show-sdk-path)" \
-  -o "$OUT" 2>/dev/null
+  -sdk "$SDK_PATH" \
+  -o "$OUT" 2>"$TOOL_ERR"; then
+  show_tail "$TOOL_ERR"
+  cannot_run "swift-api-digester failed to dump CipherCrypto's API surface"
+fi
 
-[ -s "$OUT" ] || {
-  echo "  !     the API dump is empty — the check did not run, which is not the same as passing" >&2
-  exit 1
-}
+[ -s "$OUT" ] ||
+  cannot_run "the API dump is empty — the check did not run, which is not the same as passing"
 
 python3 - "$OUT" <<'PY'
 import json, re, sys
@@ -137,7 +219,13 @@ def walk(node):
 
 decls = list(walk(root))
 if not decls:
-    sys.exit("  !     no declarations found — the dump parsed but is empty; check the digester invocation")
+    # 78, matching the shell's CANNOT_RUN: a dump with no declarations is a check that did
+    # not run, and it must not reach the caller as a boundary finding (AUDIT 6.25).
+    print("  !     no declarations found — the dump parsed but is empty; check the digester "
+          "invocation", file=sys.stderr)
+    print("        This gate could not run. That is a failure, not a pass, and it is NOT a\n"
+          "        finding about the API boundary (AUDIT 6.25).", file=sys.stderr)
+    sys.exit(78)
 
 # Anything qualified with the module name is unambiguous. Bare names are not searched for:
 # `PublicKey` and `Direction` are ordinary words and matching them raw produces noise that
