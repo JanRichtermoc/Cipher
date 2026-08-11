@@ -83,7 +83,47 @@ type Bundle struct {
 // discard unused keys on every replenish, which is the opposite of what a client
 // topping up its pool intends — and an accidental "replace" would silently reduce
 // a healthy pool to whatever the last upload contained.
-func (db *DB) PublishPreKeys(ctx context.Context, aci uuid.UUID, up PreKeyUpload) error {
+//
+// # The cumulative pool ceiling (AUDIT 5.40)
+//
+// Because one-time keys are added and nothing removes them except being dispensed
+// or the account being deleted, the two pools had no cumulative bound at all.
+// `MaxPreKeysPerUpload` bounds one request and the publish limit bounds requests
+// at 6/day, which still leaves ≈1,200 Kyber rows a day at up to 4 KiB each —
+// ≈5 MiB/day/account, ≈900 MiB across the 180-day `AccountRetentionDays` window.
+// maxPerPool bounds each one-time pool instead.
+//
+// **The two long-lived keys are always written, whatever the pools hold.** That
+// asymmetry is the point rather than an oversight: the signed prekey and the
+// last-resort Kyber key are what *rotation* replaces (AUDIT 2.4), and refusing a
+// whole publication because a pool was full would stop rotation dead. It would
+// also be a lockout, because the client retries a publication that never
+// succeeded — six attempts a day, forever, with every peer's session setup
+// failing meanwhile. That is AUDIT 5.32's shape and it is worse than the storage
+// this bounds.
+//
+// **What is refused is only the excess, and the caller is told.** Unlike the
+// message-queue ceiling (5.39), silence is not required here and would be
+// harmful: the publisher *is* the owner of the data, so there is no third party
+// to leak a fact about, and `publish` returns the resulting pool counts, which is
+// the number the client already replenishes against. A client at the ceiling
+// reads a full pool and stops asking; a client below it is topped up as before.
+//
+// **Concurrency.** The count and the inserts share one transaction but not one
+// statement, so two publications for the same account racing each other can
+// overshoot by up to one upload each — bounded by `api.MaxPreKeysPerUpload`. The
+// publish rate limit is 6/day/account, so this is a narrow window on a slow path,
+// and closing it exactly would mean locking the account's rows on every publish.
+//
+// A non-positive maxPerPool stores no one-time keys at all while still rotating
+// the long-lived pair. That is the fail-closed direction: an unbounded pool is
+// the finding, so a misconfigured ceiling must not be the way back to it.
+func (db *DB) PublishPreKeys(
+	ctx context.Context,
+	aci uuid.UUID,
+	up PreKeyUpload,
+	maxPerPool int,
+) error {
 	tx, err := db.pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("publish prekeys: begin: %w", err)
@@ -122,30 +162,76 @@ func (db *DB) PublishPreKeys(ctx context.Context, aci uuid.UUID, up PreKeyUpload
 		return fmt.Errorf("publish last-resort kyber prekey: %w", err)
 	}
 
+	// Room is measured once per pool, before either loop, and the pools are
+	// measured separately because they fill separately: a client can be short of
+	// Kyber keys while its curve pool is untouched, and one shared allowance would
+	// let whichever list came first consume the other's.
+	kyberRoom, err := poolRoom(ctx, tx,
+		`SELECT count(*) FROM kyber_prekeys WHERE aci = $1 AND NOT last_resort`,
+		aci, maxPerPool)
+	if err != nil {
+		return fmt.Errorf("publish kyber prekey: %w", err)
+	}
 	for _, k := range up.KyberOneTime {
-		if _, err := tx.Exec(ctx,
+		if kyberRoom <= 0 {
+			break
+		}
+		tag, err := tx.Exec(ctx,
 			`INSERT INTO kyber_prekeys (aci, key_id, public_key, signature, last_resort)
 			 VALUES ($1, $2, $3, $4, false)
 			 ON CONFLICT (aci, key_id) DO NOTHING`,
-			aci, k.KeyID, k.PublicKey, k.Signature); err != nil {
+			aci, k.KeyID, k.PublicKey, k.Signature)
+		if err != nil {
 			return fmt.Errorf("publish kyber prekey: %w", err)
 		}
+		// Only a row that was actually written spends the allowance. A key_id the
+		// pool already holds inserts nothing, and charging for it would shrink the
+		// pool a retried publication can reach.
+		kyberRoom -= int(tag.RowsAffected())
 	}
 
+	curveRoom, err := poolRoom(ctx, tx,
+		`SELECT count(*) FROM one_time_prekeys WHERE aci = $1`, aci, maxPerPool)
+	if err != nil {
+		return fmt.Errorf("publish one-time prekey: %w", err)
+	}
 	for _, k := range up.OneTimePreKeys {
-		if _, err := tx.Exec(ctx,
+		if curveRoom <= 0 {
+			break
+		}
+		tag, err := tx.Exec(ctx,
 			`INSERT INTO one_time_prekeys (aci, key_id, public_key)
 			 VALUES ($1, $2, $3)
 			 ON CONFLICT (aci, key_id) DO NOTHING`,
-			aci, k.KeyID, k.PublicKey); err != nil {
+			aci, k.KeyID, k.PublicKey)
+		if err != nil {
 			return fmt.Errorf("publish one-time prekey: %w", err)
 		}
+		curveRoom -= int(tag.RowsAffected())
 	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return fmt.Errorf("publish prekeys: commit: %w", err)
 	}
 	return nil
+}
+
+// poolRoom reports how many more rows a one-time pool may accept.
+//
+// Never negative: a pool already over its ceiling — which a lowered ceiling
+// produces, and which is the only way to get there — accepts nothing further and
+// drains normally as its keys are dispensed. Nothing deletes the excess, because
+// deleting a published key costs a peer the session it was about to establish,
+// and the pool is bounded again the moment it falls back under the line.
+func poolRoom(ctx context.Context, tx pgx.Tx, countQuery string, aci uuid.UUID, ceiling int) (int, error) {
+	var held int
+	if err := tx.QueryRow(ctx, countQuery, aci).Scan(&held); err != nil {
+		return 0, err
+	}
+	if room := ceiling - held; room > 0 {
+		return room, nil
+	}
+	return 0, nil
 }
 
 // DispenseBundle serves one bundle and consumes the keys it used.

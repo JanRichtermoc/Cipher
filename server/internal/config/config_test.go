@@ -83,6 +83,12 @@ func TestLoadDefaults(t *testing.T) {
 		t.Errorf("MaxPendingBytes = %d with the variable unset, want 0 (the sentinel)",
 			cfg.MaxPendingBytes)
 	}
+	// Same sentinel, same reason (AUDIT 5.40): api.WithPreKeyCeiling reads a
+	// non-positive value as "keep the default", never as "no ceiling".
+	if cfg.MaxPreKeysPerAccount != 0 {
+		t.Errorf("MaxPreKeysPerAccount = %d with the variable unset, want 0 (the sentinel)",
+			cfg.MaxPreKeysPerAccount)
+	}
 }
 
 func TestLoadRejectsNonPositivePendingCeiling(t *testing.T) {
@@ -98,6 +104,34 @@ func TestLoadRejectsNonPositivePendingCeiling(t *testing.T) {
 				t.Fatalf("Load() accepted RELAY_MAX_PENDING_BYTES=%s", bad)
 			}
 		})
+	}
+}
+
+func TestLoadRejectsNonPositivePreKeyCeiling(t *testing.T) {
+	// A pool with no cumulative bound is the finding AUDIT 5.40 closes. Reaching
+	// that state through the environment must stop startup, not be honoured.
+	for _, bad := range []string{"0", "-1"} {
+		t.Run(bad, func(t *testing.T) {
+			setEnv(t)
+			t.Setenv("RELAY_MAX_PREKEYS_PER_ACCOUNT", bad)
+
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load() accepted RELAY_MAX_PREKEYS_PER_ACCOUNT=%s", bad)
+			}
+		})
+	}
+}
+
+func TestPreKeyCeilingIsConfigurable(t *testing.T) {
+	setEnv(t)
+	t.Setenv("RELAY_MAX_PREKEYS_PER_ACCOUNT", "250")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MaxPreKeysPerAccount != 250 {
+		t.Errorf("MaxPreKeysPerAccount = %d, want 250", cfg.MaxPreKeysPerAccount)
 	}
 }
 

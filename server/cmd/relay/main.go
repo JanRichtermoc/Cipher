@@ -240,7 +240,12 @@ func run() error {
 	authHandler := api.NewAuthHandler(db, limiter, log)
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
-	api.NewKeysHandler(db, authHandler, log).Routes(mux)
+	// The cumulative one-time prekey pool ceiling (AUDIT 5.40). Passed
+	// unconditionally: unset arrives as 0 and WithPreKeyCeiling holds any
+	// non-positive value at the default, so no path here builds a relay whose
+	// pools are unbounded.
+	api.NewKeysHandler(db, authHandler, log,
+		api.WithPreKeyCeiling(int(cfg.MaxPreKeysPerAccount))).Routes(mux)
 	// The per-recipient pending-byte ceiling (AUDIT 5.39). Passed
 	// unconditionally: an unset RELAY_MAX_PENDING_BYTES arrives as 0 and
 	// WithPendingCeiling keeps the default for any non-positive value, so there
