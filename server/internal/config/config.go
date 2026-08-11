@@ -87,6 +87,20 @@ type Config struct {
 	// no quota" is quoted by 5.39's own row.
 	MaxPendingBytes int64
 
+	// MaxPreKeysPerAccount caps each of an account's two one-time prekey pools
+	// (AUDIT 5.40, docs/BACKEND.md §5).
+	//
+	// **Zero means "not configured", not "no ceiling"** — the same sentinel as
+	// MaxPendingBytes above, read by `api.WithPreKeyCeiling`, which holds any
+	// non-positive value at `api.DefaultMaxPreKeysPerAccount`. An explicitly
+	// non-positive value is a startup error, because a pool with no cumulative
+	// bound is the finding this closes.
+	//
+	// A count rather than a byte size: the two pools hold rows of very different
+	// widths (an ML-KEM public key against a Curve25519 one), and the thing worth
+	// bounding is how many unused keys an account may leave lying on the relay.
+	MaxPreKeysPerAccount int64
+
 	// RateLimitPepper keys the rate limiter's subject hashes (ratelimit.Subject).
 	//
 	// **Optional, and both settings are a real trade-off rather than one being
@@ -235,7 +249,10 @@ func Load() (Config, error) {
 		return []byte(raw)
 	}
 
-	bytesLimit := func(key string, fallback int64) int64 {
+	// Renamed from bytesLimit when a second caller made that name wrong: the
+	// validation is "a positive integer", and one of the values it now parses is
+	// a row count rather than a size.
+	positiveInt := func(key string, fallback int64) int64 {
 		raw := strings.TrimSpace(os.Getenv(key))
 		if raw == "" {
 			return fallback
@@ -272,11 +289,12 @@ func Load() (Config, error) {
 		IdleTimeout:       duration("RELAY_IDLE_TIMEOUT", 60*time.Second),
 		ShutdownGrace:     duration("RELAY_SHUTDOWN_GRACE", 15*time.Second),
 
-		MaxRequestBytes: bytesLimit("RELAY_MAX_REQUEST_BYTES", 128*1024),
+		MaxRequestBytes: positiveInt("RELAY_MAX_REQUEST_BYTES", 128*1024),
 
 		// Fallback 0, which is the sentinel for "unset" documented on the field:
 		// the default number itself lives with its argument in api, not here.
-		MaxPendingBytes: bytesLimit("RELAY_MAX_PENDING_BYTES", 0),
+		MaxPendingBytes:      positiveInt("RELAY_MAX_PENDING_BYTES", 0),
+		MaxPreKeysPerAccount: positiveInt("RELAY_MAX_PREKEYS_PER_ACCOUNT", 0),
 
 		// 32 characters, matching the 32 random bytes the fallback generates.
 		RateLimitPepper: secret("RELAY_RATELIMIT_PEPPER", 32),

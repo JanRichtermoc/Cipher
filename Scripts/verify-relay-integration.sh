@@ -39,7 +39,10 @@ SERVER="$REPO_ROOT/server"
 # take the suite to 144. Same eight-test margin as the line above it, kept deliberately:
 # the margin is what stops an unrelated test being deleted from failing this gate for the
 # wrong reason, and letting it grow is how the previous drift started.
-MIN_INTEGRATION_TESTS=136
+#
+# Raised from 136 to 140 on 2026-08-11 with AUDIT 5.40's four prekey-pool tests, which take
+# the suite to 148. Same eight-test margin again.
+MIN_INTEGRATION_TESTS=140
 
 # A floor is not enough on its own, and that gap is AUDIT 6.14: the count says how
 # many tests ran, never which. A rename, a build-tag mistake in one file, or a
@@ -117,6 +120,15 @@ REQUIRED_INTEGRATION_TESTS=(
   # deliberately not here: losing either is a coverage loss, not a control.
   TestAPendingQueueStopsGrowingAtItsCeiling
   TestAQueueAtItsCeilingIsIndistinguishableFromAnEmptyOne
+  # The cumulative prekey-pool ceiling (AUDIT 5.40). Two names again, for the two
+  # properties whose loss is a security regression: the ceiling existing at all —
+  # nothing else in the suite would notice a pool going back to unbounded, since
+  # no read path cares how many keys an account holds — and a full pool still
+  # rotating the two long-lived keys, whose loss is a publication lockout on a
+  # route capped at six attempts a day (AUDIT 5.32's shape) and a signed prekey
+  # that stops rotating (AUDIT 2.4).
+  TestAPreKeyPoolStopsGrowingAtItsCeiling
+  TestAFullPoolStillRotatesTheLongLivedKeys
 )
 
 # A host port distinct from the development stack's 8080, so running this never

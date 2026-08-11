@@ -157,6 +157,14 @@ about anyone. It means a failing send looks identical to a working one while you
 `store.CountPendingMessages` or `store.PendingBytes` against the database rather than the API, which
 is what the integration tests do. `docs/BACKEND.md` §5 owns the reasoning and the number.
 
+**A publication can return `200` having stored fewer keys than you sent.** Each one-time prekey pool
+is capped at `RELAY_MAX_PREKEYS_PER_ACCOUNT` (1000 by default, AUDIT 5.40), and keys over the cap are
+dropped from the upload rather than the upload being refused — because the signed prekey and the
+last-resort Kyber key in the same request are what *rotation* replaces, and refusing them would lock
+an account out of publishing on a route capped at six attempts a day. The response reports the
+resulting pool sizes, which is how a client at the ceiling notices. `docs/BACKEND.md` §5 owns the
+reasoning.
+
 **The Postgres volume mounts `/var/lib/postgresql`, not `/var/lib/postgresql/data`.** Postgres 18
 changed this: data now lives in a major-version subdirectory so `pg_upgrade --link` works without
 crossing a mount boundary, and the image *refuses to start* if it finds data at the old path — which

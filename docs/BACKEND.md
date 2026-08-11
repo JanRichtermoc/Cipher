@@ -208,6 +208,10 @@ no `revoked` column for the same reason there is no `used` column on invites.
 that is what "one-time" means, and doing it transactionally is what stops a concurrent fetch from
 handing the same prekey to two peers.
 
+**Rows are added, never replaced, so the pool needs a cumulative ceiling of its own** — one per pool
+per account, enforced at publish time rather than by a constraint here (§5, AUDIT 5.40). There is no
+quota column for the same reason `messages` has none: the count is measured from the rows.
+
 ### 2.5 `signed_prekeys`
 
 | Column | Type | Why it exists | What a seizure learns |
@@ -442,7 +446,7 @@ Token-bucket in Redis. Keyed by session token hash where authenticated, by sourc
 | `POST /v1/invite/redeem` | 5 / hour / IP, then exponential backoff | Brute-forcing a 128-bit code is infeasible, but an unthrottled endpoint is still a free oracle and an amplifier |
 | `POST /v1/invite` | 3 / day / account | Bounds circle growth. Replaces the `created_by` column the design refuses to store |
 | **`GET /v1/keys/{aci}`** | **10 / hour / account, 30 / day / account** | **Load-bearing. See below.** |
-| `PUT /v1/keys` | 6 / day / account | Prekey churn has no legitimate reason to be frequent |
+| `PUT /v1/keys` | 6 / day / account, **and 1,000 stored keys per pool per account** | Prekey churn has no legitimate reason to be frequent. The rate bounds publications; the ceiling bounds what they leave behind, since one-time keys are added and never expire (AUDIT 5.40). See below |
 | `POST /v1/messages` | 60 / minute / account, **and 32 MiB pending per recipient** | Flood control. The rate limit bounds one sender per minute; the ceiling bounds what any number of them can leave sitting on the disk (AUDIT 5.39). See below |
 | `GET /v1/messages` | 120 / minute / account | Polling |
 | `POST /v1/messages/ack` | 120 / minute / account | Each call is a `DELETE … id = ANY($2)` with up to 200 ids. **Added after it was found unthrottled** (AUDIT 5.23) |
@@ -571,6 +575,47 @@ Three details that are decisions rather than accidents:
    index would put envelope bytes in a second structure inside the table a seizure is after.
    An unset variable means the default; an explicitly zero or negative one stops startup, because a
    configuration that can recreate "no quota at all" is the same finding.
+
+### The prekey pool ceiling, and why it clips instead of refusing
+
+One-time prekeys are **added**, not replaced (§2.4), and nothing removes one except dispensing it or
+deleting the account. So `MaxPreKeysPerUpload` bounded a request while storage per account was
+bounded by nothing: 6 publications a day of 200 keys each is 1,200 Kyber rows a day at up to 4 KiB,
+≈5 MiB/day/account, ≈900 MiB across the 180-day account-retention window — for keys nobody would
+ever fetch (AUDIT 5.40). `CountOneTimePreKeys` existed but was only ever read to build the publish
+*response*, never as a cap.
+
+`RELAY_MAX_PREKEYS_PER_ACCOUNT` caps **each** one-time pool, defaulting to **1,000**
+(`api.DefaultMaxPreKeysPerAccount`). The two pools are counted separately, because they fill
+separately and one shared allowance would let whichever list is stored first starve the other — and
+if the Kyber pool is the one starved, every new session falls back to the reused last-resort key,
+which is the cost §2.6 and AUDIT 3.1 are about.
+
+**It refuses nothing an honest client sends, by that client's own arithmetic.** The shipped client
+publishes 100 per pool and thereafter tops up *only the shortfall*
+(`MessageRepository.rotateKeysIfDue`: `topUp = max(0, min(target - effectivePool, target))`), so a
+rotation against a full pool publishes **zero** one-time keys and replaces only the two long-lived
+ones. The server-side pool converges on 100 per kind rather than accumulating, and the ceiling sits
+ten times above that.
+
+**The excess is clipped; the publication is never refused.** This is the opposite choice from the
+message ceiling (§5, AUDIT 5.39) and for opposite reasons:
+
+- **Refusing the whole publication would stop rotation.** The signed prekey and the last-resort
+  Kyber key are what rotation replaces (AUDIT 2.4), so they are written **before** the ceiling is
+  consulted and are stored whatever the pools hold.
+- **It would also be a lockout.** The client retries a publication that never succeeded, six times a
+  day, forever, while every peer's session setup fails against a stale bundle. That is AUDIT 5.32's
+  shape, and it is worse than the storage this bounds.
+- **Silence is not required here and would be wrong.** The publisher owns the data, so there is no
+  third party to leak a fact about — unlike 5.39, where telling the sender would be an oracle about
+  the recipient. The response already carries the resulting pool counts, which is the number the
+  client replenishes against, so a client at the ceiling reads a full pool and stops asking.
+
+A pool already **over** its ceiling — which only a lowered ceiling can produce — accepts nothing
+further and drains normally as keys are dispensed. Nothing deletes the excess: deleting a published
+key costs a peer the session it was about to establish, and the pool is bounded again as soon as it
+falls back under the line.
 
 ### The subject pepper survives a restart only if you configure it
 

@@ -36,6 +36,18 @@ import (
 
 func keysStack(t *testing.T) (http.Handler, *store.DB, *api.AuthHandler) {
 	t.Helper()
+	return keysStackWithCeiling(t, api.DefaultMaxPreKeysPerAccount)
+}
+
+// keysStackWithCeiling is keysStack with an explicit per-account one-time pool
+// ceiling (AUDIT 5.40).
+//
+// The production ceiling is 1,000 per pool and MaxPreKeysPerUpload is 200, so
+// reaching it honestly costs five publications against a limit of six a day — a
+// test that did it would be measuring the rate limiter as much as the ceiling.
+// A small ceiling measures the mechanism instead.
+func keysStackWithCeiling(t *testing.T, maxPerPool int) (http.Handler, *store.DB, *api.AuthHandler) {
+	t.Helper()
 	db := testDB(t)
 	limiter := testLimiter(t)
 	log := logging.New(io.Discard, slog.LevelError)
@@ -44,7 +56,7 @@ func keysStack(t *testing.T) (http.Handler, *store.DB, *api.AuthHandler) {
 	mux := http.NewServeMux()
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
-	api.NewKeysHandler(db, authHandler, log).Routes(mux)
+	api.NewKeysHandler(db, authHandler, log, api.WithPreKeyCeiling(maxPerPool)).Routes(mux)
 	return mux, db, authHandler
 }
 
@@ -100,6 +112,219 @@ func uploadBodyPools(curveCount, kyberCount int, withKyber bool) io.Reader {
 
 	raw, _ := json.Marshal(body)
 	return strings.NewReader(string(raw))
+}
+
+// poolUpload builds a publish request with explicit ids.
+//
+// uploadBodyPools numbers its keys from a fixed base, so publishing it twice
+// sends the *same* ids and `ON CONFLICT DO NOTHING` stores nothing the second
+// time — which would make a pool look bounded when nothing was bounding it. Any
+// test about accumulation has to mint fresh ids, and rotation tests need to name
+// the two long-lived ids to see them change.
+func poolUpload(curveCount, kyberCount, idBase, signedID, lastResortID int) io.Reader {
+	body := map[string]any{
+		"signed_prekey": map[string]any{
+			"key_id": signedID, "public_key": b64(33, 0x05), "signature": b64(64, 0xAA),
+		},
+		"kyber_last_resort": map[string]any{
+			"key_id": lastResortID, "public_key": b64(1568, 0x08), "signature": b64(64, 0xBB),
+		},
+	}
+
+	var onetime []map[string]any
+	for i := range curveCount {
+		onetime = append(onetime, map[string]any{
+			"key_id": idBase + i, "public_key": b64(33, byte(i%251)),
+		})
+	}
+	body["one_time_prekeys"] = onetime
+
+	var kyberOneTime []map[string]any
+	for i := range kyberCount {
+		kyberOneTime = append(kyberOneTime, map[string]any{
+			"key_id": idBase + 5000 + i, "public_key": b64(1568, byte(i%251)),
+			"signature": b64(64, 0xCC),
+		})
+	}
+	body["kyber_prekeys"] = kyberOneTime
+
+	raw, _ := json.Marshal(body)
+	return strings.NewReader(string(raw))
+}
+
+// publishedCounts is the pool sizes the relay reports back to the owner.
+type publishedCounts struct {
+	OneTimePreKeys int `json:"one_time_prekeys"`
+	KyberPreKeys   int `json:"kyber_prekeys"`
+}
+
+func publishPool(t *testing.T, h http.Handler, token, from string, body io.Reader) publishedCounts {
+	t.Helper()
+	rec := do(h, http.MethodPut, "/v1/keys", token, from, body)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("publish: status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got publishedCounts
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode publish response: %v", err)
+	}
+	return got
+}
+
+func fetchBundle(t *testing.T, h http.Handler, token, from string, target uuid.UUID) map[string]any {
+	t.Helper()
+	rec := do(h, http.MethodGet, "/v1/keys/"+target.String(), token, from, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("fetch bundle: status %d: %s", rec.Code, rec.Body.String())
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode bundle: %v", err)
+	}
+	return got
+}
+
+// --- AUDIT 5.40: the cumulative one-time pool ceiling ----------------------
+
+func TestAPreKeyPoolStopsGrowingAtItsCeiling(t *testing.T) {
+	// One-time keys are ADDED and nothing removes them except being dispensed or
+	// the account being deleted, so MaxPreKeysPerUpload bounded a request while
+	// storage per account was bounded by nothing: 6 publications a day of 200 keys
+	// accumulated ≈5 MiB/day/account of ML-KEM rows nobody would ever fetch.
+	ctx := context.Background()
+	h, db, _ := keysStackWithCeiling(t, 5)
+	aci, token := enrol(t, h, db, "198.51.100.200")
+
+	// Fresh ids each time. Republishing the same ids conflicts and stores nothing,
+	// which would look like a ceiling that is not there.
+	first := publishPool(t, h, token, "198.51.100.200", poolUpload(3, 3, 1000, 1, 1))
+	if first.OneTimePreKeys != 3 || first.KyberPreKeys != 3 {
+		t.Fatalf("after the first publication: curve %d, kyber %d, want 3 and 3",
+			first.OneTimePreKeys, first.KyberPreKeys)
+	}
+
+	// Four more of each against a ceiling of five: two of each fit.
+	second := publishPool(t, h, token, "198.51.100.200", poolUpload(4, 4, 2000, 1, 1))
+	if second.OneTimePreKeys != 5 || second.KyberPreKeys != 5 {
+		t.Fatalf("after the second publication: curve %d, kyber %d, want 5 and 5 — "+
+			"the pools grew past their ceiling", second.OneTimePreKeys, second.KyberPreKeys)
+	}
+
+	// The response is the owner's feedback channel, so it has to agree with the
+	// database rather than merely look right.
+	curve, err := db.CountOneTimePreKeys(ctx, aci)
+	if err != nil {
+		t.Fatalf("count curve: %v", err)
+	}
+	kyber, err := db.CountKyberOneTimePreKeys(ctx, aci)
+	if err != nil {
+		t.Fatalf("count kyber: %v", err)
+	}
+	if curve != 5 || kyber != 5 {
+		t.Fatalf("stored curve %d, kyber %d, want 5 and 5", curve, kyber)
+	}
+}
+
+func TestAFullPoolStillRotatesTheLongLivedKeys(t *testing.T) {
+	// The property that makes the ceiling safe to have at all. Refusing a whole
+	// publication because a pool was full would stop rotation (AUDIT 2.4) and
+	// would be a lockout: the client retries a publication that never succeeded,
+	// six times a day, while every peer's session setup fails. That is AUDIT
+	// 5.32's shape. So the ceiling clips the one-time lists and never the signed
+	// prekey or the last-resort Kyber key.
+	//
+	// A ceiling of one, because the last-resort key is only observable in a bundle
+	// once the one-time Kyber pool is empty — and the curve pool has no fallback,
+	// so each fetch needs a curve key present.
+	h, db, _ := keysStackWithCeiling(t, 1)
+	owner, ownerToken := enrol(t, h, db, "198.51.100.201")
+	_, peerToken := enrol(t, h, db, "198.51.100.202")
+
+	publishPool(t, h, ownerToken, "198.51.100.201", poolUpload(1, 1, 1000, 1, 1))
+
+	// Both pools are now full. This publication's one-time keys are all clipped,
+	// and its long-lived keys must land anyway.
+	full := publishPool(t, h, ownerToken, "198.51.100.201", poolUpload(1, 1, 2000, 7, 7))
+	if full.OneTimePreKeys != 1 || full.KyberPreKeys != 1 {
+		t.Fatalf("pools are curve %d, kyber %d against a ceiling of 1",
+			full.OneTimePreKeys, full.KyberPreKeys)
+	}
+
+	bundle := fetchBundle(t, h, peerToken, "198.51.100.202", owner)
+	if got := bundle["signed_prekey_id"]; got != float64(7) {
+		t.Fatalf("signed_prekey_id is %v, want 7 — a full pool blocked the rotation "+
+			"of a long-lived key (AUDIT 5.40)", got)
+	}
+
+	// That fetch consumed the one-time key from each pool, so the next bundle must
+	// fall back to the last-resort Kyber key — which is how its id becomes visible.
+	// One curve key is published so the fetch can be served at all.
+	publishPool(t, h, ownerToken, "198.51.100.201", poolUpload(1, 0, 3000, 9, 9))
+
+	bundle = fetchBundle(t, h, peerToken, "198.51.100.202", owner)
+	if got := bundle["signed_prekey_id"]; got != float64(9) {
+		t.Fatalf("signed_prekey_id is %v, want 9", got)
+	}
+	if got := bundle["kyber_prekey_id"]; got != float64(9) {
+		t.Fatalf("kyber_prekey_id is %v, want the rotated last-resort id 9 — the "+
+			"last-resort key did not rotate", got)
+	}
+}
+
+func TestDispensingMakesRoomUnderThePreKeyCeiling(t *testing.T) {
+	// The ceiling is a live count of what is held, not a tally that only rises. A
+	// pool that could never refill after being drained would hand an attacker a
+	// permanent version of the AUDIT 3.1 drain instead of a temporary one.
+	h, db, _ := keysStackWithCeiling(t, 2)
+	owner, ownerToken := enrol(t, h, db, "198.51.100.203")
+	_, peerToken := enrol(t, h, db, "198.51.100.204")
+
+	publishPool(t, h, ownerToken, "198.51.100.203", poolUpload(2, 2, 1000, 1, 1))
+	fetchBundle(t, h, peerToken, "198.51.100.204", owner) // consumes one of each
+
+	after := publishPool(t, h, ownerToken, "198.51.100.203", poolUpload(2, 2, 2000, 1, 1))
+	if after.OneTimePreKeys != 2 || after.KyberPreKeys != 2 {
+		t.Fatalf("curve %d, kyber %d after refilling a drained pool, want 2 and 2 — "+
+			"dispensing did not return the allowance", after.OneTimePreKeys, after.KyberPreKeys)
+	}
+}
+
+func TestThePreKeyPoolsAreCountedSeparately(t *testing.T) {
+	// One shared allowance would let whichever list is stored first consume the
+	// other's, so an account with one full pool could never top up the other —
+	// and if the Kyber pool is the one starved, every new session falls back to
+	// the reused last-resort key, which is the exact cost AUDIT 3.1 is about.
+	//
+	// **Both directions, on separate accounts.** The first version of this test
+	// filled the curve pool and checked the Kyber pool, which is the direction the
+	// code does not store first — so a deliberately shared allowance passed it.
+	// The defect was caught only because the negative test was actually run, which
+	// is AUDIT R2 in miniature. A test written against one order stops testing
+	// anything the day the loops are swapped.
+	h, db, _ := keysStackWithCeiling(t, 3)
+
+	for _, tc := range []struct {
+		name              string
+		from              string
+		curveFirst        int
+		kyberFirst        int
+		wantCurve, wantKy int
+	}{
+		{"kyber pool filled first", "198.51.100.205", 0, 3, 3, 3},
+		{"curve pool filled first", "198.51.100.206", 3, 0, 3, 3},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, token := enrol(t, h, db, tc.from)
+			publishPool(t, h, token, tc.from, poolUpload(tc.curveFirst, tc.kyberFirst, 1000, 1, 1))
+			both := publishPool(t, h, token, tc.from, poolUpload(3, 3, 2000, 1, 1))
+
+			if both.OneTimePreKeys != tc.wantCurve || both.KyberPreKeys != tc.wantKy {
+				t.Fatalf("curve %d, kyber %d, want %d and %d — one pool consumed the "+
+					"other's allowance", both.OneTimePreKeys, both.KyberPreKeys,
+					tc.wantCurve, tc.wantKy)
+			}
+		})
+	}
 }
 
 // enrolWithKeys creates an account and publishes a pool of `count` prekeys.

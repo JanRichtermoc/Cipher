@@ -31,9 +31,16 @@ const (
 	minSignatureLen  = 32
 	maxSignatureLen  = 128
 
-	// MaxPreKeysPerUpload caps one request. Storage per account is otherwise
-	// unbounded by anything except the body limit, and an account uploading
-	// hundreds of thousands of prekeys is not replenishing a pool.
+	// MaxPreKeysPerUpload caps one request, and only one request: an account
+	// uploading hundreds of thousands of prekeys is not replenishing a pool.
+	//
+	// **It is not the storage bound, and reading it as one was AUDIT 5.40.** This
+	// comment used to say storage was "otherwise unbounded by anything except the
+	// body limit", which is true per request and is exactly the sentence a
+	// reviewer would take as covering the whole question. It does not: one-time
+	// keys are *added* and nothing removes them except dispensing or account
+	// deletion, so six uploads a day accumulated without limit. The cumulative
+	// bound is DefaultMaxPreKeysPerAccount below.
 	//
 	// Exported because it is the published contract (docs/BACKEND.md §2.4/§2.6)
 	// and because MaxPublishBytes must be provably large enough for a request
@@ -131,16 +138,82 @@ var (
 	publishLimit    = ratelimit.Limit{Capacity: 6, Window: 24 * time.Hour}
 )
 
+// DefaultMaxPreKeysPerAccount is the cumulative ceiling on each of an account's
+// two one-time pools (AUDIT 5.40, docs/BACKEND.md §5). 1,000, and the number is
+// argued rather than round.
+//
+// **What it costs an honest client: nothing, by its own arithmetic.** The shipped
+// client publishes `CryptoEngine.defaultOneTimePreKeyCount` — 100 — and then
+// replenishes only the *shortfall*: `topUp = max(0, min(target - effectivePool,
+// target))`, computed against the lower of the relay's reported count and its own
+// local count. A rotation against a full pool therefore publishes **zero**
+// one-time keys and replaces only the two long-lived ones. The server-side pool
+// converges on 100 per kind and does not accumulate across rotations, so this
+// ceiling sits ten times above the steady state a real installation reaches.
+//
+// **What it costs a hostile account: the accumulation.** `MaxPreKeysPerUpload` is
+// 200 and publication is capped at 6/day, so an account could add 1,200 Kyber
+// rows a day at up to `maxKyberKeyBytes` each — ≈5 MiB/day, ≈900 MiB across the
+// 180-day account-retention window, per account, for keys nobody will ever fetch.
+// Bounded here at ≈4 MiB of Kyber rows and ≈64 KiB of curve rows per account,
+// worst case, against a 40 GB disk shared with the message table that AUDIT 5.39
+// bounds.
+//
+// The pools are counted separately rather than sharing one allowance: they fill
+// separately, and a shared budget would let whichever list arrived first consume
+// the other's.
+const DefaultMaxPreKeysPerAccount = 1000
+
 // KeysHandler serves the prekey directory.
 type KeysHandler struct {
 	db   *store.DB
 	auth *AuthHandler
 	log  *slog.Logger
+
+	// maxPreKeysPerAccount bounds each one-time pool (AUDIT 5.40). Never zero:
+	// the constructor holds any non-positive value at the default, because a
+	// ceiling that can be switched off by configuration is the finding again.
+	maxPreKeysPerAccount int
+}
+
+// KeysOption configures the handler.
+//
+// Variadic for the same reason store.Open is: seven of the eight call sites want
+// the default and should not have to name it, and a number repeated at every
+// construction is a number that drifts.
+type KeysOption func(*KeysHandler)
+
+// WithPreKeyCeiling overrides the per-account one-time pool ceiling.
+//
+// A non-positive value keeps the default rather than removing the ceiling.
+// `config.Load` reports 0 for an unset RELAY_MAX_PREKEYS_PER_ACCOUNT and refuses
+// an explicit non-positive one, so `main` can pass it unconditionally.
+func WithPreKeyCeiling(n int) KeysOption {
+	return func(h *KeysHandler) {
+		if n <= 0 {
+			return
+		}
+		h.maxPreKeysPerAccount = n
+	}
 }
 
 // NewKeysHandler builds the handler.
-func NewKeysHandler(db *store.DB, authHandler *AuthHandler, log *slog.Logger) *KeysHandler {
-	return &KeysHandler{db: db, auth: authHandler, log: log}
+func NewKeysHandler(
+	db *store.DB,
+	authHandler *AuthHandler,
+	log *slog.Logger,
+	opts ...KeysOption,
+) *KeysHandler {
+	h := &KeysHandler{
+		db:                   db,
+		auth:                 authHandler,
+		log:                  log,
+		maxPreKeysPerAccount: DefaultMaxPreKeysPerAccount,
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // Routes registers the endpoints. **Both require authentication.**
@@ -315,7 +388,11 @@ func (h *KeysHandler) publish(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := h.db.PublishPreKeys(ctx, aci, upload); err != nil {
+	// The ceiling clips the one-time pools and never the two long-lived keys, so
+	// a full pool cannot block rotation (AUDIT 5.40, store.PublishPreKeys). The
+	// response below reports the resulting counts, which is how a client at the
+	// ceiling learns it has one and stops asking for more.
+	if err := h.db.PublishPreKeys(ctx, aci, upload, h.maxPreKeysPerAccount); err != nil {
 		h.log.ErrorContext(ctx, "publish prekeys failed", slog.String("reason", err.Error()))
 		httpx.WriteError(w, http.StatusInternalServerError)
 		return
