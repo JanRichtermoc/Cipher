@@ -37,6 +37,33 @@ const maxFetchBatch = 100
 // can always acknowledge everything it was just given.
 const maxAckBatch = 200
 
+// DefaultMaxPendingBytes is the per-recipient ceiling on undelivered envelope
+// bytes (AUDIT 5.39, docs/BACKEND.md §5). 32 MiB, and the number is argued
+// rather than round.
+//
+// **What it costs an honest recipient: nothing reachable.** A short message pads
+// to the 256-byte plaintext bucket (MessagePadding) and travels in a ~350-byte
+// sealed-sender container, so a typical envelope is around 700 bytes — 32 MiB is
+// roughly 48,000 of them, or about 510 at the largest legal size of
+// store.MaxEnvelopeBytes. To reach it, a recipient must stay offline while ~1,600
+// messages a day are addressed to them, every day, for the whole 30-day TTL: ten
+// peers each sending 160 messages into a silence. Acknowledgement deletes, so an
+// online recipient's queue sits near zero and never approaches this.
+//
+// **What it costs a hostile sender: the attack.** The send limit is 60/minute
+// against a 65,567-byte maximum, so one account could write ≈3.75 MiB/minute,
+// ≈5.3 GiB/day, retained 30 days — against a 40 GB disk, and a full disk is what
+// stops the retention sweep, the highest-value control in the design. The same
+// account now fills one recipient's ceiling in under nine minutes and is then
+// refused. Total undelivered storage becomes 32 MiB × accounts: ≈640 MiB for a
+// twenty-member circle, where the honest queue is a rounding error.
+//
+// It does **not** bound what the recipient's *device* must do: a queue at the
+// ceiling is still ~48,000 envelopes to fetch and decrypt, and blocking is
+// client-side and happens after decryption. The ceiling bounds the relay's disk
+// and, with it, the drain — it does not make a flood free to receive.
+const DefaultMaxPendingBytes int64 = 32 << 20
+
 var (
 	sendLimit  = ratelimit.Limit{Capacity: 60, Window: time.Minute}
 	fetchLimit = ratelimit.Limit{Capacity: 120, Window: time.Minute}
@@ -62,11 +89,55 @@ type MessagesHandler struct {
 	auth *AuthHandler
 	log  *slog.Logger
 	ttl  time.Duration
+
+	// maxPendingBytes is the per-recipient ceiling passed to every enqueue
+	// (AUDIT 5.39). Never zero: the constructor refuses a non-positive value
+	// back to DefaultMaxPendingBytes, because zero would refuse all mail and
+	// "unset" must not be able to mean either that or no ceiling at all.
+	maxPendingBytes int64
+}
+
+// MessagesOption configures the handler.
+//
+// Variadic rather than another parameter, following store.Open: five of the six
+// call sites open a relay whose ceiling is the default and should not have to
+// name it, and a number repeated at every construction is a number that drifts.
+type MessagesOption func(*MessagesHandler)
+
+// WithPendingCeiling overrides the per-recipient pending-byte ceiling.
+//
+// A non-positive value keeps the default rather than removing the ceiling. That
+// direction is deliberate: a quota must never be switched off by a value that
+// was not set, which is the state AUDIT 5.39 describes. `config.Load` reports 0
+// for an unset RELAY_MAX_PENDING_BYTES and refuses an explicit non-positive one,
+// so `main` can pass the configured value unconditionally.
+func WithPendingCeiling(n int64) MessagesOption {
+	return func(h *MessagesHandler) {
+		if n <= 0 {
+			return
+		}
+		h.maxPendingBytes = n
+	}
 }
 
 // NewMessagesHandler builds the handler.
-func NewMessagesHandler(db *store.DB, authHandler *AuthHandler, log *slog.Logger) *MessagesHandler {
-	return &MessagesHandler{db: db, auth: authHandler, log: log, ttl: MessageTTL}
+func NewMessagesHandler(
+	db *store.DB,
+	authHandler *AuthHandler,
+	log *slog.Logger,
+	opts ...MessagesOption,
+) *MessagesHandler {
+	h := &MessagesHandler{
+		db:              db,
+		auth:            authHandler,
+		log:             log,
+		ttl:             MessageTTL,
+		maxPendingBytes: DefaultMaxPendingBytes,
+	}
+	for _, opt := range opts {
+		opt(h)
+	}
+	return h
 }
 
 // Routes registers the endpoints. All require authentication.
@@ -126,6 +197,18 @@ type ackResponse struct {
 // A send to an account that does not exist is accepted and dropped. Reporting it
 // would be an enumeration oracle — see store.EnqueueMessage for why that matters
 // more than the lost debuggability, and why it costs a real client nothing.
+//
+// **A send to a recipient whose queue is at its ceiling is accepted and dropped
+// too** (AUDIT 5.39), through the same path and with the same response, because
+// "that account's queue is full" says the account exists and is not collecting
+// its mail. The enqueue result is discarded here rather than inspected, so there
+// is no branch a later change could accidentally make observable. It is not
+// logged either: a line per refused message is a per-message record naming a
+// recipient, which is what §7 and TestNoLogLineIsEmittedPerDeliveredMessage
+// exist to prevent, and the relay has no metrics endpoint to put a counter on.
+// The drop is therefore invisible on both sides, and the only thing standing
+// between that and lost mail is a ceiling set high enough that honest traffic
+// never reaches it — see DefaultMaxPendingBytes for that argument.
 func (h *MessagesHandler) send(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
@@ -158,7 +241,7 @@ func (h *MessagesHandler) send(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := h.db.EnqueueMessage(ctx, recipient, envelope, h.ttl); err != nil {
+	if _, err := h.db.EnqueueMessage(ctx, recipient, envelope, h.ttl, h.maxPendingBytes); err != nil {
 		h.log.ErrorContext(ctx, "enqueue failed", slog.String("reason", err.Error()))
 		httpx.WriteError(w, http.StatusInternalServerError)
 		return

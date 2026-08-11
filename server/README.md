@@ -148,6 +148,15 @@ a service whose central control is that deleted data is *gone*, "eventually unre
 query planner" is not the same guarantee. The blob directory is the container's **only** writable
 path — `read_only: true` covers everything else.
 
+**A send can be accepted, answered `202`, and stored nowhere.** Two cases do this: an unknown
+recipient, and a recipient already holding `RELAY_MAX_PENDING_BYTES` of undelivered envelopes
+(32 MiB by default, AUDIT 5.39). Both answer exactly as a stored send does and neither is logged,
+because "no such account" and "that queue is full" are both statements about the *recipient* —
+whether they exist, whether they are collecting their mail — and this service answers no questions
+about anyone. It means a failing send looks identical to a working one while you are debugging: use
+`store.CountPendingMessages` or `store.PendingBytes` against the database rather than the API, which
+is what the integration tests do. `docs/BACKEND.md` §5 owns the reasoning and the number.
+
 **The Postgres volume mounts `/var/lib/postgresql`, not `/var/lib/postgresql/data`.** Postgres 18
 changed this: data now lives in a major-version subdirectory so `pg_upgrade --link` works without
 crossing a mount boundary, and the image *refuses to start* if it finds data at the old path — which

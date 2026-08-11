@@ -69,6 +69,24 @@ type Config struct {
 	// exempt routes; raising this value is not the way to admit a new large one.
 	MaxRequestBytes int64
 
+	// MaxPendingBytes caps the undelivered envelope bytes one recipient may have
+	// waiting (AUDIT 5.39, docs/BACKEND.md §5).
+	//
+	// **Zero means "not configured", not "no ceiling".** An unset variable leaves
+	// this at zero and `main` passes it to `api.WithPendingCeiling`, which keeps
+	// `api.DefaultMaxPendingBytes` for any non-positive value — so the default
+	// lives in exactly one place, beside the argument for the number. An
+	// explicitly non-positive value is a startup error rather than a silent
+	// disable, because the finding this closes is a queue that grew with no quota
+	// at all and a configuration that can recreate that state is the same bug.
+	//
+	// It is configurable because the right value is a deployment fact — disk size
+	// and circle size — and because a ceiling nobody can move is one an operator
+	// discovers only when it starts dropping mail. It is also what makes the
+	// quota testable at all: AUDIT 5.22's "an unmeasurable quota is the same as
+	// no quota" is quoted by 5.39's own row.
+	MaxPendingBytes int64
+
 	// RateLimitPepper keys the rate limiter's subject hashes (ratelimit.Subject).
 	//
 	// **Optional, and both settings are a real trade-off rather than one being
@@ -255,6 +273,10 @@ func Load() (Config, error) {
 		ShutdownGrace:     duration("RELAY_SHUTDOWN_GRACE", 15*time.Second),
 
 		MaxRequestBytes: bytesLimit("RELAY_MAX_REQUEST_BYTES", 128*1024),
+
+		// Fallback 0, which is the sentinel for "unset" documented on the field:
+		// the default number itself lives with its argument in api, not here.
+		MaxPendingBytes: bytesLimit("RELAY_MAX_PENDING_BYTES", 0),
 
 		// 32 characters, matching the 32 random bytes the fallback generates.
 		RateLimitPepper: secret("RELAY_RATELIMIT_PEPPER", 32),

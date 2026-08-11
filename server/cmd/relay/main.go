@@ -241,7 +241,12 @@ func run() error {
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
 	api.NewKeysHandler(db, authHandler, log).Routes(mux)
-	api.NewMessagesHandler(db, authHandler, log).Routes(mux)
+	// The per-recipient pending-byte ceiling (AUDIT 5.39). Passed
+	// unconditionally: an unset RELAY_MAX_PENDING_BYTES arrives as 0 and
+	// WithPendingCeiling keeps the default for any non-positive value, so there
+	// is no path here that constructs a relay with no ceiling.
+	api.NewMessagesHandler(db, authHandler, log,
+		api.WithPendingCeiling(cfg.MaxPendingBytes)).Routes(mux)
 
 	blobs, err := blob.Open(cfg.BlobDir)
 	if err != nil {

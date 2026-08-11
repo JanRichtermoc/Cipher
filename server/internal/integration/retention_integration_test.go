@@ -99,8 +99,10 @@ func TestSweepingAnAccountTakesItsMessagesAndTokens(t *testing.T) {
 	aci, _ := enrol(t, h, db, "198.51.100.30")
 
 	// A minimum-size envelope: this test is about the cascade, not about bounds.
+	// The ceiling is one maximum envelope, which is room for this one message and
+	// says so — the quota itself is exercised in messages_integration_test.go.
 	envelope := make([]byte, store.MinEnvelopeBytes)
-	accepted, err := db.EnqueueMessage(ctx, aci, envelope, time.Hour)
+	accepted, err := db.EnqueueMessage(ctx, aci, envelope, time.Hour, store.MaxEnvelopeBytes)
 	if err != nil {
 		t.Fatalf("enqueue: %v", err)
 	}

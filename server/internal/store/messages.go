@@ -31,7 +31,8 @@ type PendingMessage struct {
 	Envelope []byte
 }
 
-// EnqueueMessage stores an envelope for a recipient.
+// EnqueueMessage stores an envelope for a recipient, subject to that recipient's
+// pending-byte ceiling.
 //
 // # Sending to an account that does not exist is not an error
 //
@@ -49,13 +50,68 @@ type PendingMessage struct {
 // bundle, which requires the account to exist and to have published keys, so a
 // real sender never addresses a stranger. The only caller who does is probing.
 //
+// # The pending-byte ceiling (AUDIT 5.39)
+//
+// maxPendingBytes bounds the total `octet_length(envelope)` a single recipient
+// can have waiting. This was the one authenticated growth path on the relay with
+// no quota: blobs are bounded by count and bytes, publication by rate, ack and
+// delete by rate, and this by nothing but the 60/minute send limit against a
+// 30-day TTL — ≈5.3 GiB per day per sending account, retained for a month, on a
+// box whose disk is what the retention sweep needs in order to run at all.
+//
+// **A refused message is dropped exactly as a stranger's is, and for the same
+// reason.** The caller must answer identically whether or not a row was written:
+// "this recipient's queue is full" is a statement about the recipient — that they
+// exist, that they are not collecting their mail — and telling the sender turns
+// the ceiling into a better oracle than the one the EXISTS above exists to avoid.
+// The recipient cannot be told either; there is no channel to them that is not
+// the queue itself. So the drop is silent to both parties by construction, which
+// is the accepted cost recorded in docs/BACKEND.md §5, and it is the reason the
+// ceiling is chosen high enough never to bind on honest traffic rather than
+// merely "high enough".
+//
+// **Expired-but-unswept rows count.** There is no `expires_at > now()` here on
+// purpose: the ceiling protects disk, a lapsed row is still on the disk until the
+// hourly sweep reaches it, and a quota that does not measure what it protects is
+// the shape AUDIT 5.22 records ("an unmeasurable quota is the same as no quota").
+// The honest cost is bounded by the sweep interval and only bites a recipient who
+// is already at the ceiling when their queue lapses; every read path already
+// hides expired rows, so it changes nothing they can see.
+//
+// **Under concurrency it can overshoot, by a bounded amount.** This is one
+// statement, so the sum and the insert share a snapshot — but under READ
+// COMMITTED a concurrent statement takes its own, and neither sees the other's
+// uncommitted row. N sends in flight at once can therefore each pass a check that
+// only one of them should, so the queue can exceed the ceiling by at most
+// (N-1) × MaxEnvelopeBytes. N is bounded by the pool: MaxConns is 16 in Open, so
+// the overshoot is under 1 MiB — around 3% of the default ceiling, which is
+// carrying far more headroom than that. Closing it exactly would need a per-
+// recipient lock on the send path, which buys 3% for a new contention target on
+// the busiest endpoint. Written down rather than discovered later.
+//
+// **A non-positive ceiling refuses everything**, because `pending + n <= 0` is
+// false for every legal envelope. That is the fail-closed direction on purpose: a
+// misconfigured relay must not be one whose quota silently does not exist, which
+// is the state this finding describes. `config.Load` refuses a non-positive value
+// outright, so production reaches this only through a caller that names one.
+//
+// No new index: `messages_recipient_idx (recipient_aci, expires_at)` already
+// serves the lookup by its leading column. The aggregate does visit the heap,
+// since `envelope` is not in any index — but `octet_length` on a bytea reads the
+// varlena header rather than detoasting, so a large envelope costs a tuple, not a
+// TOAST fetch. The scan is self-limiting: it is bounded by the ceiling it is
+// enforcing, and the send limit bounds how often it runs.
+//
 // Returns whether a row was actually written, for tests and metrics — never for
-// the response.
+// the response. The two reasons a row is not written are deliberately
+// indistinguishable to this caller, because they must be indistinguishable to the
+// sender.
 func (db *DB) EnqueueMessage(
 	ctx context.Context,
 	recipient uuid.UUID,
 	envelope []byte,
 	ttl time.Duration,
+	maxPendingBytes int64,
 ) (bool, error) {
 	if len(envelope) < MinEnvelopeBytes || len(envelope) > MaxEnvelopeBytes {
 		return false, fmt.Errorf("envelope is %d bytes, want %d..%d",
@@ -75,15 +131,37 @@ func (db *DB) EnqueueMessage(
 	// distinguishing "no such account" from a real database fault by error code
 	// is exactly the kind of thing that silently starts returning the wrong
 	// answer after a driver upgrade.
+	//
+	// The quota rides in the same statement for the same reason it is not a
+	// SELECT followed by an INSERT: a separate read would widen the window above
+	// from one statement to a round trip.
 	tag, err := db.pool.Exec(ctx,
 		`INSERT INTO messages (id, recipient_aci, envelope, expires_at)
 		 SELECT $1, $2, $3, $4
-		  WHERE EXISTS (SELECT 1 FROM accounts WHERE aci = $2)`,
-		id, recipient, envelope, time.Now().Add(ttl))
+		  WHERE EXISTS (SELECT 1 FROM accounts WHERE aci = $2)
+		    AND (SELECT coalesce(sum(octet_length(envelope)), 0)
+		           FROM messages WHERE recipient_aci = $2) + $5 <= $6`,
+		id, recipient, envelope, time.Now().Add(ttl), len(envelope), maxPendingBytes)
 	if err != nil {
 		return false, fmt.Errorf("enqueue message: %w", err)
 	}
 	return tag.RowsAffected() == 1, nil
+}
+
+// PendingBytes reports how many envelope bytes await an account.
+//
+// Test and operational support only, and it must stay that way: it is the
+// quantity the ceiling above is enforced against, so exposing it through the API
+// would hand a caller exactly the recipient-state oracle that enforcement is
+// shaped to avoid. Counts expired-but-unswept rows, because the ceiling does.
+func (db *DB) PendingBytes(ctx context.Context, recipient uuid.UUID) (int64, error) {
+	var n int64
+	if err := db.pool.QueryRow(ctx,
+		`SELECT coalesce(sum(octet_length(envelope)), 0)
+		   FROM messages WHERE recipient_aci = $1`, recipient).Scan(&n); err != nil {
+		return 0, fmt.Errorf("pending bytes: %w", err)
+	}
+	return n, nil
 }
 
 // PendingMessages returns up to limit undelivered envelopes for an account.
