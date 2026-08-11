@@ -41,6 +41,7 @@ branch state from Git, CI requirements from GitHub, and deployed state from read
 | Cryptography, identity, keys, wire types, or sealed storage | [`THREAT_MODEL.md`](THREAT_MODEL.md), plan §0.2/§0.6, [`AUDIT.md`](AUDIT.md), [`Vendor/libsignal/DECISIONS.md`](../Vendor/libsignal/DECISIONS.md), and applicable backend sections. |
 | Relay, schema, auth, retention, or rate limits | [`BACKEND.md`](BACKEND.md), threat model, audit ledger, [`server/README.md`](../server/README.md), and migrations. |
 | Staging, DNS, TLS, pins, backup, or recovery | [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md), [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md), `BACKEND.md` §9, and applicable audit rows. |
+| A suspected compromise, key exposure, or lost device | [`RUNBOOK-INCIDENT.md`](RUNBOOK-INCIDENT.md) first — it classifies and routes; then the owning procedure it names. |
 | Tests, scripts, or CI | [`DEVELOPMENT.md`](DEVELOPMENT.md), `AUDIT.md` §0 and §6, all affected scripts, workflow configuration, and Xcode target membership. |
 | Privacy or release compliance | [`PRIVACY_MANIFEST.md`](PRIVACY_MANIFEST.md), threat model, audit §6, entitlements, manifest, and Release-bundle gates. |
 | App icon or visual provenance | [`APP_ICON.md`](APP_ICON.md) and the asset catalog. |
@@ -64,6 +65,7 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 | [`DEVELOPMENT.md`](DEVELOPMENT.md) | Local setup, commands, toolchain, and pre-push workflow. Scripts win if copied mechanics drift. | Current reference | Building, testing, CI, or onboarding. | Yes |
 | [`INFRASTRUCTURE.md`](INFRASTRUCTURE.md) | Hosting/registrar decisions, access model, constraints, and accepted backup residual. | Operational decision record | Infrastructure, domain, provider, or recovery work. | Yes |
 | [`RUNBOOK-VPS.md`](RUNBOOK-VPS.md) | Reproducible staging deployment, verification, rollback, and recovery procedures. | Operational | Any staging or TLS change. | Yes |
+| [`RUNBOOK-INCIDENT.md`](RUNBOOK-INCIDENT.md) | Incident classification and response: host compromise, TLS key compromise, secret exposure, lost device, impersonation. Routes to the owning procedure rather than restating it. | Operational | A suspected compromise, exposure, or lost device. | Yes |
 | [`PRIVACY_MANIFEST.md`](PRIVACY_MANIFEST.md) | Required-reason API inventory and audit method. | Compliance reference | API use, dependency, manifest, or Release changes. | Yes |
 | [`APP_ICON.md`](APP_ICON.md) | Icon source, generation, and replacement provenance. | Reference | Icon or asset replacement. | No |
 | [`SECURITY_AUDIT.md`](SECURITY_AUDIT.md) | Dated external-style review plus Appendix C remediation crosswalk. `AUDIT.md` owns current status. | Historical audit | Security review and rationale archaeology. | No; preserve report chronology |
