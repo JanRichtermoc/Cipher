@@ -928,6 +928,67 @@ Final checklist, each backed by a command above:
 
 ---
 
+## Our own backup, and the restore drill (P9.S05)
+
+Separate from the provider snapshot below, and for the opposite reason: that one keeps too much and
+cannot be declined, this one keeps deliberately little and is the only copy we control.
+
+**What is in it:** `accounts` and `session_tokens`. Nothing else — see `BACKEND.md` §4 for why each
+other table is excluded, and `AUDIT.md` **4.16** for the cost of including the second one.
+`server/deploy/backup.sh` is an allow-list and refuses to write an unencrypted archive.
+
+**Key custody, and the one rule that matters.** The archive is encrypted with `openssl cms` to a
+**recipient certificate**, so the box holds only a public key and *cannot decrypt its own backups*.
+The private half must live off the host — an operator machine or offline media. Putting it on the
+box would place the key beside the ciphertext, which is the state `THREAT_MODEL.md` §1.1 already
+assumes the adversary reaches.
+
+Create the recipient pair **on the operator machine, not here**:
+
+```sh
+openssl req -x509 -newkey rsa:3072 -keyout cipher-backup.key -out cipher-backup-cert.pem \
+  -days 3650 -nodes -subj "/CN=cipher-backup"
+```
+
+Copy only `cipher-backup-cert.pem` to the box. Guard `cipher-backup.key` like the TLS key: losing it
+makes every archive unreadable, and leaking it makes every archive readable.
+
+**Take a backup:**
+
+```sh
+~/cipher/server/deploy/backup.sh --recipient ~/cipher-backup-cert.pem --out /var/backups/cipher
+```
+
+**Restore.** Never restore over the live database as a first move. Restore into a scratch database,
+verify it, and only then decide — a restore that turns out to be wrong is otherwise unrecoverable:
+
+1. `openssl cms -decrypt -inform DER -in <archive> -out plain.sql -inkey cipher-backup.key`
+   (on the operator machine, where the key is).
+2. Create a scratch database and apply `server/internal/store/migrations/*.sql` in order — **the
+   migrations are the schema of record, not the archive.** The archive carries rows only.
+3. Load `plain.sql` into the scratch database and check the counts below.
+4. Only then promote it, and immediately **revoke all sessions** — this is what closes AUDIT 4.16's
+   window, in which a sign-out performed after the backup is undone by the restore.
+5. `shred -u plain.sql`.
+
+**Rollback:** the scratch database is the rollback. Drop it (`DROP DATABASE cipher_drill;`) and
+nothing has changed. Up to step 4 the live database has not been written to at all.
+
+**Drill executed 2026-08-11**, on this box, into a scratch database, live database read-only
+throughout. OBSERVED: the archive was `data` to `file(1)` with **0** readable `COPY` strings;
+decryption returned a dump naming exactly `accounts` and `session_tokens`; restore into the scratch
+database returned **5 accounts and 3 session tokens, matching live exactly**, with identity-key
+lengths all in range and every token row still joining its account; and `messages`, `attachments`,
+`invites`, `one_time_prekeys` and `push_tokens` all came back **0** — the retention policy holding
+through a real restore. Teardown dropped the scratch database and the live database was unchanged
+(`accounts=5 messages=1`). The drill used a throwaway keypair generated for it and destroyed after;
+the real procedure never puts the private half on the host.
+
+**Cadence and objectives:** see `INFRASTRUCTURE.md` § Backup objectives for RPO/RTO and what each
+data class costs on loss.
+
+---
+
 ## The OVH daily backup
 
 `INFRASTRUCTURE.md` closes on an open decision, and the control panel is open at Stage A, so

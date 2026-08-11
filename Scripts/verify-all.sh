@@ -51,8 +51,8 @@ for arg in "$@"; do
 done
 
 STEP=0
-TOTAL=18
-[ "$FAST" -eq 1 ] && TOTAL=15
+TOTAL=19
+[ "$FAST" -eq 1 ] && TOTAL=16
 
 step() {
   STEP=$((STEP + 1))
@@ -378,7 +378,18 @@ step "deployment configuration cannot log what the threat model forbids"
 ./Scripts/verify-nginx-config.py --self-test || fail "the nginx configuration gate cannot be trusted"
 ./Scripts/verify-nginx-config.py || fail "the nginx configuration would retain request metadata (AUDIT 5.29)"
 
-# --- 11. Product and documentation honesty -----------------------------------
+# --- 11. Backup scope (P9.S05) ------------------------------------------------
+# A backup is the one operation that can repeal the retention policy in silence:
+# nothing fails and no test goes red, the deleted messages simply return at
+# restore time. Beside the deployment gate above because it is the same class of
+# defect — a decision that lives in an operational file and drifts away from the
+# design it was meant to implement. Offline: it reads the migrations and the
+# backup script, never a database and never the box.
+step "backups cannot repeal the retention policy (BACKEND.md 4)"
+./Scripts/verify-backup-scope.sh --self-test || fail "the backup-scope gate cannot be trusted"
+./Scripts/verify-backup-scope.sh || fail "a schema table is unclassified, or a retention-critical table would be backed up (docs/BACKEND.md 4)"
+
+# --- 12. Product and documentation honesty -----------------------------------
 # Cipher must not present a control or security boundary it does not provide, in any
 # language or canonical document. See the two focused scripts for what they check and why.
 #
@@ -392,7 +403,7 @@ step "product and documentation honesty"
 ./Scripts/verify-doc-key-boundary.py --self-test || fail "the documentation key-boundary gate cannot be trusted"
 ./Scripts/verify-doc-key-boundary.py || fail "documentation collapsed public, private E2E, or operational server keys"
 
-# --- 12. Third-party licence obligations (AUDIT 6.2) -------------------------
+# --- 13. Third-party licence obligations (AUDIT 6.2) -------------------------
 # libsignal is AGPL-3.0 and NOTICE.md obligation 3 is to surface its acknowledgements in the
 # app. Placed beside the honesty gate above rather than near the build gates, because the
 # failure it catches is the same kind: something the product claims, or is obliged to say,
@@ -401,7 +412,7 @@ step "product and documentation honesty"
 step "third-party licences ship with the app (AUDIT 6.2)"
 ./Scripts/verify-acknowledgements.sh || fail "the app does not ship libsignal's licence — NOTICE.md obligation 3"
 
-# --- 13. Module boundary -----------------------------------------------------
+# --- 14. Module boundary -----------------------------------------------------
 # No LibSignalClient type may appear in CipherCrypto's public API. Runs before the tests
 # because it needs only a build, and because a leaked handle type is a concurrency defect
 # that no amount of green tests would surface.
@@ -419,7 +430,7 @@ case "$boundary_rc" in
 *) fail "a LibSignalClient type is exposed in CipherCrypto's public API" ;;
 esac
 
-# --- 14. Crypto tests --------------------------------------------------------
+# --- 15. Crypto tests --------------------------------------------------------
 # App-hosted (AUDIT 6.6) and therefore serial. This also covers LockedDecisionsTests, which
 # is what stops the six locked protocol decisions from being quietly "fixed".
 step "tests: CipherCrypto + Cipher (app-hosted, serial)"
@@ -570,7 +581,7 @@ for suite in "Certificate pinning" "Invite redemption" "Relay transport bounds";
     fail "the Swift Testing suite \"$suite\" did not run (AUDIT 6.19; full log: $LOG)"
 done
 
-# --- 15. App builds ----------------------------------------------------------
+# --- 16. App builds ----------------------------------------------------------
 # Hosting the tests in the app means a broken app target blocks the security suite, so the
 # app build is part of the gate rather than an afterthought.
 step "Cipher app builds (simulator)"
@@ -583,7 +594,7 @@ xcodebuild build \
   fail "Cipher app build"
 echo "  ok    app builds"
 
-# --- 16. Release device build ------------------------------------------------
+# --- 17. Release device build ------------------------------------------------
 # Release + arm64 is where optimisation-dependent and warnings-as-errors problems appear.
 # Signing is disabled: this checks that it compiles and links, not that it is distributable.
 if [ "$FAST" -eq 0 ]; then

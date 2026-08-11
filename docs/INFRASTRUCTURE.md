@@ -117,6 +117,38 @@ Flag this before running P5.S06.
 
 ---
 
+## Backup objectives (P9.S05)
+
+Our own backup, distinct from the provider snapshot below. Procedure and the executed drill are in
+[`RUNBOOK-VPS.md`](RUNBOOK-VPS.md) § Our own backup; scope and its reasoning in
+[`BACKEND.md`](BACKEND.md) §4.
+
+| Objective | Value | Why this and not tighter |
+|---|---|---|
+| **RPO** | 24 hours | The only data with a real recovery point is `accounts` and `session_tokens`, both of which change rarely in a five-person circle: an account is created once, a token rotates every few weeks. A tighter RPO would copy the same rows more often and buy nothing, while lengthening AUDIT 4.16's revocation-resurrection window is the one thing frequency *does* affect — so 24h is also the bound on that window. |
+| **RTO** | ~1 hour to a serving relay | Restore is: redeploy from git (the schema is the migrations, in git), load two tables, revoke all sessions. Nothing waits on a large transfer — the archive is kilobytes, because it deliberately holds almost nothing. |
+| **RTO, full session capability** | up to 48 hours | Prekeys are deliberately not backed up. Peers cannot start a **new** session with a restored account until its owner's next rotation, which is bounded by `MessageRepository.preKeyRotationInterval` (48h) regardless of any count. **Established sessions are unaffected** — the ratchet lives on the device, so existing conversations keep working through a restore. |
+
+What each data class costs on loss, since "back up the database" would answer all of these the same
+way and three of the answers are that losing it is correct:
+
+| Data class | In the backup? | Cost of losing it |
+|---|---|---|
+| Account identity (`accounts`) | **Yes** | Unrecoverable. The `aci` is the address peers hold and the identity key is what their safety numbers are of; a new invite mints a *different* account. |
+| Session credential (`session_tokens`) | **Yes** | Unrecoverable by the client: rotation needs the old token and redemption creates a new account. This is why it is included, and the inclusion is AUDIT **4.16**. |
+| Message ciphertext | No | Correct outcome, not a gap (`BACKEND.md` §4). Undelivered messages are lost; delivered ones were already deleted. |
+| Attachment blobs | No | As above, and they live outside Postgres. |
+| Public prekey material | No | Self-healing within one 48h rotation; see the RTO row above. |
+| Invites | No | Deliberate. Restoring one resurrects a live account-creation credential. |
+| Push tokens | No | Deliberate. Metadata that outlives the message (P7.S03); the device re-registers. |
+| Operational server secrets (`server/.env`, TLS private keys, the pin backup key) | **No — separate custody** | A different domain entirely, and not something a database backup should ever carry. They are the operator's to hold offline. Losing the rate-limit pepper resets buckets (harmless); losing `RELAY_PUSH_TOKEN_KEY` makes stored push tokens undecryptable, which fails closed and resolves on re-registration; losing the TLS key is the pinning emergency `BACKEND.md` §9.1 rule 2 keeps a second pin for. |
+
+The archive is encrypted to a recipient certificate, so **the host cannot decrypt its own backups**
+and a seizure of the box yields the archive without a way into it. The private half never goes on
+the host.
+
+---
+
 ## Decided — the backup cannot be disabled, and is carried as a residual
 
 **2026-07-29.** The preference was to disable it. **OVH provides no way to.** The operator checked
