@@ -72,6 +72,7 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 | [`STEP_NOTES/README.md`](STEP_NOTES/README.md) | Purpose and limits of step notes. | Historical index | Creating or interpreting a step note. | No |
 | [`STEP_NOTES/P5.S09.md`](STEP_NOTES/P5.S09.md) | Account-lifecycle implementation and negative-test evidence. | Historical evidence | Work touching registration, credentials, or account erasure. | No |
 | [`STEP_NOTES/P5.S11.md`](STEP_NOTES/P5.S11.md) | Encrypted local database, remediation, quota, and negative-test evidence. | Historical evidence | Work touching sealed storage or local retention. | No |
+| [`STEP_NOTES/P9.S04.md`](STEP_NOTES/P9.S04.md) | Monitoring design, the metadata constraint, guards, and the alert-firing drill. | Historical evidence | Monitoring, alerting, or operational-visibility work. | No |
 | [`STEP_NOTES/P9.S05.md`](STEP_NOTES/P9.S05.md) | Backup scope and its reasoning, encryption shape, RPO/RTO, guards, and the executed restore drill. | Historical evidence | Backup, restore, retention, or disaster-recovery work. | No |
 | [`STEP_NOTES/P9.S07.md`](STEP_NOTES/P9.S07.md) | Internal pen-test checklist: nine items, substrate per item, and live-staging evidence. | Historical evidence | Pen-test, relay hardening, or production-readiness review. | No |
 | [`../server/README.md`](../server/README.md) | Relay development, endpoints, environment, and integration-test usage. Backend/audit docs win on design and risk. | Current reference | Relay development. | Yes |
