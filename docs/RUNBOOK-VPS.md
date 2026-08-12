@@ -928,6 +928,38 @@ Final checklist, each backed by a command above:
 
 ---
 
+## Monitoring (P9.S04)
+
+`server/deploy/monitor.sh` checks certificate expiry, disk, container health, the hourly relay error
+count, and aggregate auth/throttle counts from the access log. It exits **0 ok / 1 warn / 2
+critical**, and prints counts and status words only — never a log line, address, populated path or
+token, because an alert outlives the log's 24h retention.
+
+**It must run as root**: `/var/log/cipher/` is `0700`, and without it the access-log check degrades
+to a warning rather than silently skipping.
+
+```sh
+sudo COMPOSE_DIR=~/cipher/server ~/cipher/server/deploy/monitor.sh
+```
+
+**There is no notification channel, deliberately** — no operator email (ACME uses none on purpose)
+and no third party, which would learn when the relay is up. The exit code is the interface: wire it
+to a systemd timer, a shell loop, or run it by hand. **Installing a timer is a deployment change and
+belongs with P9.S02**, not with a staging drill.
+
+Drill it by forcing the thresholds, which is how you confirm it still fires rather than assuming:
+
+```sh
+sudo CERT_CRIT_DAYS=90 DISK_WARN_PCT=10 ERROR_WARN=0 COMPOSE_DIR=~/cipher/server \
+  ~/cipher/server/deploy/monitor.sh
+```
+
+Executed 2026-08-12: normal run `status: OK` (exit 0); forced thresholds `status: CRITICAL` (exit 2);
+an unparseable access log reported *"log format not recognised — scanned N lines, parsed 0"* rather
+than a confident `401=0`. `STEP_NOTES/P9.S04.md` records why that last case has its own alert.
+
+---
+
 ## Our own backup, and the restore drill (P9.S05)
 
 Separate from the provider snapshot below, and for the opposite reason: that one keeps too much and

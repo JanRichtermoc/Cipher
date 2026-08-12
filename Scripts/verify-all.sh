@@ -377,6 +377,12 @@ step "relay: build, vet, tests, compose invariants"
 step "deployment configuration cannot log what the threat model forbids"
 ./Scripts/verify-nginx-config.py --self-test || fail "the nginx configuration gate cannot be trusted"
 ./Scripts/verify-nginx-config.py || fail "the nginx configuration would retain request metadata (AUDIT 5.29)"
+# Monitoring is deployment configuration that reads the access log, so it is the
+# other place an operational convenience can repeal §7: an alert outlives the
+# log's 24h, and an excerpt in one would be a retained metadata record. Its
+# self-test drives the summariser over a log stuffed with addresses, a populated
+# path and a token, and fails if any of them reach the output.
+./server/deploy/monitor.sh --self-test || fail "monitoring could leak log content into an alert (docs/BACKEND.md 7)"
 
 # --- 11. Backup scope (P9.S05) ------------------------------------------------
 # A backup is the one operation that can repeal the retention policy in silence:
