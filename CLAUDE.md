@@ -88,6 +88,45 @@ Preserve every standing prohibition in `docs/THREAT_MODEL.md` §4.
   The main agent remains responsible for reading authoritative sources and verifying every result.
 - If the requested scope is unsafe or uncertain, stop and explain rather than guessing.
 
+## Explicit continuous-build campaign
+
+The one-step/one-PR/stop workflow is the default. Override it only when the current user's campaign
+message contains the exact token `CIPHER-CONTINUOUS-V1` and explicitly authorizes repeated roadmap
+execution, pull-request creation, and pull-request merging. Never infer this mode from phrases such
+as "keep going" or from an old handoff. The authorization lasts only for that campaign and only for
+the repository and external actions the activating message names.
+
+While this mode is active:
+
+- Treat each roadmap or remediation step as a separate cycle: one focused branch, one step, one
+  pull request. Do not batch steps merely to reduce the number of reviews.
+- Bootstrap read-only at campaign start and re-check Git, canonical status, relevant open pull
+  requests, and applicable authorities before every cycle. Reconcile unfinished agent-owned work in
+  dependency order; never merge an unrelated or ambiguously owned pull request.
+- After the normal local verification and secret-safe staged review, push and open the pull request,
+  wait for every required check, inspect the final pull-request diff and check results, and merge only
+  when it is mergeable with no unresolved requested changes, conflicts, secret concern, or required
+  failure. Never bypass branch protection, use an administrative override, or call a skipped check a
+  pass. Repair ordinary CI or review failures on the same branch and retry.
+- After a successful merge, refresh `main` from the remote, confirm the merged state, create the next
+  branch from that exact revision, and continue without waiting for a routine operator handoff.
+- A campaign prompt may explicitly pre-authorize sequencing around named operator-only blockers.
+  That permits an already-defined AI-owned step to run out of order only after proving it has no
+  dependency on the blocker and recording a sequencing-only plan amendment. Keep every unmet phase
+  criterion and blocker visible. Do not change a locked decision, accepted risk, step scope, or
+  `Done when` condition merely to stay busy.
+- Pull-request creation and merging are the only external side effects this token authorizes by
+  itself. Purchases, credentials, Apple or provider-console actions, DNS, live deployment, production
+  availability risk, external engagements, and destructive operations still require explicit scope
+  in the activating message. If one is unavailable, do not fabricate it or mark it complete; leave
+  it blocked and continue only with work proven independent of it.
+
+Continue until no safe, authorized, independently executable step remains. Stop immediately for a
+likely secret exposure, overlapping dirty user work, an unresolved authority conflict, a required
+model that is unavailable, or a safety/security decision the campaign did not authorize. At the end,
+report every merged pull request, verification result, skipped blocker, residual risk, and the exact
+reason the campaign can make no further safe progress.
+
 ## Model, plugins, and context
 
 - Before implementation, classify the approved step and tell the operator the recommended current
@@ -143,12 +182,16 @@ state that negative testing was not applicable rather than inventing evidence.
 Use existing standing access when an action is already authorized and safe. If progress requires the
 operator, stop at the nearest safe boundary and provide a numbered tutorial with one action per step,
 exact commands or UI labels, expected results, final verification, rollback for risky actions, and
-the exact result to send back. Do not continue other work while blocked.
+the exact result to send back. In the default workflow, do not continue other work while blocked. An
+active `CIPHER-CONTINUOUS-V1` campaign may leave that item blocked and continue only as the scoped
+override above permits.
 
 Never change public reachability, risk production availability, merge a PR, make a purchase, rotate
 credentials, or alter GitHub/DNS/provider settings without explicit approval.
 
-## Commit, pull request, stop
+## Commit, pull request, stop (default workflow)
+
+Unless an active `CIPHER-CONTINUOUS-V1` campaign explicitly overrides this section:
 
 - Stage exact intended paths; follow the repository's commit and co-author convention.
 - Push the focused branch and open or provide the pull-request link.
