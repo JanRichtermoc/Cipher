@@ -42,6 +42,7 @@ Cipher/Networking/RelayEndpoint.swift
 Cipher/Networking/RelayKeyDirectory.swift
 Cipher/Networking/RelayMailbox.swift
 Cipher/PrivacyInfo.xcprivacy
+Cipher/Security/AccountKey.swift
 Cipher/Security/DeviceAuthenticator.swift
 Cipher/Security/SecurePasteboard.swift
 Cipher/Security/SessionCredential.swift

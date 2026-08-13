@@ -158,6 +158,36 @@ One row per installation. Created only by redeeming an invite.
 `device_id` and a `devices` table (single-device is a locked decision; adding it is a `wireVersion`
 break in `Envelope`, recorded there, not smuggled into the schema early).
 
+### 2.1a `accounts.reauth_key` — the re-authentication key (P9.S11, AUDIT 5.41)
+
+A nullable 32-byte column holding an **Ed25519 public key**. Added by migration `0003`.
+
+**Why it exists.** The session token was the only credential path — rotation needs the old token
+and redeeming an invite mints a *new* account — so an account whose token hash was gone could not
+authenticate again by any route, and "revoke all sessions" was indistinguishable from disbanding
+the circle. A device now proves possession of a key it has held since registration and receives a
+fresh session.
+
+**Why not `identity_key`, which is already here.** That would add no column. It is not buildable:
+a libsignal identity key is Curve25519 and its signatures are XEd25519, so verifying one in Go
+needs field arithmetic the standard library does not expose — hand-rolling it is forbidden by the
+plan's §0.6, and importing a curve library would make it the relay's first cryptographic
+dependency. The same wall P7.S01 hit with the server-issued sender certificate: **the relay cannot
+verify anything libsignal signed.** Ed25519 is in `crypto/ed25519` and in CryptoKit, so neither
+side gains a dependency.
+
+**Write-once.** A key may be published when there is none, and re-published only to the identical
+value. It is never replaced: a caller who could replace it would convert a stolen session token
+into permanent access *and* lock the real owner out, since only the owner's device holds the
+private half. `PUT /v1/auth/key` answers `409` to a different key.
+
+**Nullable, deliberately.** Accounts created before `0003` have no key and cannot be given one
+retroactively — the private half only ever exists on their device. They publish on their next
+authenticated launch. Until then, re-authentication fails for them exactly as it did before this
+existed. A `NOT NULL` column would have meant inventing a key the relay holds both halves of.
+
+It is a **public** key. No private key material reaches the relay, here or anywhere.
+
 ### 2.2 `invites`
 
 | Column | Type | Why it exists | What a seizure learns |

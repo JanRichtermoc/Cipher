@@ -42,7 +42,11 @@ SERVER="$REPO_ROOT/server"
 #
 # Raised from 136 to 140 on 2026-08-11 with AUDIT 5.40's four prekey-pool tests, which take
 # the suite to 148. Same eight-test margin again.
-MIN_INTEGRATION_TESTS=140
+# Raised from 140 to 149 on 2026-08-13 with AUDIT 5.41's nine re-authentication tests, which
+# take the suite to 157. Same eight-test margin as the two raises above, and for the same
+# reason: the margin is what stops an unrelated deletion failing this gate instead of the
+# named list below, which is the check that actually notices.
+MIN_INTEGRATION_TESTS=149
 
 # A floor is not enough on its own, and that gap is AUDIT 6.14: the count says how
 # many tests ran, never which. A rename, a build-tag mistake in one file, or a
@@ -106,6 +110,13 @@ REQUIRED_INTEGRATION_TESTS=(
   #   ratelimit — `internal/ratelimit` has no unit tests, so these five are the token
   #     bucket's only coverage anywhere. `Charge` saturating is what 5.22's byte quota
   #     rests on: if an overrun stopped saturating, the next check would admit the caller.
+  TestReauthenticationIssuesAWorkingSession
+  TestAChallengeIsSingleUse
+  TestAWrongSignatureBurnsTheChallenge
+  TestAnotherAccountsKeyCannotReauthenticate
+  TestAChallengeForAnUnknownAccountLooksIdentical
+  TestTheAccountKeyIsWriteOnce
+  TestOnlyThePublicHalfIsStored
   TestOneAccountCannotReachAnothersData
   TestPathTraversalCannotEscapeTheBlobDirectory
   TestAFullFlowLeaksNothingIntoTheLog

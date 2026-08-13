@@ -7,6 +7,7 @@
 //
 
 import CipherCrypto
+import CryptoKit
 import Foundation
 
 /// Redeems an invite code against the relay and stores the session it returns.
@@ -300,6 +301,112 @@ nonisolated struct SessionLifecycle: Sendable {
         return SessionCredential(token: bytes, aci: current.aci,
                                  issuedAt: issuedAt, expiresAt: decoded.expiresAt,
                                  origin: .serverIssued, phase: .active)
+    }
+
+    // MARK: - Re-authentication (AUDIT 5.41)
+
+    /// Publishes this device's account key if the relay does not already hold it.
+    ///
+    /// Safe to call on every launch: the relay accepts a re-publication of the identical key
+    /// and refuses a *different* one, so this can never rotate the account into a state its
+    /// own device cannot re-authenticate from. A failure is not fatal — the key is only
+    /// needed when a session ends, and the next launch tries again.
+    func publishAccountKey(token: String, key: Curve25519.Signing.PrivateKey) async throws {
+        let body = try JSONSerialization.data(
+            withJSONObject: ["key": AccountKey.publicKeyBase64(key)])
+        let response: RelayClient.Response
+        do {
+            response = try await client.send(RelayRequest(
+                method: "PUT", path: "/v1/auth/key", body: body,
+                contentType: "application/json", bearerToken: token, isIdempotent: true))
+        } catch {
+            throw Failure.unreachable
+        }
+        switch response.status {
+        // 409 means the relay holds a different key for this account, which a device cannot
+        // resolve and must not paper over: it is reported rather than swallowed.
+        case 204, 409: return
+        case 401: throw Failure.rejected
+        case 429: throw Failure.rateLimited
+        case 500...599: throw Failure.serverUnavailable
+        default: throw Failure.malformedResponse
+        }
+    }
+
+    /// Exchanges a signature over a server-chosen challenge for a fresh session.
+    ///
+    /// This is the path that makes an ended session recoverable. It carries no bearer token
+    /// by construction — having none is the situation it exists for.
+    func reauthenticate(
+        aci: UUID, key: Curve25519.Signing.PrivateKey, keyStore: AccountKey
+    ) async throws -> SessionCredential {
+        let challengeBody = try JSONSerialization.data(
+            withJSONObject: ["aci": aci.uuidString.lowercased()])
+        let challengeResponse: RelayClient.Response
+        do {
+            challengeResponse = try await client.send(RelayRequest(
+                method: "POST", path: "/v1/auth/challenge", body: challengeBody,
+                contentType: "application/json", isIdempotent: false))
+        } catch {
+            throw Failure.unreachable
+        }
+        switch challengeResponse.status {
+        case 200: break
+        case 429: throw Failure.rateLimited
+        case 500...599: throw Failure.serverUnavailable
+        default: throw Failure.malformedResponse
+        }
+        guard let challenge = (try? JSONDecoder().decode(
+            ChallengeResponse.self, from: challengeResponse.body))?.challenge,
+            !challenge.isEmpty
+        else { throw Failure.malformedResponse }
+
+        let signature = try keyStore.sign(aci: aci, challenge: challenge)
+        let body = try JSONSerialization.data(withJSONObject: [
+            "aci": aci.uuidString.lowercased(),
+            "challenge": challenge,
+            "signature": signature,
+        ])
+
+        let response: RelayClient.Response
+        do {
+            response = try await client.send(RelayRequest(
+                method: "POST", path: "/v1/auth/reauth", body: body,
+                contentType: "application/json", isIdempotent: false))
+        } catch {
+            throw Failure.unreachable
+        }
+        switch response.status {
+        case 200: break
+        // The relay refuses an unknown account, an unpublished key and a bad signature
+        // identically, so this device cannot tell them apart either — and must not guess.
+        case 401: throw Failure.rejected
+        case 429: throw Failure.rateLimited
+        case 500...599: throw Failure.serverUnavailable
+        default: throw Failure.malformedResponse
+        }
+
+        let decoded: RotateResponse
+        do {
+            decoded = try JSONDecoder().decode(RotateResponse.self, from: response.body)
+        } catch {
+            throw Failure.malformedResponse
+        }
+        let issuedAt = now()
+        guard SessionCredential.isValidServerToken(decoded.token),
+              let bytes = decoded.token.data(using: .utf8),
+              decoded.expiresAt > issuedAt,
+              decoded.expiresAt.timeIntervalSince(issuedAt) <=
+                SessionCredential.maximumLifetime
+        else { throw Failure.malformedResponse }
+
+        return SessionCredential(token: bytes, aci: aci,
+                                 issuedAt: issuedAt, expiresAt: decoded.expiresAt,
+                                 origin: .serverIssued, phase: .active)
+    }
+
+    private struct ChallengeResponse: Decodable {
+        let challenge: String
     }
 
     /// Best-effort server revocation before local cryptographic erasure. Local

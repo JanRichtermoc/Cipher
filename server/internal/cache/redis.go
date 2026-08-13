@@ -64,6 +64,11 @@ func (c *Client) Ping(ctx context.Context) error { return c.rdb.Ping(ctx).Err() 
 // is documented as holding nothing durable.
 func (c *Client) Scripter() redis.Scripter { return c.rdb }
 
+// KV exposes the client for callers needing plain key operations as well as
+// scripts — currently only internal/reauth, whose challenges are a SET with a
+// TTL and a scripted single-use delete.
+func (c *Client) KV() *redis.Client { return c.rdb }
+
 // AssertNoPersistence fails if Redis would write state to disk.
 //
 // This is a startup assertion, not a nicety. The compose file disables RDB and

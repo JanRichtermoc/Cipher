@@ -86,6 +86,9 @@ final class AppSession {
     }
 
     private let sessions: SessionStore
+    /// The device's re-authentication key store (AUDIT 5.41). Injected so a test can use a
+    /// scratch Keychain service rather than the real one.
+    private let accountKeys: AccountKey
     private let authenticator: DeviceAuthenticator
     /// Injected so a test can use a scratch suite. `UserDefaults.standard` is process-wide,
     /// so tests that shared it leaked onboarding state into each other and passed or failed
@@ -100,9 +103,11 @@ final class AppSession {
         sessions: SessionStore = SessionStore(),
         defaults: UserDefaults = .standard,
         authenticator: DeviceAuthenticator = SystemDeviceAuthenticator(),
+        accountKeys: AccountKey = AccountKey(),
         now: @escaping @Sendable () -> Date = { Date() }
     ) {
         self.sessions = sessions
+        self.accountKeys = accountKeys
         self.authenticator = authenticator
         self.defaults = defaults
         self.now = now
@@ -233,6 +238,30 @@ final class AppSession {
         self.username = snapshot.username
         isLoadingProfile = false
         try transition(from: .profileSetup, to: .active)
+        isAppLocked = appLockEnabled
+    }
+
+    /// The key store, for the registration and reconnect paths.
+    var accountKeyStore: AccountKey { accountKeys }
+
+    /// Adopts a session obtained by proving possession of the account key (AUDIT 5.41).
+    ///
+    /// Distinct from `adoptRotatedCredential`, which requires a live `.active` credential to
+    /// replace — the whole point here is that there is not one. The guards that remain are the
+    /// ones that still mean something: the replacement must be server-issued, active,
+    /// unexpired, and **for the same account**. Without that last check a re-authentication
+    /// response could move this installation onto a different `aci`, which is an account
+    /// takeover performed by the relay.
+    func adoptReauthenticatedCredential(_ replacement: SessionCredential) throws {
+        guard let current = credential,
+              current.phase == .sessionEnded,
+              replacement.origin == .serverIssued,
+              replacement.phase == .active,
+              replacement.aci == current.aci,
+              !replacement.isExpired(at: now())
+        else { throw SessionLifecycleError.invalidTransition }
+        try sessions.store(replacement)
+        self.credential = replacement
         isAppLocked = appLockEnabled
     }
 
@@ -388,6 +417,10 @@ final class AppSession {
     /// and ratchets were still present.
     func completeAccountCleanup() throws {
         try sessions.clear()
+        // The re-authentication key goes with the account it authenticates (AUDIT 5.41).
+        // Leaving it behind would strand key material for an account that no longer exists,
+        // and the next registration mints its own.
+        try accountKeys.clear()
         credential = nil
         requiresAccountCleanup = false
         isAppLocked = false

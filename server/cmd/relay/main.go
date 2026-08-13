@@ -34,6 +34,7 @@ import (
 	"cipher.relay/internal/httpx"
 	"cipher.relay/internal/logging"
 	"cipher.relay/internal/ratelimit"
+	"cipher.relay/internal/reauth"
 	"cipher.relay/internal/store"
 	"cipher.relay/internal/sweep"
 )
@@ -240,6 +241,9 @@ func run() error {
 	authHandler := api.NewAuthHandler(db, limiter, log)
 	authHandler.Routes(mux)
 	api.NewInviteHandler(db, limiter, authHandler, log).Routes(mux)
+	// Re-authentication (AUDIT 5.41). Its challenges are ephemeral, so they live
+	// in Redis beside the rate-limit counters rather than in Postgres.
+	api.NewReauthHandler(db, limiter, reauth.NewStore(redis.KV()), authHandler, log).Routes(mux)
 	// The cumulative one-time prekey pool ceiling (AUDIT 5.40). Passed
 	// unconditionally: unset arrives as 0 and WithPreKeyCeiling holds any
 	// non-positive value at the default, so no path here builds a relay whose
