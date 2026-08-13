@@ -21,7 +21,7 @@ branch state from Git, CI requirements from GitHub, and deployed state from read
 
 | Information | Canonical owner | Overlap rule |
 |---|---|---|
-| Permanent agent behavior | Root [`CLAUDE.md`](../CLAUDE.md) | Wins over old handoff snapshots and tool-specific rules. |
+| Permanent agent behavior | Root [`CLAUDE.md`](../CLAUDE.md) | Wins over old handoff snapshots and tool-specific rules; owns the narrowly activated continuous-build exception. |
 | Current roadmap status and step definitions | [`CLAUDE_IMPLEMENTATION_PLAN.md`](CLAUDE_IMPLEMENTATION_PLAN.md) | `STATUS` and roadmap row win; verify mutable facts before acting. |
 | Locked protocol decisions | Implementation plan §0.2 | Requirements, not backlog suggestions. The threat model supplies rationale. |
 | Security finding status and accepted risk | [`AUDIT.md`](AUDIT.md) | Wins over the dated security report, step notes, and prose elsewhere. |
@@ -54,7 +54,7 @@ Files under `Pods/` and `server/vendor/` are third-party material and are not pa
 
 | Document | Purpose and authority | Kind | Read when | Mutable? |
 |---|---|---|---|---|
-| [`../CLAUDE.md`](../CLAUDE.md) | Permanent project behavior for Claude Code. | Normative instruction | Every session; automatic. | No |
+| [`../CLAUDE.md`](../CLAUDE.md) | Permanent project behavior for Claude Code, including the explicit token and safety boundary for a user-authorized continuous-build campaign. | Normative instruction | Every session; automatic. | No |
 | [`CLAUDE_CODE_SESSION_PROMPT.md`](CLAUDE_CODE_SESSION_PROMPT.md) | Copyable fresh-session bootstrap that grants one-step continuation, routes optional personal plugins, and points to canonical sources without duplicating status. | Human entry point | Paste into a new local Claude Code session. | No |
 | [`README.md`](README.md) | Document authority, precedence, and reading routes. | Normative index | Every task. | No |
 | [`AGENT_HANDOFF.md`](AGENT_HANDOFF.md) | Stable human-readable execution, verification, operator, commit, and PR guide. Root `CLAUDE.md` owns the contract; the plan and audit own current state. | Operational guide | Any non-trivial change or release handoff. | No |

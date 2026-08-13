@@ -4,6 +4,11 @@ This is the human-readable execution guide for one implementation or cleanup ste
 loads the root [`CLAUDE.md`](../CLAUDE.md) automatically; that file is the permanent behavioral
 contract and wins if this guide conflicts. Do not paste this document into a new session.
 
+This guide describes one cycle. The default is still one cycle followed by a hard stop. When the
+root contract's explicit `CIPHER-CONTINUOUS-V1` mode is active, repeat the same orientation,
+implementation, verification, and review discipline for each cycle; only the merge, blocker, and
+stop behavior changes as that root section specifies.
+
 Current roadmap state lives only in [`CLAUDE_IMPLEMENTATION_PLAN.md`](CLAUDE_IMPLEMENTATION_PLAN.md),
 security finding state only in [`AUDIT.md`](AUDIT.md), and document authority in
 [`README.md`](README.md). This guide deliberately contains no current branch, test total, gate
@@ -134,7 +139,10 @@ Before committing:
 Push the focused branch and open a pull request through an authenticated available integration. If
 that is impossible, give the operator the compare link and a numbered tutorial. Report scope,
 preserved information, findings, verification, negative-test evidence, unresolved work, and the next
-recommended step. Never merge without explicit approval, and stop after the pull request.
+recommended step. In the default workflow, never merge without explicit approval and stop after the
+pull request. An active `CIPHER-CONTINUOUS-V1` campaign supplies only the repeated PR/merge approval
+described by the root contract; follow its required-check, review, merge, refresh, and next-cycle
+conditions exactly.
 
 ## 7. Operator action
 
@@ -143,16 +151,21 @@ operator-only judgment blocks the step, stop at the nearest safe boundary. Give 
 with one action per step, exact labels or commands, expected results, final verification, rollback
 for risky actions, and the exact result to send back. Do not continue other work around the blocker.
 
+The sole exception is an active `CIPHER-CONTINUOUS-V1` campaign whose activating message explicitly
+pre-authorizes sequencing around that named class of blocker. In that case, keep the blocked item
+unmet and visible, then continue only with an independently executable step under the root contract.
+
 Existing staging access may be used only within already approved scope. Confirm first before changing
 public reachability, risking availability, rotating credentials, or modifying provider/GitHub state.
 
 ## 8. Final checklist
 
-- [ ] Exactly one approved step and one focused branch/PR.
+- [ ] Exactly one approved step and one focused branch/PR in this cycle.
 - [ ] No unrelated refactor, later work, protocol change, or dependency change.
 - [ ] Focused validation passed; new tests and negative tests were observed by name.
 - [ ] Full current repository verification passed; relay integration ran if required.
 - [ ] Canonical status, finding, operational, and historical documents remain consistent.
 - [ ] Exact staged paths and the staged public/secret boundary were reviewed.
 - [ ] PR link, evidence, preserved information, unresolved work, and next recommendation reported.
-- [ ] Work stopped after the PR.
+- [ ] Default workflow: work stopped after the PR. Continuous mode: merge conditions were satisfied,
+      `main` was refreshed, and the next cycle re-oriented from canonical truth.
