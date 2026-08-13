@@ -62,6 +62,10 @@ private enum Fixture {
     /// without it, Security completes the chain by fetching from the certificate's AIA
     /// extension, which makes the result depend on the network. A pinning test whose verdict
     /// changes with connectivity is not a test.
+    ///
+    /// It is also the **trust anchor** the suite evaluates against — see `trust(for:anchors:)`.
+    /// Embedding it made chain *building* offline; anchoring on it is what made the evaluation
+    /// that follows offline too, which is AUDIT 6.26.
     static let intermediateBase64 = [
         "MIICizCCAhGgAwIBAgIQXd1w3TH4AchcGGp6BLgK/jAKBggqhkjOPQQDAzAuMQswCQYDVQQGEwJV",
         "UzENMAsGA1UEChMESVNSRzEQMA4GA1UEAxMHUm9vdCBZRTAeFw0yNTA5MDMwMDAwMDBaFw0yODA5",
@@ -260,12 +264,61 @@ struct CertificatePinnerTests {
         #expect(!RelayEndpoint.pinnedSPKIHashes.contains(intermediateSPKI))
     }
 
+    @Test("the anchor set is what the chain is judged against, not the platform's trust store")
+    func anchorSetIsWhatTheChainIsJudgedAgainst() throws {
+        // The control for `trust(for:anchors:)`. Without it the three settings that helper
+        // applies could be wrong, or silently ignored, and every test above would still pass —
+        // AUDIT R2, a gate nobody has made fail. Same real chain as the two tests above; the
+        // only difference is an anchor this chain cannot reach.
+        let trust = try #require(Self.trust(for: [Fixture.leafCertificate,
+                                                  Fixture.intermediateCertificate],
+                                            anchors: [Fixture.selfSignedCertificate]))
+
+        #expect(throws: CertificatePinner.Failure.chainRejected) {
+            _ = try CertificatePinner().evaluate(trust, host: RelayEndpoint.host)
+        }
+    }
+
     // MARK: Helpers
 
-    private static func trust(for chain: [SecCertificate]) -> SecTrust? {
+    /// A fixed instant inside the leaf's validity window (2026-07-29 → 2026-10-27).
+    ///
+    /// Trust evaluation reads the clock. Without this the two real-chain tests start failing on
+    /// 2026-10-28 for a reason that has nothing to do with pinning, and the fixture comment's
+    /// claim that these certificates do not expire for the purposes of these tests quietly
+    /// stops being true. Expiry of the *live* certificate is `Scripts/verify-pins.sh`'s job.
+    private static let verifyDate = Date(timeIntervalSince1970: 1_785_542_400)
+
+    /// Builds a trust object judged **offline, against a stated anchor, at a fixed date**.
+    ///
+    /// Each of the three settings removes a way for this suite's verdict to be decided by
+    /// something other than the certificates in front of it. That is **AUDIT 6.26**: reaching a
+    /// publicly trusted root from `YE1` needs material a fresh runner does not have on disk, so
+    /// the platform went to the network for it — and a fetch that stalls returns a *rejected
+    /// chain* five to seven seconds later. On this machine it passed in 14 ms from cache, which
+    /// is why it was invisible where it was written and failed twice in CI on changes that
+    /// touched documentation only. A pinning test whose verdict changes with connectivity is
+    /// not a test; embedding the intermediate fixed chain *building*, and this fixes the
+    /// evaluation that follows it.
+    ///
+    /// Anchoring on the embedded intermediate does not weaken what the suite proves. The
+    /// property under test is that chain validation runs *before* the pin, and that a valid
+    /// chain carrying the wrong key is still refused — neither of which is a claim about which
+    /// roots Apple ships. `anchorSetIsWhatTheChainIsJudgedAgainst` is the control that keeps
+    /// these lines honest: a chain that does not reach the anchor is refused.
+    private static func trust(
+        for chain: [SecCertificate],
+        anchors: [SecCertificate] = [Fixture.intermediateCertificate]
+    ) -> SecTrust? {
         var trust: SecTrust?
         let policy = SecPolicyCreateSSL(true, RelayEndpoint.host as CFString)
-        guard SecTrustCreateWithCertificates(chain as CFArray, policy, &trust) == errSecSuccess else {
+        guard SecTrustCreateWithCertificates(chain as CFArray, policy, &trust) == errSecSuccess,
+              let trust,
+              SecTrustSetAnchorCertificates(trust, anchors as CFArray) == errSecSuccess,
+              SecTrustSetAnchorCertificatesOnly(trust, true) == errSecSuccess,
+              SecTrustSetNetworkFetchAllowed(trust, false) == errSecSuccess,
+              SecTrustSetVerifyDate(trust, Self.verifyDate as CFDate) == errSecSuccess
+        else {
             return nil
         }
         return trust
