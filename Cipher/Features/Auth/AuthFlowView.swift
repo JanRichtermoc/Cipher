@@ -315,10 +315,31 @@ struct RegistrationRecoveryView: View {
         defer { isWorking = false }
         do {
             try await store.register()
+            // Publish the re-authentication key while a working token exists (AUDIT 5.41).
+            // Best-effort: it is only needed once a session *ends*, and the launch path
+            // retries, so a relay hiccup here must not fail a registration that otherwise
+            // succeeded. Failing registration for it would trade a rare recovery path for a
+            // common setup failure.
+            await publishAccountKey()
             try session.completeRegistration()
             failure = nil
         } catch {
             failure = String(localized: "Setup could not finish. Check your connection and try again.")
+        }
+    }
+
+    /// Publishes the device's re-authentication key (AUDIT 5.41), best effort.
+    ///
+    /// Not allowed to fail registration: the key matters only once a session *ends*, and
+    /// failing setup over it would trade a rare recovery path for a common failure. The
+    /// relay accepts a re-publication of the identical key, so retrying is safe.
+    private func publishAccountKey() async {
+        guard let token = session.credential?.bearerToken else { return }
+        do {
+            let key = try session.accountKeyStore.ensure()
+            try await SessionLifecycle().publishAccountKey(token: token, key: key)
+        } catch {
+            AppLog.store.error("could not publish the account key; will retry on a later launch")
         }
     }
 }
@@ -336,6 +357,8 @@ struct RegistrationRecoveryView: View {
 struct SessionEndedView: View {
     @Environment(AppSession.self) private var session
     @State private var isConfirming = false
+    @State private var isReconnecting = false
+    @State private var reconnectFailure: String?
 
     var body: some View {
         VStack(spacing: CipherTheme.spacingXL) {
@@ -344,22 +367,29 @@ struct SessionEndedView: View {
                 .font(.system(size: 56))
                 .foregroundStyle(CipherTheme.accent)
             Text("Signed out").font(.title2.bold())
-            Text(
-                """
-                This device's session ended and the relay will not renew it. \
-                Your messages are still on this device and nothing has been deleted.
-
-                Cipher accounts cannot be restored — starting again creates a new account \
-                with a new safety number, and your contacts will need to verify you again. \
-                Erasing removes this device's messages and keys permanently.
-                """
-            )
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, CipherTheme.spacingXL)
+            // One line each, never a `"""` block: Scripts/verify-localization.py skips
+            // multi-line literals wholesale, so copy written that way ships unscanned.
+            Text(reconnectFailure ?? String(localized: "This device's session ended. Your messages are still here and nothing has been deleted."))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, CipherTheme.spacingXL)
+            if reconnectFailure == nil {
+                Text("Reconnect signs this device back in using a key it has held since setup. If that no longer works, starting again creates a new account with a new safety number, and your contacts will need to verify you again.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, CipherTheme.spacingXL)
+            }
             Spacer()
-            PrimaryGlassButton(title: "Erase & Start Over") {
-                isConfirming = true
+            VStack(spacing: CipherTheme.spacingM) {
+                PrimaryGlassButton(title: isReconnecting ? "Reconnecting…" : "Reconnect") {
+                    Task { await reconnect() }
+                }
+                .disabled(isReconnecting)
+                Button("Erase & Start Over", role: .destructive) {
+                    isConfirming = true
+                }
+                .disabled(isReconnecting)
             }
             .padding(.horizontal, CipherTheme.spacingXL)
             .padding(.bottom, CipherTheme.spacingXL)
@@ -374,6 +404,27 @@ struct SessionEndedView: View {
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("This cannot be undone. Your messages and keys are deleted from this device.")
+        }
+    }
+
+    /// Proves possession of the account key and adopts the session it returns.
+    ///
+    /// Every failure reads the same to the user, because the relay refuses an unknown
+    /// account, an unpublished key and a bad signature identically — this device cannot tell
+    /// them apart, and inventing a distinction here would be inventing information.
+    private func reconnect() async {
+        guard !isReconnecting, let aci = session.credential?.aci else { return }
+        isReconnecting = true
+        defer { isReconnecting = false }
+        reconnectFailure = nil
+        do {
+            let key = try session.accountKeyStore.ensure()
+            let replacement = try await SessionLifecycle().reauthenticate(
+                aci: aci, key: key, keyStore: session.accountKeyStore)
+            try session.adoptReauthenticatedCredential(replacement)
+        } catch {
+            reconnectFailure = String(localized:
+                "This device could not reconnect. Check your connection, or erase and start over.")
         }
     }
 }

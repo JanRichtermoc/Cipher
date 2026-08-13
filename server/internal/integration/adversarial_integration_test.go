@@ -39,7 +39,9 @@ import (
 	"cipher.relay/internal/api"
 	"cipher.relay/internal/auth"
 	"cipher.relay/internal/blob"
+	"cipher.relay/internal/cache"
 	"cipher.relay/internal/logging"
+	"cipher.relay/internal/reauth"
 	"cipher.relay/internal/store"
 )
 
@@ -62,6 +64,17 @@ func fullStack(t *testing.T) (http.Handler, *store.DB, *blob.Store) {
 	api.NewKeysHandler(db, authHandler, log).Routes(mux)
 	api.NewMessagesHandler(db, authHandler, log).Routes(mux)
 	api.NewBlobsHandler(db, blobs, authHandler, log).Routes(mux)
+	// Re-authentication (AUDIT 5.41). Registered here so the authentication
+	// sweep below actually reaches PUT /v1/auth/key: a route the harness does
+	// not mount answers 404, and a sweep that accepts 404 as "refused" would
+	// pass against an endpoint that was never guarded at all.
+	rc, err := cache.Open(context.Background(),
+		os.Getenv("RELAY_REDIS_ADDR"), os.Getenv("RELAY_REDIS_PASSWORD"))
+	if err != nil {
+		t.Fatalf("open redis: %v", err)
+	}
+	t.Cleanup(func() { _ = rc.Close() })
+	api.NewReauthHandler(db, limiter, reauth.NewStore(rc.KV()), authHandler, log).Routes(mux)
 	return mux, db, blobs
 }
 
@@ -73,6 +86,7 @@ func fullStack(t *testing.T) (http.Handler, *store.DB, *blob.Store) {
 var authenticatedRoutes = []struct{ method, path string }{
 	{http.MethodPost, "/v1/invite"},
 	{http.MethodPost, "/v1/auth/rotate"},
+	{http.MethodPut, "/v1/auth/key"},
 	{http.MethodDelete, "/v1/auth"},
 	{http.MethodDelete, "/v1/auth/all"},
 	{http.MethodPut, "/v1/keys"},
@@ -92,6 +106,12 @@ var authenticatedRoutes = []struct{ method, path string }{
 // rate-limited by source address instead.
 var publicRoutes = map[string]bool{
 	"POST /v1/invite/redeem": true,
+	// Re-authentication (AUDIT 5.41). Unauthenticated by necessity: having no
+	// usable session token is the situation these two exist for. What guards
+	// them instead is a signature over a server-chosen challenge, plus rate
+	// limits on both the address and the account — see internal/api/reauth.go.
+	"POST /v1/auth/challenge": true,
+	"POST /v1/auth/reauth":    true,
 }
 
 var routeRE = regexp.MustCompile(`"(GET|POST|PUT|DELETE) (/v1[^"]*)"`)

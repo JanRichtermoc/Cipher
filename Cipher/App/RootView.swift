@@ -3,6 +3,7 @@
 //  Cipher
 //
 
+import os
 import SwiftUI
 
 struct RootView: View {
@@ -93,11 +94,15 @@ struct RootView: View {
             }
         }
         .onChange(of: store.failure) { _, failure in
-            // A revoked/expired token is not a transient messaging error. Move
-            // behind the persisted destructive gate so no prior-account history
-            // remains visible while the user is asked to authenticate again.
+            // A revoked or expired token is not a transient messaging error, so the app
+            // must stop rather than keep retrying — but it must not *erase*. This called
+            // `signOut()`, which arms the destructive gate, and it is the second path into
+            // AUDIT 5.41's silent history loss: the messaging layer reaching a 401 would
+            // destroy the account's local state with no prompt, on any request rather than
+            // only at rotation. `endSession()` stops at signed-out; erasure stays a
+            // deliberate act on the screen that explains it.
             if failure == .sessionRejected {
-                try? session.signOut()
+                try? session.endSession()
             }
         }
         // The messaging path is started here rather than in `ChatsListView`, because it has to
@@ -119,6 +124,27 @@ struct RootView: View {
             }
             guard !Task.isCancelled else { return }
             try? session.enforceCredentialExpiry()
+        }
+    }
+
+    /// Marks that the relay has confirmed this device's account key.
+    ///
+    /// A plain `UserDefaults` flag, deliberately: it is not a security decision, it decides
+    /// only whether to spend a request. Losing it costs one extra idempotent publish, and the
+    /// relay accepts a re-publication of the identical key.
+    private static let accountKeyPublishedKey = "cipher.accountKeyPublished"
+
+    private func publishAccountKeyIfNeeded() async {
+        guard !UserDefaults.standard.bool(forKey: Self.accountKeyPublishedKey),
+              let token = session.credential?.bearerToken
+        else { return }
+        do {
+            let key = try session.accountKeyStore.ensure()
+            try await SessionLifecycle().publishAccountKey(token: token, key: key)
+            UserDefaults.standard.set(true, forKey: Self.accountKeyPublishedKey)
+        } catch {
+            // Retried on the next foreground. It matters only once a session ends.
+            AppLog.store.error("could not publish the account key; will retry")
         }
     }
 
@@ -148,6 +174,11 @@ struct RootView: View {
             return
         }
         guard session.destination == .main else { return }
+        // Publish the re-authentication key if this installation has not yet done so
+        // (AUDIT 5.41). Registration publishes it for new accounts; this is the path for
+        // every account that existed before the key did, without which the fix would only
+        // ever reach accounts created after it shipped.
+        await publishAccountKeyIfNeeded()
         await store.start()
     }
 }
