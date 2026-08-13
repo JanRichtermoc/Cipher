@@ -1,11 +1,19 @@
 # Proposal — a re-authentication path (AUDIT 5.41)
 
-> **STATUS: PROPOSAL. NOT APPROVED, NOT IMPLEMENTED, NOT A PLAN AMENDMENT.**
-> Nothing here is a current fact about Cipher. It changes no finding status, adds no step, and
-> authorises no code. It exists so the operator can approve, reject, or redirect a design **before**
-> anyone writes it — which is what `AUDIT.md` 5.41 says it is waiting on.
-> `CLAUDE_IMPLEMENTATION_PLAN.md` and `AUDIT.md` remain authoritative; if this document ever
-> disagrees with them, they win.
+> **STATUS: DECIDED AND IMPLEMENTED, 2026-08-13. This is now a historical design record.**
+> It was approved with **A1** for the §4 trade, and both changes shipped as their own steps:
+> **Change D** as **P9.S10** and **Change A** as **P9.S11**. `AUDIT.md` **5.41 is CLOSED** by the
+> pair — in the repository; the staging relay does not carry the relay half yet, and
+> `RUNBOOK-VPS.md` owns that pending deploy.
+>
+> **It is still authoritative for nothing.** What was built is described by the two roadmap rows,
+> `AUDIT.md` 5.41, and `BACKEND.md` §2.1a and §6; where this document and those disagree, those win,
+> and they already do in one place worth naming — §7's verification list was written before the work
+> and is not the evidence, the steps and their negative tests are. What this file keeps is the part
+> history loses: the options that were weighed and rejected, and why.
+>
+> **Read §4 with 5.42.** The residual this document argued about is not the only one the design
+> carried; review after the merge opened **5.42**, which §4 did not anticipate.
 
 ## 1. The problem, precisely
 
@@ -173,13 +181,27 @@ Not a sketch — the gates it must arrive with:
 - Relay integration suite required-name additions, and the `verify-identity-fields.py` gate re-run,
   because a new account column is exactly what that gate watches.
 
-## 8. Decision requested
+## 8. Decision requested — answered 2026-08-13
+
+The four questions below were the ones put to the operator. The answers are recorded here so this
+document cannot be read as still waiting on them; the roadmap rows and `AUDIT.md` own what was
+built.
 
 1. **Change D** (client-only, stops silent history loss) — approve as its own small step? It is
    independently valuable and I recommend it regardless of the answer to 2.
+   - **Approved.** Shipped as **P9.S10**. It found a second path into the same defect that this
+     document did not name: the messaging layer's `sessionRejected` handler also called `signOut()`,
+     so any 401 destroyed local state, not only one at rotation.
 2. **Change A** (Ed25519 account key) — approve as a design, reject, or redirect?
+   - **Approved as designed.** Shipped as **P9.S11**, relay and client together.
 3. If A is approved: **A1, A2, or A3** for the revocation trade in §4? My recommendation is **A1**.
+   - **A1.** The residual is accepted rather than answered with an operator freeze flag, whose abuse
+     case is worse than what it prevents. `AUDIT.md` 5.41 states it without softening.
 4. **P10.S06's wording** should be amended to drop the "would serve both" claim (§5), whatever else
    is decided.
+   - **Done**, in the plan, before either change shipped.
 
-Until these are answered, 5.41 stays OPEN and unscheduled, which is the correct state for it.
+**5.41 is CLOSED in the repository and not yet on the staging relay.** The one thing this document
+did not foresee is **5.42**: the per-account limit that P9.S11 put on the verify route is keyed on an
+`aci` an unauthenticated caller supplies, so a chosen account's recovery budget can be spent by
+anyone who knows it. §4 weighed the *stolen device* residual and not that one.
