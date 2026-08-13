@@ -55,6 +55,21 @@ nonisolated struct SessionCredential: Equatable, Sendable {
         case profileSetup = 2
         case active = 3
         case destroying = 4
+        /// The relay will not renew this session, or it expired — and **nothing has been
+        /// erased**.
+        ///
+        /// Distinct from `destroying`, which means the *user* asked to leave. Conflating the
+        /// two is AUDIT 5.41's second half: a rejected rotation used to run the sign-out path,
+        /// so an operator-side revoke silently destroyed each device's protocol state, history
+        /// and profile whenever it next entered its rotation window — up to 23 days later,
+        /// with nothing on screen linking the two. This phase stops at "you are signed out";
+        /// erasure stays behind a deliberate act.
+        ///
+        /// **Persisted rather than held in memory**, for the reason
+        /// `testForegroundExpiryPersistsTheDestructiveGate` records: a purely in-memory flag
+        /// is undone by relaunching, and for the *expiry* route it would also be undone by
+        /// setting the device clock backwards (the family of AUDIT 6.23). It is a ratchet.
+        case sessionEnded = 5
     }
 
     /// Opaque bearer bytes. Server-issued values are 32 random bytes encoded as

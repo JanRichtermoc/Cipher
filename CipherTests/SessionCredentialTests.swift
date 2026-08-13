@@ -215,7 +215,15 @@ final class SessionCredentialTests: XCTestCase {
             sessions: store, defaults: defaults,
             now: { issuedAt.addingTimeInterval(31 * 24 * 60 * 60) })
         XCTAssertFalse(session.isAuthenticated)
-        XCTAssertEqual(session.destination, .accountCleanup)
+        // AUDIT 5.41: an expired credential stops the app without erasing anything. The
+        // invariant this test was written for is unchanged and asserted below — another
+        // invite stays unreachable — but it is now reached from a screen that asks first.
+        XCTAssertEqual(session.destination, .sessionEnded)
+        XCTAssertThrowsError(
+            try session.beginRegistration(with: Self.sample(
+                phase: .registering,
+                issuedAt: issuedAt, expiresAt: issuedAt.addingTimeInterval(60))),
+            "an expired account must not reach another invite before erasure")
     }
 
     func testForegroundExpiryPersistsTheDestructiveGate() throws {
@@ -234,12 +242,21 @@ final class SessionCredentialTests: XCTestCase {
         clock.advance(by: 31)
         try session.enforceCredentialExpiry()
 
-        XCTAssertEqual(session.destination, .accountCleanup)
-        XCTAssertEqual(store.current()?.phase, .destroying,
+        XCTAssertEqual(session.destination, .sessionEnded)
+        XCTAssertEqual(store.current()?.phase, .sessionEnded,
                        "expiry while foregrounded must survive a process restart")
         XCTAssertEqual(
             AppSession(sessions: store, defaults: defaults, now: { clock.now() }).destination,
-            .accountCleanup)
+            .sessionEnded)
+
+        // The reason the phase is persisted rather than derived: it must be a ratchet.
+        // Rolling the device clock back behind the expiry must not restore the session
+        // (the family of AUDIT 6.23). Without the stored phase this reads `.main` again.
+        clock.advance(by: -60)
+        XCTAssertEqual(
+            AppSession(sessions: store, defaults: defaults, now: { clock.now() }).destination,
+            .sessionEnded,
+            "a backwards clock must not undo an ended session")
     }
 
     func testCleanupRechecksATemporarilyUnreadableCredentialBeforeErasing() throws {
@@ -410,6 +427,95 @@ final class SessionCredentialTests: XCTestCase {
     #endif
 
     // MARK: - Helpers
+
+    // MARK: - AUDIT 5.41 — an ended session erases nothing
+
+    /// The core of Change D: the relay refusing to renew a token must not run the
+    /// destructive path. Before this, `RootView` called `signOut()` here, which sets
+    /// `requiresAccountCleanup` and hands `AccountCleanupView` a screen that erases on
+    /// `.task` — with no prompt, and up to 23 days after the revoke that caused it.
+    func testAnEndedSessionDoesNotArmTheDestructiveGate() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        let issuedAt = Date(timeIntervalSince1970: 1_900_000_000)
+        try store.store(Self.sample(
+            issuedAt: issuedAt, expiresAt: issuedAt.addingTimeInterval(60 * 60 * 24 * 30)))
+        let session = AppSession(
+            sessions: store, defaults: defaults,
+            now: { issuedAt.addingTimeInterval(60) })
+
+        XCTAssertEqual(session.destination, .main, "positive control: the session starts live")
+        try session.endSession()
+
+        XCTAssertEqual(session.destination, .sessionEnded)
+        XCTAssertNotEqual(session.destination, .accountCleanup,
+                          "an ended session must not reach the erasing screen on its own")
+        XCTAssertEqual(store.current()?.phase, .sessionEnded)
+        XCTAssertFalse(session.isAuthenticated)
+    }
+
+    /// It has to survive a relaunch, or the app returns to `.main` and simply fails every
+    /// request instead of saying what happened.
+    func testAnEndedSessionSurvivesRelaunch() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        let issuedAt = Date(timeIntervalSince1970: 1_900_000_000)
+        try store.store(Self.sample(
+            issuedAt: issuedAt, expiresAt: issuedAt.addingTimeInterval(60 * 60 * 24 * 30)))
+        let now: @Sendable () -> Date = { issuedAt.addingTimeInterval(60) }
+        try AppSession(sessions: store, defaults: defaults, now: now).endSession()
+
+        XCTAssertEqual(
+            AppSession(sessions: store, defaults: defaults, now: now).destination,
+            .sessionEnded)
+    }
+
+    /// The invariant the old destructive path was protecting, preserved: no new invite
+    /// while an old account's ratchets and history are still on the device.
+    func testAnEndedSessionStillBlocksAnotherInvite() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        let issuedAt = Date(timeIntervalSince1970: 1_900_000_000)
+        try store.store(Self.sample(
+            issuedAt: issuedAt, expiresAt: issuedAt.addingTimeInterval(60 * 60 * 24 * 30)))
+        let session = AppSession(
+            sessions: store, defaults: defaults, now: { issuedAt.addingTimeInterval(60) })
+        try session.endSession()
+
+        XCTAssertThrowsError(
+            try session.beginRegistration(with: Self.sample(
+                phase: .registering,
+                issuedAt: issuedAt, expiresAt: issuedAt.addingTimeInterval(60))),
+            "erasure, not the passage of time, is what unlocks another invite")
+    }
+
+    /// Erasure still works — it is a deliberate act now, not an automatic one. Without
+    /// this the change could pass by making erasure unreachable, which is a different bug.
+    func testErasingFromAnEndedSessionStillReachesCleanup() throws {
+        let (store, _) = makeStore()
+        defer { try? store.clear() }
+        let defaults = makeDefaults()
+        defaults.set(true, forKey: "cipher.hasCompletedOnboarding")
+        let issuedAt = Date(timeIntervalSince1970: 1_900_000_000)
+        try store.store(Self.sample(
+            issuedAt: issuedAt, expiresAt: issuedAt.addingTimeInterval(60 * 60 * 24 * 30)))
+        let session = AppSession(
+            sessions: store, defaults: defaults, now: { issuedAt.addingTimeInterval(60) })
+        try session.endSession()
+        XCTAssertEqual(session.destination, .sessionEnded)
+
+        try session.signOut()
+
+        XCTAssertEqual(session.destination, .accountCleanup,
+                       "the user's own choice must still reach the erasing screen")
+        XCTAssertEqual(store.current()?.phase, .destroying)
+    }
 
     private static func sample(
         tokenCharacter: Character = "H",
