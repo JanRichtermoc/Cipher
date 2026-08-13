@@ -161,6 +161,8 @@ final class AppSession {
         case registration
         case profileSetup
         case accountCleanup
+        /// Signed out by the relay or by expiry, with **nothing erased yet**.
+        case sessionEnded
         case locked
         case main
     }
@@ -168,14 +170,21 @@ final class AppSession {
     var destination: Destination {
         if requiresAccountCleanup { return .accountCleanup }
         if let credential {
-            if credential.isExpired(at: now()) || credential.phase == .destroying {
-                return .accountCleanup
+            // `destroying` first, and only it reaches the erasing screen: it is the one
+            // phase that means the *user* asked to leave. AUDIT 5.41.
+            if credential.phase == .destroying { return .accountCleanup }
+            // Ended by the relay, or by the clock. Terminal for messaging, and erases
+            // nothing until the user says so. Expiry is evaluated here as well as
+            // persisted, so a credential that lapses while the app is closed is caught
+            // on the next launch by its own timestamp.
+            if credential.phase == .sessionEnded || credential.isExpired(at: now()) {
+                return .sessionEnded
             }
             switch credential.phase {
             case .registering: return .registration
             case .profileSetup: return .profileSetup
             case .active: break
-            case .destroying: return .accountCleanup
+            case .destroying, .sessionEnded: return .accountCleanup
             }
         }
         #if DEBUG
@@ -275,8 +284,32 @@ final class AppSession {
     func enforceCredentialExpiry() throws {
         guard let credential,
               credential.phase != .destroying,
+              credential.phase != .sessionEnded,
               credential.isExpired(at: now()) else { return }
-        try signOut()
+        try endSession()
+    }
+
+    /// Records that this session is over without erasing anything (AUDIT 5.41).
+    ///
+    /// Called when the relay refuses to renew the token and when the credential lapses.
+    /// It used to be `signOut()`, which sets the destructive gate — so an operator-side
+    /// revoke destroyed each device's history on a delay of up to 23 days, silently. The
+    /// account is still unusable and another invite is still unreachable, because the
+    /// credential is still present and `beginRegistration` refuses while one exists; what
+    /// changed is that the *data* survives until someone chooses otherwise.
+    ///
+    /// The phase is persisted before the in-memory value changes, so a failed Keychain
+    /// write leaves the app in the state it can still act on rather than one it cannot
+    /// re-derive. If that write fails the app simply meets the same refusal again.
+    func endSession() throws {
+        guard let credential,
+              credential.phase != .destroying,
+              credential.phase != .sessionEnded
+        else { return }
+        let replacement = credential.replacing(phase: .sessionEnded)
+        try sessions.store(replacement)
+        self.credential = replacement
+        isAppLocked = appLockEnabled
     }
 
     private func transition(from expected: SessionCredential.Phase,

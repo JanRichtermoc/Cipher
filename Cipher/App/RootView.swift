@@ -28,6 +28,8 @@ struct RootView: View {
                 NavigationStack { ProfileSetupView() }
             case .accountCleanup:
                 AccountCleanupView()
+            case .sessionEnded:
+                SessionEndedView()
             case .onboarding:
                 OnboardingFlowView()
             }
@@ -127,7 +129,13 @@ struct RootView: View {
                 let replacement = try await SessionLifecycle().rotate(current)
                 try session.adoptRotatedCredential(replacement)
             } catch SessionLifecycle.Failure.rejected {
-                try? session.signOut()
+                // The relay will not renew this token. That is not the user asking to
+                // leave, and it used to be treated as one: `signOut()` sets the
+                // destructive gate, so an operator-side revoke erased this device's
+                // protocol state, history and profile the next time rotation fell due —
+                // up to 23 days later, with nothing on screen connecting the two.
+                // AUDIT 5.41. Stop at signed-out; erasure is a deliberate act.
+                try? session.endSession()
                 return
             } catch {
                 // The old token remains valid and stored. Rotation will be

@@ -323,6 +323,61 @@ struct RegistrationRecoveryView: View {
     }
 }
 
+/// Shown when the relay ended this session, or the credential lapsed.
+///
+/// **The screen exists so that erasure is a decision.** Before AUDIT 5.41 this state ran the
+/// sign-out path, so a rejected rotation destroyed protocol state, history and profile with no
+/// prompt — and because rotation only falls due within 7 days of a 30-day expiry, that could
+/// happen up to 23 days after whatever caused it, with nothing on screen linking them.
+///
+/// It is honest about the consequence rather than reassuring: the account cannot be recovered,
+/// because the session token is the only credential path (`BACKEND.md` §6). What it will not do
+/// is take the messages with it before the user has read this.
+struct SessionEndedView: View {
+    @Environment(AppSession.self) private var session
+    @State private var isConfirming = false
+
+    var body: some View {
+        VStack(spacing: CipherTheme.spacingXL) {
+            Spacer()
+            Image(systemName: "person.badge.minus")
+                .font(.system(size: 56))
+                .foregroundStyle(CipherTheme.accent)
+            Text("Signed out").font(.title2.bold())
+            Text(
+                """
+                This device's session ended and the relay will not renew it. \
+                Your messages are still on this device and nothing has been deleted.
+
+                Cipher accounts cannot be restored — starting again creates a new account \
+                with a new safety number, and your contacts will need to verify you again. \
+                Erasing removes this device's messages and keys permanently.
+                """
+            )
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .padding(.horizontal, CipherTheme.spacingXL)
+            Spacer()
+            PrimaryGlassButton(title: "Erase & Start Over") {
+                isConfirming = true
+            }
+            .padding(.horizontal, CipherTheme.spacingXL)
+            .padding(.bottom, CipherTheme.spacingXL)
+        }
+        .confirmationDialog(
+            "Erase this device's messages and keys?",
+            isPresented: $isConfirming, titleVisibility: .visible
+        ) {
+            Button("Erase Everything", role: .destructive) {
+                try? session.signOut()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This cannot be undone. Your messages and keys are deleted from this device.")
+        }
+    }
+}
+
 struct AccountCleanupView: View {
     @Environment(AppSession.self) private var session
     @Environment(ConversationStore.self) private var store
