@@ -377,6 +377,13 @@ in-flight rate-limit state.
 | `rl:*` | Rate-limit counters (§5) | Per limit, seconds to minutes |
 | `presence:*` | Which accounts hold a live delivery connection, for online fan-out | Connection lifetime |
 | `quota:*` | Per-token attachment upload accounting | 24 h |
+| `reauth:*` | Outstanding re-authentication challenges, namespaced by `aci` (§6) | 2 min, and consumed on first use |
+
+`reauth:*` is here rather than in Postgres for the reason this section exists: a challenge is
+valid for two minutes and is destroyed by the first attempt to use it, so making it durable would
+add routing-adjacent state to the database a seizure is after and buy nothing. Losing every
+outstanding challenge costs one retry. It holds no key material — the value is a placeholder, and
+the *challenge* is the key name.
 
 Hard rules, because Redis defaults are wrong for this:
 
@@ -496,6 +503,9 @@ Token-bucket in Redis. Keyed by session token hash where authenticated, by sourc
 | `POST /v1/blobs` | 100 / day and 500 MB / day / account | Storage. The byte half is enforced, not merely counted — see below |
 | `DELETE /v1/blobs/{id}` | 200 / hour / account | Removes a row and unlinks a file. **Added after it was found unthrottled** (AUDIT 5.23) |
 | `POST /v1/auth/rotate` | 10 / hour / account | Token grinding |
+| `PUT /v1/auth/key` | 5 / hour / account | Authenticated and write-once, so this only stops a loop |
+| **`POST /v1/auth/challenge`** | **30 / hour / IP** | **Unauthenticated.** Limited per address only: it takes an `aci` from the body, so a per-account limit would let anyone exhaust a *chosen* account's budget and deny it re-authentication |
+| **`POST /v1/auth/reauth`** | **20 / hour / IP and 10 / hour / account** | **Unauthenticated.** Both, because here the `aci` is one the caller claims to control: the per-account ceiling is what bounds signature guessing, and it is charged **before** the signature is checked so a guessing loop pays whether or not it was close |
 
 ### Request body limits, and the one that refused legal requests
 
@@ -817,9 +827,38 @@ invite code ──redeem──▶ account (aci) ──▶ session token ──�
 - **No password, no recovery flow, no email.** There is nothing to phish and nothing to reset. Losing
   the device means losing the account, which is the honest consequence of §3.4 and must be stated in
   the UI before a user relies on it.
+- **Re-authentication with the account key (P9.S11, AUDIT 5.41).** A second credential path, and it
+  does not contradict the line above: the key never leaves the device that made it (§2.1a), so
+  losing the device still loses the account. What it removes is the case where the *relay* ends a
+  session and the device cannot come back — before it, deleting `session_tokens` was
+  indistinguishable from disbanding the circle, because rotation needs the old token and redeeming
+  an invite mints a new account.
+  - **Challenge-response, never a bearer value.** `POST /v1/auth/challenge` mints 32 CSPRNG bytes
+    under `reauth:<aci>:<challenge>` (§3), and `POST /v1/auth/reauth` takes a signature over
+    `"cipher-reauth-v1:" + aci + ":" + challenge`. The context prefix is domain separation: without
+    it, any other place that ever asks a device to sign a server-chosen blob becomes a signing
+    oracle for this. The `aci` is inside the signature as well as in the key name, so a signature
+    cannot be replayed against a different account.
+  - **The challenge is consumed before the signature is checked**, by a scripted `DEL` whose return
+    value decides — single use is a property of one operation, the same way invite redemption is.
+    A wrong signature burns it, or one challenge could be attacked repeatedly.
+  - **Fails closed.** If Redis is unreachable the handler refuses rather than accepting a signature
+    over a value it cannot prove it issued.
+  - **Unknown account, no published key, wrong signature, and an unknown, expired or reused
+    challenge are one 401 with an identical body**, and a challenge is minted for an account that
+    does not exist exactly as for one that does. In a five-person circle an existence oracle is
+    most of the metadata worth having.
+  - **Accepted, not solved:** this weakens revocation against a *stolen device*, since whoever
+    holds the device holds the key. It widens no adversary — that attacker already holds the
+    libsignal identity private key and can already impersonate the account — and the alternative
+    considered, an operator freeze flag, is a censorship lever in a design that has none.
+    `AUDIT.md` 5.41 owns the disposition.
 
-Every endpoint except `/health` and `/v1/invite/redeem` requires a token. **`/v1/keys/{aci}`
-requires one too** — an unauthenticated prekey directory would make the §5 per-account limit
+Every endpoint except `/health`, `/v1/invite/redeem`, `POST /v1/auth/challenge` and
+`POST /v1/auth/reauth` requires a token. The last two **cannot** be authenticated: having no usable
+token is the situation they exist for, which is why §5 gives them the only unauthenticated rate
+limits in the design and why every one of their failures answers identically. **`/v1/keys/{aci}`
+requires one** — an unauthenticated prekey directory would make the §5 per-account limit
 unenforceable and would let anyone on the internet drain any pool.
 
 ---

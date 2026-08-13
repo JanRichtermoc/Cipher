@@ -323,8 +323,21 @@ nonisolated struct SessionLifecycle: Sendable {
             throw Failure.unreachable
         }
         switch response.status {
-        // 409 means the relay holds a different key for this account, which a device cannot
-        // resolve and must not paper over: it is reported rather than swallowed.
+        // 204 published or re-published the identical key. 409 means the relay holds a
+        // *different* key for this account, and this returns rather than throwing — not
+        // because it is harmless, but because there is nothing a device can do about it and
+        // retrying is the one response that is certainly wrong. Publication is write-once
+        // (`BACKEND.md` §2.1a), so the relay will answer 409 forever; throwing here would
+        // leave the launch path re-publishing on every foreground, spending a request each
+        // time to be told the same thing.
+        //
+        // What it means is that this installation cannot re-authenticate, which is the
+        // ordinary consequence of losing the device's Keychain — `AccountKey.ensure()` mints
+        // a new key when it finds none, and the old public half is already published. That is
+        // "lose the device, lose the account" (`BACKEND.md` §6) arriving through a second
+        // door, not a new failure. The user meets it at `SessionEndedView`, where Reconnect
+        // fails and Erase & Start Over is offered; nothing here can say it sooner without
+        // inventing a distinction the relay deliberately refuses to draw.
         case 204, 409: return
         case 401: throw Failure.rejected
         case 429: throw Failure.rateLimited
