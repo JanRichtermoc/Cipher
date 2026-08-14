@@ -10,9 +10,9 @@
 # That gate scans the *source*, under the toolchain `server/go.mod` declares.
 # This one scans the *artifact*, under whatever toolchain built it — and on this
 # tree those are not the same Go. The `go` directive is a minimum, not a
-# selection: go.mod declares 1.25.12 while the Dockerfile's build stage is pinned
-# to a golang:1.26.5-alpine digest, so the binary that ships to the staging box
-# carries 1.26.5's standard library and nothing was asking that library any
+# selection: go.mod declares 1.25.13 while the Dockerfile's build stage is pinned
+# to a golang:1.26.6-alpine digest, so the binary that ships to the staging box
+# carries 1.26.6's standard library and this gate asks that exact library the
 # questions.
 #
 # Most of what a Go vulnerability scan finds is in the standard library

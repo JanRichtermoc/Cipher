@@ -117,7 +117,7 @@ jobs:
         # missing passes without having run) but is not a fixed toolchain.
         #
         # go-version-file reads server/go.mod, so the CI version and the version the
-        # module declares cannot drift apart. go.mod names 1.25.12: 1.25.0 is the
+        # module declares cannot drift apart. go.mod names 1.25.13: 1.25.0 is the
         # measured language floor rather than a guessed one (1.23 was written first,
         # and building under it fails because pgx v5.10.0 declares `go >= 1.25.0`,
         # verified by building under both), and the patch level above it is a
