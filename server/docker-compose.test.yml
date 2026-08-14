@@ -18,7 +18,7 @@
 
 services:
   tests:
-    # golang:1.26.5 — the Debian-based image, digest-pinned like every other.
+    # golang:1.26.6 — the Debian-based image, digest-pinned like every other.
     #
     # Not the -alpine variant the Dockerfile builds with, and the difference is
     # forced rather than chosen: `go test -race` requires cgo, and alpine ships
@@ -29,7 +29,7 @@ services:
     # The race detector is worth the larger image here. The concurrency test is
     # the one that proves single-use redemption is atomic, and a data race in
     # the code it exercises is exactly the failure that only appears under load.
-    image: golang@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c70636647
+    image: golang@sha256:640a234f4bea3e399c056b7b8f9c667c4939befae8db2f14e9785e16eccd4205
     working_dir: /src
     volumes:
       # Read-only: the test run must not be able to modify the working tree it

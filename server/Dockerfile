@@ -7,13 +7,13 @@
 # can move, which is exactly what docs/AUDIT.md 1.8 records for GitHub Actions and
 # 1.3 for libsignal — and a base image has the largest blast radius of the three,
 # because everything in it runs as the service. Resolved from the registry on
-# 2026-07-29; the tag is kept in a comment so the intended version is legible.
+# 2026-08-14; the tag is kept in a comment so the intended version is legible.
 #
 # ---------------------------------------------------------------------------
 # Build stage
 # ---------------------------------------------------------------------------
-FROM golang@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS build
-# golang:1.26.5-alpine
+FROM golang@sha256:af8d6740070b8906d12eae1c3e3ea0957fb63f492051ea05e354c38ef9fe88df AS build
+# golang:1.26.6-alpine
 
 WORKDIR /src
 

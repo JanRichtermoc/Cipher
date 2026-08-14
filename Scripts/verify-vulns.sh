@@ -79,7 +79,7 @@ if [[ ! "$DECLARED_GO" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
 FAILED: server/go.mod declares go '$DECLARED_GO', which is not a full
         version, so this gate cannot pin the toolchain it must scan under.
 
-  Write a complete version (for example 'go 1.25.12'). A two-part version
+  Write a complete version (for example 'go 1.25.13'). A two-part version
   names no released toolchain, and scanning under whatever Go happens to be
   installed is how a standard-library vulnerability reaches CI unnoticed.
 EOF
