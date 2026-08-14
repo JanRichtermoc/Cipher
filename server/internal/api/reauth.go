@@ -42,9 +42,10 @@ const SignatureContext = "cipher-reauth-v1"
 //
 // The challenge route is limited per client address only: it takes an aci from
 // the body, so limiting per aci would let anyone throttle a *chosen* account by
-// spending its budget. The verify route is limited on both, because there the
-// aci is one the caller is claiming to control and a per-account ceiling is what
-// bounds signature guessing.
+// spending its budget. The verify route also has a per-account ceiling, but it
+// is charged only after the signature proves the caller controls that account.
+// Failures remain bounded by the address limit without spending a victim's
+// recovery budget (AUDIT 5.42).
 var (
 	challengeLimit = ratelimit.Limit{Capacity: 30, Window: time.Hour}
 	reauthIPLimit  = ratelimit.Limit{Capacity: 20, Window: time.Hour}
@@ -242,14 +243,16 @@ func (h *ReauthHandler) verify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Per-account ceiling, after the address one. Charged before the signature
-	// is checked, so a guessing loop spends budget whether or not it is close.
-	if !h.auth.allow(w, r, "auth-reauth-aci", aci.String(), reauthACILimit) {
+	if !h.authenticateSignature(ctx, aci, req) {
+		httpx.WriteError(w, http.StatusUnauthorized)
 		return
 	}
 
-	if !h.authenticateSignature(ctx, aci, req) {
-		httpx.WriteError(w, http.StatusUnauthorized)
+	// The aci is caller-supplied until the signature succeeds. Charge its
+	// account bucket only now, when the caller has proved control; charging it
+	// earlier lets anyone who knows an aci deny that account recovery. Invalid
+	// attempts still pay the address bucket above.
+	if !h.auth.allow(w, r, "auth-reauth-aci", aci.String(), reauthACILimit) {
 		return
 	}
 

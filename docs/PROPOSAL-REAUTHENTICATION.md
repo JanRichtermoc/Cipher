@@ -12,8 +12,9 @@
 > and is not the evidence, the steps and their negative tests are. What this file keeps is the part
 > history loses: the options that were weighed and rejected, and why.
 >
-> **Read §4 with 5.42.** The residual this document argued about is not the only one the design
-> carried; review after the merge opened **5.42**, which §4 did not anticipate.
+> **Read §4 with 5.42.** The residual this document argued about was not the only one the design
+> carried; review after the merge opened **5.42**, which §4 did not anticipate. The operator
+> approved its recommended fix on 2026-08-14, and `AUDIT.md` owns the tested disposition.
 
 ## 1. The problem, precisely
 
@@ -200,8 +201,14 @@ built.
 4. **P10.S06's wording** should be amended to drop the "would serve both" claim (§5), whatever else
    is decided.
    - **Done**, in the plan, before either change shipped.
+5. **AUDIT 5.42:** charge the per-account re-authentication bucket only after a valid signature,
+   leaving failures under the per-address bucket?
+   - **Approved 2026-08-14.** A caller-supplied `aci` no longer spends the named account's recovery
+     budget before proof of control; the account ceiling still bounds valid recoveries.
 
 **5.41 is CLOSED in the repository and not yet on the staging relay.** The one thing this document
 did not foresee is **5.42**: the per-account limit that P9.S11 put on the verify route is keyed on an
 `aci` an unauthenticated caller supplies, so a chosen account's recovery budget can be spent by
-anyone who knows it. §4 weighed the *stolen device* residual and not that one.
+anyone who knows it. §4 weighed the *stolen device* residual and not that one. **5.42 is CLOSED in
+the repository by charging that bucket only after a valid signature**; the address bucket remains
+the pre-verification control. Neither closure is on staging until the pending deploy runs.

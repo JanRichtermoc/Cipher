@@ -505,7 +505,7 @@ Token-bucket in Redis. Keyed by session token hash where authenticated, by sourc
 | `POST /v1/auth/rotate` | 10 / hour / account | Token grinding |
 | `PUT /v1/auth/key` | 5 / hour / account | Authenticated and write-once, so this only stops a loop |
 | **`POST /v1/auth/challenge`** | **30 / hour / IP** | **Unauthenticated.** Limited per address only: it takes an `aci` from the body, so a per-account limit would let anyone exhaust a *chosen* account's budget and deny it re-authentication |
-| **`POST /v1/auth/reauth`** | **20 / hour / IP and 10 / hour / account** | **Unauthenticated.** Both, because here the `aci` is one the caller claims to control: the per-account ceiling is what bounds signature guessing, and it is charged **before** the signature is checked so a guessing loop pays whether or not it was close. **The per-account half is AUDIT 5.42 (OPEN)** — the `aci` comes from the body, so ten requests an hour from one address spend a chosen account's recovery budget, which is the denial the challenge row above is per-address-only to avoid |
+| **`POST /v1/auth/reauth`** | **20 / hour / IP for every attempt; 10 / hour / account after a valid signature** | **Unauthenticated.** The address bucket bounds signature-verification work before the caller proves anything. The account bucket is charged only after the signature proves control of that `aci`, so repeated valid recoveries and session creation remain bounded without letting unauthenticated input spend a chosen account's recovery budget. The ordering is AUDIT 5.42's tested control |
 
 ### Request body limits, and the one that refused legal requests
 

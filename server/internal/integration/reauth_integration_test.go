@@ -152,6 +152,64 @@ func TestReauthenticationIssuesAWorkingSession(t *testing.T) {
 	}
 }
 
+// TestFailedSignaturesCannotSpendAnotherAccountsBudget is AUDIT 5.42's
+// invariant. The aci is unauthenticated input until a signature verifies, so a
+// failure may spend its address bucket but must not touch the named account's
+// recovery allowance.
+func TestFailedSignaturesCannotSpendAnotherAccountsBudget(t *testing.T) {
+	h, db := reauthStack(t)
+	aci, token := enrol(t, h, db, "198.51.100.155")
+	_, ownerPriv := publishKey(t, h, "198.51.100.155", token)
+	_, attackerPriv, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("generate attacker key: %v", err)
+	}
+
+	// This is the entire per-account capacity. The old ordering charged every
+	// one of these failures to the victim and made the valid attempt below 429.
+	for i := range 10 {
+		challenge := requestChallenge(t, h, "198.51.100.156", aci)
+		body := signedReauth(aci, challenge, attackerPriv)
+		if rec := jsonPost(h, "/v1/auth/reauth", "198.51.100.156", body, ""); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("attacker attempt %d: status %d, want 401", i+1, rec.Code)
+		}
+	}
+
+	challenge := requestChallenge(t, h, "198.51.100.155", aci)
+	body := signedReauth(aci, challenge, ownerPriv)
+	if rec := jsonPost(h, "/v1/auth/reauth", "198.51.100.155", body, ""); rec.Code != http.StatusOK {
+		t.Fatalf("attacker spent the account recovery budget: status %d", rec.Code)
+	}
+}
+
+// TestSuccessfulReauthenticationsAreRateLimitedPerAccount is the positive
+// control for the limit moved by 5.42: fixing the denial must not quietly delete
+// the account bucket. Only signatures proving control spend its ten-token
+// allowance, and the next valid attempt is refused even from another address.
+func TestSuccessfulReauthenticationsAreRateLimitedPerAccount(t *testing.T) {
+	h, db := reauthStack(t)
+	aci, token := enrol(t, h, db, "198.51.100.157")
+	_, priv := publishKey(t, h, "198.51.100.157", token)
+
+	for i := range 10 {
+		challenge := requestChallenge(t, h, "198.51.100.157", aci)
+		body := signedReauth(aci, challenge, priv)
+		if rec := jsonPost(h, "/v1/auth/reauth", "198.51.100.157", body, ""); rec.Code != http.StatusOK {
+			t.Fatalf("valid attempt %d: status %d, want 200", i+1, rec.Code)
+		}
+	}
+
+	challenge := requestChallenge(t, h, "203.0.113.157", aci)
+	body := signedReauth(aci, challenge, priv)
+	rec := jsonPost(h, "/v1/auth/reauth", "203.0.113.157", body, "")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("account limit did not refuse an eleventh valid attempt: status %d", rec.Code)
+	}
+	if rec.Header().Get("Retry-After") == "" {
+		t.Fatal("account-limit refusal has no Retry-After")
+	}
+}
+
 // TestAChallengeIsSingleUse pins the replay protection.
 func TestAChallengeIsSingleUse(t *testing.T) {
 	h, db := reauthStack(t)
