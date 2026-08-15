@@ -46,7 +46,9 @@ SERVER="$REPO_ROOT/server"
 # take the suite to 157. Same eight-test margin as the two raises above, and for the same
 # reason: the margin is what stops an unrelated deletion failing this gate instead of the
 # named list below, which is the check that actually notices.
-MIN_INTEGRATION_TESTS=149
+# Raised from 149 to 151 on 2026-08-14 with AUDIT 5.42's two rate-ordering tests, which take
+# the suite to 159. The eight-test margin and the named-test rationale stay unchanged.
+MIN_INTEGRATION_TESTS=151
 
 # A floor is not enough on its own, and that gap is AUDIT 6.14: the count says how
 # many tests ran, never which. A rename, a build-tag mistake in one file, or a
@@ -111,6 +113,12 @@ REQUIRED_INTEGRATION_TESTS=(
   #     bucket's only coverage anywhere. `Charge` saturating is what 5.22's byte quota
   #     rests on: if an overrun stopped saturating, the next check would admit the caller.
   TestReauthenticationIssuesAWorkingSession
+  # AUDIT 5.42. These must travel together: the first fails if unauthenticated
+  # signatures can still spend a chosen account's bucket; the second fails if
+  # that defect is "fixed" by deleting the account limit instead of moving it
+  # behind proof of control.
+  TestFailedSignaturesCannotSpendAnotherAccountsBudget
+  TestSuccessfulReauthenticationsAreRateLimitedPerAccount
   TestAChallengeIsSingleUse
   TestAWrongSignatureBurnsTheChallenge
   TestAnotherAccountsKeyCannotReauthenticate
